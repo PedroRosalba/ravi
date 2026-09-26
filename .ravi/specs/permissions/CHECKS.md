@@ -11,5 +11,12 @@
 - Contact policy status MUST NOT be treated as tool, CLI, app, session, or
   gateway authority.
 - Discovery surfaces MUST filter to resources visible to the effective context.
+- Contact grants via `ravi permissions allow|deny|list` MUST require `--chat`,
+  `--chat-tag`, or `--force`, and MUST return a structured `confirmation`.
+- In a governed chat, effective capabilities MUST be
+  `agent_identity ∩ contact_chat_caps`; ungoverned chats MUST keep the
+  agent-identity result (`permissions/user-overlay`).
 - `bun test src/permissions/provider-runtime.test.ts src/permissions/capability-context.test.ts src/permissions/delegation.test.ts src/permissions/denials.test.ts`
   SHOULD pass after changing permission behavior.
+- `bun test src/cli/commands/permissions.test.ts src/runtime/runtime-request-context.test.ts src/permissions/scope.test.ts`
+  SHOULD pass after changing contact grants or the user overlay.

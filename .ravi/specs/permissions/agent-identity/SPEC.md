@@ -17,6 +17,7 @@ tags:
   - runtime
 applies_to:
   - src/permissions/agent-identity-permissions-provider.ts
+  - src/permissions/contact-policy-permissions-provider.ts
   - src/permissions/provider-registry.ts
   - src/runtime/runtime-request-context.ts
   - src/cli/commands/permissions.ts
@@ -60,17 +61,21 @@ DM, automation, or workspace baseline.
 - Unknown or unresolved actors MUST fail closed before agent identity
   capabilities are materialized for an external user-initiated turn.
 - Turn approval/observer grants remain an upper bound when present.
-- Direct `contact-policy-permissions` materialization is legacy/user-overlay
-  support. It MUST NOT be the default runtime authority path for multiplayer
-  agent execution.
+- `contact-policy-permissions` is not the default runtime authority path. It
+  participates only as the chat-scoped user overlay in governed chats
+  (`permissions/user-overlay`), always intersected with the agent identity.
 
 Current effective capability shape:
 
 ```text
 effective_capabilities =
   agent_identity_capabilities
+  INTERSECT contact_chat_capabilities_when_chat_is_governed
   INTERSECT turn_capabilities_when_present
 ```
+
+A chat is governed when at least one chat or chat-tag contact grant covers it.
+Ungoverned chats keep `agent_identity ∩ turn_caps` unchanged.
 
 ## Compartments
 
@@ -93,6 +98,10 @@ The context metadata MUST include:
 - `agentIdentityCompartment`
 - `agentIdentityCapabilityCount`
 - `effectiveCapabilityCount`
+- `actorAuthorizationMode` (`invoke-only`, `not-applicable`, or
+  `user-overlay`)
+- `userOverlay`, `userOverlayChat`, `userOverlayThreadChat`, and
+  `userOverlayGrants` when the actor is a contact on a chat surface
 
 ## Operator UX
 
@@ -105,11 +114,13 @@ ravi permissions allow <profile> --to agent:<agent-id> --capabilities <permissio
 ```
 
 For denials recorded with `authorityMode=agent-identity`, `resolve` MUST infer
-`agent:<executorAgentId>` as the recurring target. It SHOULD NOT attach contact
-policy tags unless the denial came from an explicit legacy/user-overlay path.
+`agent:<executorAgentId>` as the recurring target. When the denial also has
+`actorAuthorizationMode=user-overlay`, `resolve` MUST plan a chat-scoped grant
+for `contact:<actorId>` in the denied chat plus the executor agent ceiling.
 
-Contact tags MAY still be used for future invocation eligibility or
-user-overlay policy, but they are not the normal way to unblock tool authority.
+Contact grants are chat-scoped (`--chat`, `--chat-tag`) or explicitly global
+(`--force`). They only narrow what the agent does for that contact; they are
+not a way to raise the agent ceiling.
 
 ## Retired Delegated Model
 
@@ -117,14 +128,16 @@ The previous `agent ∩ actor ∩ surface ∩ turn` delegated model MUST NOT be
 reachable through runtime context creation.
 
 Specs and skills MUST NOT present the delegated intersection as the production
-default. Any reintroduction of actor/surface branches into the active runtime
-path MUST be deliberate, tested, and documented as a user-level overlay on top
-of agent identity.
+default. The only actor branch in the active runtime path is the chat-scoped
+user overlay (`permissions/user-overlay`); any other reintroduction of
+actor/surface branches MUST be deliberate, tested, and documented.
 
 ## Acceptance Criteria
 
-- A resolved contact in a chat can invoke capabilities held by the agent
-  identity even when the contact has zero materialized capabilities.
+- In an ungoverned chat, a resolved contact can invoke capabilities held by the
+  agent identity even when the contact has zero materialized capabilities.
+- In a governed chat, a contact receives `agent_identity ∩ contact_chat_caps`,
+  and a contact without a covering grant receives zero tool capabilities.
 - A chat with zero materialized capabilities does not zero the agent identity.
 - An unresolved external actor receives zero effective capabilities.
 - A denial from an agent-identity turn resolves to `--to agent:<executor>`.

@@ -39,9 +39,45 @@ ravi permissions allow <profile> ... --apply
 
 `allow` e `resolve` fazem dry-run por padrão. Só persistem com `--apply`.
 Eles não gravam num grafo legado: orquestram superfícies provider-owned
-existentes, como permission tags e `agent.defaults.runtimePermissions`.
-Contact policy tags existem como legado/user-overlay; não são o caminho padrão
-para destravar tool authority em turnos multiplayer.
+existentes, como permission tags, grants de contato por chat e
+`agent.defaults.runtimePermissions`.
+
+## Grants para um usuário/contato (escopo de chat)
+
+Permissão de usuário é **por chat**. Threads herdam o chat. O efetivo no turno
+é `teto do agent ∩ caps do contato naquele chat`: o grant só destrava o que o
+agent já pode fazer.
+
+```bash
+# Só neste chat (dentro de um turno, `--chat current` resolve o chat atual)
+ravi permissions allow <profile> --to contact:<id> --chat current --agent <executor> --json
+ravi permissions allow <profile> --to contact:<id> --chat current --agent <executor> --apply --json
+
+# Todos os chats com uma tag de chat
+ravi permissions allow <profile> --to contact:<id> --chat-tag <tag> --apply --json
+
+# Global: só depois que o humano confirmar explicitamente
+ravi permissions allow <profile> --to contact:<id> --force --apply --json
+
+# Revogar e listar com os mesmos filtros
+ravi permissions deny <profile> --to contact:<id> --chat <chat-id> --apply --json
+ravi permissions list --chat <chat-id> --json
+```
+
+Regras:
+
+- Sem `--chat`, `--chat-tag` ou `--force`, `allow|deny|list` com contato
+  recusa com `CHAT_SCOPE_REQUIRED`. Use a sugestão `--chat <id>` do erro.
+- Antes de `--force`, pergunte ao humano: "só neste grupo, ou em todos os
+  chats?". Global é exceção, não padrão.
+- Depois de `allow`/`deny`, confira `confirmation`: `scopes`
+  (`chat:<id>`, `chat-tag:<tag>` ou `global`), `global`, `force`, `profile` e
+  `capabilities`. Se `global=true` sem o humano ter pedido, desfaça com
+  `deny ... --force --apply`.
+- O primeiro grant num chat deixa o chat **governado**: outros contatos ali
+  ficam sem tools até receberem grant próprio. Leia `hints` e avise o humano.
+- Passe `--agent <executor>` para garantir que o teto do agent inclui o
+  profile; grant de contato sozinho não amplia o agent.
 
 Só use capability solta quando ainda não existir profile adequado. Nesse caso,
 coloque a capability em `--capabilities` como bootstrap de um profile estreito.
@@ -66,9 +102,10 @@ para decidir o que pedir.
 
 Regras:
 
-- `ravi permissions status/check/materialize` são inspeção provider-runtime.
-- `ravi permissions allow/resolve` são orquestração provider-owned com dry-run
-  obrigatório por padrão e `--apply` explícito.
+- `ravi permissions status/check/materialize/list` são inspeção
+  provider-runtime.
+- `ravi permissions allow/deny/resolve` são orquestração provider-owned com
+  dry-run obrigatório por padrão e `--apply` explícito.
 - `ravi agents permissions` grava em `agent.defaults.runtimePermissions`.
   Use diretamente apenas para correção agent-only; para fluxos iniciados por
   humanos, prefira `ravi permissions allow/resolve`.
@@ -87,8 +124,10 @@ Regras:
   `agent_identity:<agent>:<compartment>`, intersectadas com turn caps quando
   existirem.
 - Ator/contact e chat/surface são provenance, invocação e compartimento por
-  default; eles não são branches obrigatórios de tool authority. Ator
-  desconhecido continua falhando fechado.
+  default; eles não são branches obrigatórios de tool authority. Exceção: em
+  chat governado por grants de contato, `actorAuthorizationMode=user-overlay`
+  e o efetivo é `agent_identity ∩ caps do contato no chat`. Ator desconhecido
+  continua falhando fechado.
 - O modelo antigo `agent ∩ actor ∩ surface ∩ turn` está aposentado na criação
   de contexto runtime; trate menções a ele como histórico/test fixture.
 - Tags são labels; elas não concedem autoridade sem provider explícito.
@@ -149,3 +188,8 @@ Para denials com `authorityMode=agent-identity`, não peça grant para cada
 contato ou chat só porque `actorCapabilityCount`/`surfaceCapabilityCount` é 0.
 Isso é esperado: o fix recorrente é no agent executor/agent identity, salvo se
 o erro for ator desconhecido ou uma policy de invocação explícita.
+
+Se o denial tiver `actorAuthorizationMode=user-overlay` (bloqueio
+`user_overlay_missing_grant`), o chat é governado: o fix é um grant do profile
+para aquele contato **naquele chat** (`ravi permissions resolve <denial-id>`
+já monta isso), não global.

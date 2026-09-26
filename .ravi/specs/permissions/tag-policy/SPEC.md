@@ -31,7 +31,17 @@ The current supported permission tag path is the explicit
 tags and materializes provider-runtime capabilities for the matching contact
 only from provider-owned configuration.
 
+A permission tag definition is also the **profile** referenced by chat-scoped
+contact grants (`permissions/user-overlay`). Those grants live in
+`permission_contact_chat_grants`, not in tag bindings, and reference the
+profile by slug.
+
 ## Contact Permission Tags
+
+A permission tag bound directly to a contact is a **global** contact grant. The
+CLI creates or removes it only with `ravi permissions allow|deny --force`.
+Inside governed chats it contributes to the user overlay; it never governs a
+chat by itself.
 
 `contact-policy-permissions` MUST materialize contact tags only when all are
 true:
@@ -64,6 +74,19 @@ operators until they are migrated into tag definitions.
 
 Generic tags such as `family`, `admin`, `vip`, or `customer` MUST NOT
 materialize capabilities.
+
+## Chat Tags As Grant Scope
+
+`ravi permissions allow <profile> --to contact:<id> --chat-tag <tag>` stores a
+chat-scoped grant whose scope is a chat tag. The chat tag is only a selector:
+it decides which chats the contact grant covers (evaluated at turn time) and
+MUST NOT grant anything by itself. Chat tags do not need a permission
+namespace.
+
+Explicit chat and chat-tag grants MUST apply to contacts that are not blocked
+and not opted out, regardless of `allowed` status, because group participants
+are often `discovered`/`pending` and status is intake policy. Global contact
+permission tags keep the `allowed` requirement above.
 
 Rules:
 

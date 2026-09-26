@@ -45,8 +45,9 @@ Rules:
 - Explainability data MUST preserve provider id, reason code, canonical action,
   canonical object, and safe evidence.
 - Agent-identity denials MUST identify whether the block came from missing
-  executor/agent-identity capability, unresolved actor, turn cap, or provider
-  runtime failure. Historical delegated denial records MAY still identify
+  executor/agent-identity capability, unresolved actor, a missing chat-scoped
+  contact grant in a governed chat (`user_overlay_missing_grant`), turn cap, or
+  provider runtime failure. Historical delegated denial records MAY still identify
   actor/surface branches, but runtime context creation MUST NOT emit new legacy
   delegated authority contexts.
 - Context capability counts are snapshots and MUST be labeled as such.

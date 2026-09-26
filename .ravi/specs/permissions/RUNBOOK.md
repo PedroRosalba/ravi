@@ -10,11 +10,26 @@ ravi permissions materialize --subject-type agent --subject-id main --json
 
 Expected baseline:
 
-- `ravi permissions status/check/materialize` are inspection-only.
-- `ravi permissions allow/resolve` are provider-owned orchestration commands
-  and require explicit `--apply` to mutate.
+- `ravi permissions status/check/materialize/list` are inspection-only.
+- `ravi permissions allow/deny/resolve` are provider-owned orchestration
+  commands and require explicit `--apply` to mutate.
 - Subject authority materializes through registered providers.
 - Agent configuration is stored in `agent.defaults.runtimePermissions`.
+- Contact grants are chat-scoped (`--chat`, `--chat-tag`) or explicitly global
+  (`--force`); see `permissions/user-overlay` RUNBOOK.
+
+## Contact Grant In One Chat
+
+```bash
+ravi permissions allow <profile> --to contact:<id> --chat <chat-id> --agent <agent-id> --json
+ravi permissions allow <profile> --to contact:<id> --chat <chat-id> --agent <agent-id> --apply --json
+ravi permissions list --chat <chat-id> --json
+ravi permissions deny <profile> --to contact:<id> --chat <chat-id> --apply --json
+```
+
+Check `confirmation.scopes`, `confirmation.global=false`, and
+`confirmation.force=false`. The first grant makes the chat governed: other
+contacts in that chat get no tool access until granted.
 
 ## Chat-only vs none
 
@@ -87,5 +102,6 @@ operator profile.
 ```bash
 bun run typecheck
 bun test src/permissions/provider-runtime.test.ts src/permissions/delegation.test.ts src/cli/commands/permissions.test.ts src/cli/commands/agents.test.ts
+bun test src/runtime/runtime-request-context.test.ts src/permissions/scope.test.ts
 bun run build:cli
 ```

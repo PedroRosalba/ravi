@@ -10,6 +10,7 @@ capabilities:
   - resource-visibility
   - profiles
   - tag-policy
+  - user-overlay
   - runtime-context
   - operator-control
   - least-privilege
@@ -72,11 +73,14 @@ ravi permissions materialize --subject-type <type> --subject-id <id>
 Provider-owned orchestration:
 
 ```bash
-ravi permissions allow <profile> --to contact:<id> --agent <agent-id> --capabilities <perm>:<type>:<id>
+ravi permissions allow <profile> --to agent:<agent-id> --capabilities <perm>:<type>:<id>
+ravi permissions allow <profile> --to contact:<id> --chat <chat-id> --agent <agent-id> --capabilities <perm>:<type>:<id>
+ravi permissions deny <profile> --to contact:<id> --chat <chat-id>
+ravi permissions list --to contact:<id> --chat <chat-id>
 ravi permissions resolve <denial-id>
 ```
 
-`ravi permissions allow` and `ravi permissions resolve` MUST NOT write to a
+`ravi permissions allow`, `deny`, `list`, and `resolve` MUST NOT write to a
 native permission graph. They are orchestration commands that mutate only the
 provider-owned surfaces already used by materializers:
 
@@ -84,15 +88,24 @@ provider-owned surfaces already used by materializers:
 - `agent.defaults.runtimePermissions` consumed by
   `agent-default-capabilities` and projected into
   `agent-identity-permissions`;
-- contact policy tags consumed by `contact-policy-permissions` for
-  legacy/user-overlay policy, not the default multiplayer tool authority path.
+- chat-scoped contact grants (`permission_contact_chat_grants`) consumed by
+  `contact-policy-permissions` for the chat-scoped user overlay
+  (`permissions/user-overlay`);
+- global contact permission tags consumed by `contact-policy-permissions`,
+  reachable from the CLI only with `--force`.
 
-Both commands MUST dry-run by default and require `--apply` to persist changes.
-Direct agent-only authority mutation MAY still use `ravi agents permissions`,
-but operator and agent guidance SHOULD prefer `ravi permissions allow/resolve`
-for recurring user/workflow access because it updates the agent identity in one
-explainable plan. Contact/user profile changes are legacy/user-overlay unless a
-future policy explicitly uses them for invocation eligibility.
+`allow`, `deny`, and `resolve` MUST dry-run by default and require `--apply` to
+persist changes. `list` is read-only. Direct agent-only authority mutation MAY
+still use `ravi agents permissions`, but operator and agent guidance SHOULD
+prefer `ravi permissions allow/resolve` for recurring user/workflow access
+because it updates the agent identity in one explainable plan.
+
+Contact targets MUST carry a chat scope: `--chat <chat-id|current>`,
+`--chat-tag <tag>`, or the explicit global `--force`. Without one, `allow`,
+`deny`, and `list` MUST refuse with `CHAT_SCOPE_REQUIRED`. Their JSON output
+MUST include a structured `confirmation` (subject, scope, profile,
+capabilities, `global`, `force`) so the caller can verify it did not go global
+by accident. See `permissions/user-overlay`.
 
 `operator-control` is the explicit operator authorization provider for local
 management actions. It MUST NOT be used as agent tool authority and MUST NOT
@@ -144,6 +157,11 @@ Agents MUST be guided toward explainable least-privilege requests.
   Raw capabilities belong in `--capabilities` as profile bootstrap evidence.
 - CLI hints MUST present `ravi permissions allow/resolve` before lower-level
   `ravi agents permissions` or tag mutation commands.
+- When granting a user/contact, agents MUST scope the grant to the chat where
+  it was asked for (`--chat current` inside a chat turn). Before using
+  `--force` (global), agents MUST ask the human whether the grant is meant for
+  this chat/group only. After `allow`/`deny`, agents SHOULD check
+  `confirmation.scopes`, `confirmation.global`, and `confirmation.force`.
 
 ## Invariants
 
@@ -157,13 +175,20 @@ Agents MUST be guided toward explainable least-privilege requests.
   `agent_identity:<agent>:<compartment>` and any explicit turn caps. The
   actor/contact is required provenance and invocation context, not a default
   tool-authority branch.
+- In a chat governed by chat-scoped contact grants, the contact becomes an
+  additional branch: `agent_identity ∩ contact_chat_caps ∩ turn_caps`. The
+  contact MUST NOT exceed the executor agent ceiling. Rules live in
+  `permissions/user-overlay`.
 - Unknown or unresolved external actors MUST fail closed and receive no
   materialized agent identity capabilities.
 - Groups/chats/threads select the agent identity compartment by default. A
   surface with no provider-owned policy MUST NOT zero the agent identity.
-- User/contact-level checks MAY be added later as an overlay on top of agent
-  identity, but they MUST NOT replace the active agent identity model without a
-  normative spec and tests.
+  Threads inherit their container chat's contact grants.
+- User/contact-level checks are implemented only as the chat-scoped user
+  overlay on top of agent identity. They MUST NOT replace the agent identity
+  model.
+- Contact grants MUST be chat-scoped (chat or chat tag) by default. Global
+  contact grants require an explicit `--force`.
 - `contact_policies` status controls intake/reply eligibility. It MUST NOT be
   treated as tool, executable, CLI, session, contact, app, or gateway authority.
 - Tags are selectors and metadata. Tags MUST NOT grant authority unless a
@@ -236,6 +261,7 @@ For an external resolved turn:
 ```text
 effective_caps =
   agent_identity_caps
+  INTERSECT contact_chat_caps_when_chat_is_governed
   INTERSECT turn_caps_when_present
 ```
 
@@ -245,10 +271,15 @@ Rules:
 - `agent_identity` capabilities are materialized from the executor agent's
   provider-owned runtime config and runtime bootstrap.
 - `actorPrincipal` and `surfacePrincipal` MUST be present in metadata when
-  resolved, but their materialized capability counts are audit snapshots and do
-  not gate tool authority in the default model.
+  resolved. Outside governed chats their materialized capability counts are
+  audit snapshots and do not gate tool authority.
+- A chat is governed when at least one chat or chat-tag contact grant covers
+  it. Then `actorAuthorizationMode=user-overlay` and the contact's chat
+  capabilities gate the turn (`permissions/user-overlay`).
 - `ravi permissions resolve <denial-id>` for an agent-identity denial MUST
-  target `agent:<executorAgentId>`.
+  target `agent:<executorAgentId>`. For a `user-overlay` denial it MUST plan a
+  chat-scoped grant for `contact:<actorId>` in the denied chat, plus the agent
+  ceiling.
 
 ## Retired Delegation
 
