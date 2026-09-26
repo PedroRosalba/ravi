@@ -17,6 +17,7 @@ import {
   isPiPermissionHooksReadyEvent,
   mapPiToolNameToRavi,
   materializePiPermissionExtensionFile,
+  resolvePiPermissionExtensionDirectory,
   parsePiPermissionUiDecisionValue,
   parsePiPermissionUiRequest,
   PiPermissionBridgeError,
@@ -431,6 +432,22 @@ describe("Pi tool permission bridge", () => {
     expect(authorized).toEqual(["tool:Read", "command:rm -rf /"]);
   });
 
+  it("materializes the default permission extension under the Ravi state dir, not /tmp", () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "ravi-state-pi-hooks-"));
+    const previous = process.env.RAVI_STATE_DIR;
+    process.env.RAVI_STATE_DIR = stateDir;
+    try {
+      expect(resolvePiPermissionExtensionDirectory()).toBe(join(stateDir, "pi-hooks"));
+      expect(resolvePiPermissionExtensionDirectory()).not.toContain("/tmp/ravi-pi-hooks");
+      const path = materializePiPermissionExtensionFile();
+      expect(path.startsWith(join(stateDir, "pi-hooks"))).toBe(true);
+      expect(readFileSync(path, "utf8")).toBe(PI_RAVI_PERMISSION_EXTENSION_SOURCE);
+    } finally {
+      if (previous === undefined) delete process.env.RAVI_STATE_DIR;
+      else process.env.RAVI_STATE_DIR = previous;
+    }
+  });
+
   it("materializes a Pi extension that gates tool_call before execution", () => {
     const directory = mkdtempSync(join(tmpdir(), "ravi-pi-hooks-"));
     const path = materializePiPermissionExtensionFile(directory);
@@ -455,12 +472,14 @@ describe("Pi tool permission bridge", () => {
       parsePiPermissionUiDecisionValue(
         formatPiPermissionUiDecisionValue({
           allowed: false,
-          reason: "SKILL_NOT_AUTHORIZED: Skill not authorized for agent: image",
+          reason:
+            "SKILL_NOT_AUTHORIZED: Skill 'image' is not authorized for this agent. Install it into Ravi if needed ('ravi skills install --source <skill-dir>'), then grant it ('ravi skills grant <agent> image').",
         }),
       ),
     ).toEqual({
       allowed: false,
-      reason: "SKILL_NOT_AUTHORIZED: Skill not authorized for agent: image",
+      reason:
+        "SKILL_NOT_AUTHORIZED: Skill 'image' is not authorized for this agent. Install it into Ravi if needed ('ravi skills install --source <skill-dir>'), then grant it ('ravi skills grant <agent> image').",
     });
     expect(parsePiPermissionUiDecisionValue(false)).toEqual({
       allowed: false,
@@ -622,12 +641,14 @@ describe("Pi tool permission bridge", () => {
       authorizePiToolCall("read", { path: "/tmp/plugins/ravi-system/skills/whatsapp-manager/SKILL.md" }, handlers),
     ).resolves.toEqual({
       allowed: false,
-      reason: "SKILL_NOT_AUTHORIZED: Skill not authorized for agent: whatsapp-manager",
+      reason:
+        "SKILL_NOT_AUTHORIZED: Skill 'whatsapp-manager' is not authorized for this agent. Install it into Ravi if needed ('ravi skills install --source <skill-dir>'), then grant it ('ravi skills grant <agent> whatsapp-manager').",
     });
 
     await expect(authorizePiToolCall("Skill", { skill: "ravi-system-image" }, handlers)).resolves.toEqual({
       allowed: false,
-      reason: "SKILL_NOT_AUTHORIZED: Skill not authorized for agent: ravi-system-image",
+      reason:
+        "SKILL_NOT_AUTHORIZED: Skill 'ravi-system-image' is not authorized for this agent. Install it into Ravi if needed ('ravi skills install --source <skill-dir>'), then grant it ('ravi skills grant <agent> ravi-system-image').",
     });
 
     await expect(
@@ -670,7 +691,8 @@ describe("Pi tool permission bridge", () => {
       ),
     ).resolves.toEqual({
       allowed: false,
-      reason: "SKILL_NOT_AUTHORIZED: Skill not authorized for agent: ravi-system-image",
+      reason:
+        "SKILL_NOT_AUTHORIZED: Skill 'ravi-system-image' is not authorized for this agent. Install it into Ravi if needed ('ravi skills install --source <skill-dir>'), then grant it ('ravi skills grant <agent> ravi-system-image').",
     });
 
     await expect(
@@ -682,6 +704,35 @@ describe("Pi tool permission bridge", () => {
           approveRuntimeRequest: async () => ({ approved: true }),
           allowedSkills: ["ravi-dev-app-creator"],
         },
+      ),
+    ).resolves.toEqual({ allowed: true });
+  });
+
+  it("denies the unauthorized skill even when a granted skill shares the shell line", async () => {
+    const handlers = {
+      canUseTool: async () => ({ behavior: "allow" as const }),
+      approveRuntimeRequest: async () => ({ approved: true }),
+      allowedSkills: ["ravi-dev-app-creator"],
+    };
+    const denied =
+      "SKILL_NOT_AUTHORIZED: Skill 'whatsapp-manager' is not authorized for this agent. Install it into Ravi if needed ('ravi skills install --source <skill-dir>'), then grant it ('ravi skills grant <agent> whatsapp-manager').";
+
+    for (const command of [
+      "head -20 /tmp/plugins/ravi-system/skills/whatsapp-manager/SKILL.md; cat /workspace/src/plugins/internal/ravi-dev/skills/app-creator/SKILL.md",
+      "cat /workspace/src/plugins/internal/ravi-dev/skills/app-creator/SKILL.md /tmp/plugins/ravi-system/skills/whatsapp-manager/SKILL.md",
+      "ravi skills show ravi-dev-app-creator --json && ravi skills show whatsapp-manager --json",
+    ]) {
+      await expect(authorizePiToolCall("bash", { command }, handlers)).resolves.toEqual({
+        allowed: false,
+        reason: denied,
+      });
+    }
+
+    await expect(
+      authorizePiToolCall(
+        "bash",
+        { command: "ravi skills install --source ~/.agents/skills/find-skills/SKILL.md --json" },
+        handlers,
       ),
     ).resolves.toEqual({ allowed: true });
   });

@@ -87,7 +87,7 @@ import type { SessionEntry } from "../../router/types.js";
 import { filterItemsByCanonicalTag } from "../../tags/helpers.js";
 import { searchTagBindingsForSelector } from "../../tags/service.js";
 import type { TagBinding } from "../../tags/types.js";
-import { canonicalizeRouteIdentity } from "../../utils/phone.js";
+import { normalizeRoutePattern } from "../../utils/phone.js";
 import { formatCliRuntimeTarget, getCliRuntimeMismatchMessage, inspectCliRuntimeTarget } from "../runtime-target.js";
 import { formatInspectionSection, printInspectionField } from "../inspection-output.js";
 
@@ -198,14 +198,14 @@ function assertInstanceMutationRuntime(name: string, allowRuntimeMismatch?: bool
   const summary = inspectCliRuntimeTarget(name);
   const mismatch = getCliRuntimeMismatchMessage(summary);
   if (mismatch && !allowRuntimeMismatch) {
-    fail(
-      `${mismatch}\nTarget instance: ${name}\nRe-run with the repo CLI/runtime or pass --allow-runtime-mismatch if you really mean it.`,
-    );
+    const suggestedAction =
+      "Re-run with the repo CLI/runtime or pass --allow-runtime-mismatch if you really mean it.";
+    fail(`${mismatch}\nTarget instance: ${name}\n${suggestedAction}`, suggestedAction);
   }
 }
 
 function canonicalizeRoutePatternArg(pattern: string): string {
-  return canonicalizeRouteIdentity(pattern);
+  return normalizeRoutePattern(pattern);
 }
 
 function isExactSimulatedRoutePattern(pattern: string): boolean {
@@ -1865,13 +1865,14 @@ export class InstancesRoutesCommands {
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
   ) {
     assertInstanceMutationRuntime(name, allowRuntimeMismatch);
-    const ok = dbRestoreRoute(pattern, name);
+    const routePattern = canonicalizeRoutePatternArg(pattern);
+    const ok = dbRestoreRoute(routePattern, name);
     if (ok) {
       const payload = {
         status: "restored" as const,
         instance: name,
-        pattern,
-        route: dbGetRoute(pattern, name),
+        pattern: routePattern,
+        route: dbGetRoute(routePattern, name),
         target: inspectCliRuntimeTarget(name),
         changedCount: 1,
       };
@@ -1879,7 +1880,7 @@ export class InstancesRoutesCommands {
         printJson(payload);
       } else {
         printInstanceMutationTarget(name);
-        console.log(`✓ Route restored: ${pattern} (instance: ${name})`);
+        console.log(`✓ Route restored: ${routePattern} (instance: ${name})`);
       }
       emitConfigChanged();
       return payload;
@@ -1887,13 +1888,13 @@ export class InstancesRoutesCommands {
       contractFail(
         "instances routes restore",
         "ROUTE_NOT_FOUND",
-        `Route not found in deleted records: ${pattern} (instance: ${name})`,
+        `Route not found in deleted records: ${routePattern} (instance: ${name})`,
         {
           asJson,
           details: {
             suggestedAction: "Check deleted routes (see suggestions; list with: ravi instances routes deleted --json)",
             suggestions: suggestSimilar(
-              pattern,
+              routePattern,
               dbListDeletedRoutes(name).map((route) => route.pattern),
             ),
           },

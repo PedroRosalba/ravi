@@ -33,15 +33,18 @@ import type {
   RuntimeDynamicToolExecutionOptions,
   RuntimeDynamicToolSpec,
   RuntimeHostServices,
-  RuntimeSkillVisibilitySnapshot,
   RuntimeToolAccessMode,
   RuntimeToolUseAuthorizationRequest,
   RuntimeUserInputRequest,
   RuntimeCapabilities,
 } from "./types.js";
-import { evaluateRuntimeCommandSkillGate, evaluateRuntimeToolSkillGate } from "./skill-gate.js";
-import { isSkillAuthorizedForAgent } from "./skill-authorization.js";
-import { extractRequestedSkillFromCommandLine, extractRequestedSkillFromToolCall } from "./skill-visibility.js";
+import {
+  evaluateRuntimeCommandSkillGate,
+  evaluateRuntimeToolSkillGate,
+  type SkillGatePersistedListener,
+} from "./skill-gate.js";
+import { formatSkillNotAuthorizedReason, isSkillAuthorizedForAgent } from "./skill-authorization.js";
+import { extractRequestedSkillsFromCommandLine, extractRequestedSkillsFromToolCall } from "./skill-visibility.js";
 
 const RUNTIME_BUILTIN_EXECUTABLES = new Set(["ravi"]);
 let cachedRuntimeDynamicTools: ExportedTool[] | null = null;
@@ -56,7 +59,7 @@ export interface RuntimeHostServicesOptions {
   resolvedSource?: ApprovalTarget;
   approvalSource?: ApprovalTarget;
   toolContext: Record<string, unknown>;
-  onSkillGatePersisted?: (skillVisibility: RuntimeSkillVisibilitySnapshot) => void;
+  onSkillGatePersisted?: SkillGatePersistedListener;
 }
 
 function hasUnrestrictedToolExecution(agentId: string): boolean {
@@ -451,12 +454,14 @@ async function authorizeRuntimeCommandExecution(
     return { approved: false, reason: preliminary.reason ?? "Command denied by Ravi policy." };
   }
 
-  const requestedSkill = extractRequestedSkillFromCommandLine(command);
-  if (requestedSkill && !isSkillAuthorizedForAgent(options.agentId, requestedSkill)) {
-    const reason = `SKILL_NOT_AUTHORIZED: Skill not authorized for agent: ${requestedSkill}`;
+  const deniedCommandSkill = extractRequestedSkillsFromCommandLine(command).find(
+    (skill) => !isSkillAuthorizedForAgent(options.agentId, skill, { capabilities: options.context.capabilities }),
+  );
+  if (deniedCommandSkill) {
+    const reason = formatSkillNotAuthorizedReason(deniedCommandSkill, options.agentId);
     emitRuntimePolicyDenied(options, {
       type: "tool",
-      denied: `skill:${requestedSkill}`,
+      denied: `skill:${deniedCommandSkill}`,
       reason,
       command,
       blockType: "runtime_skill_not_authorized",
@@ -598,6 +603,30 @@ async function authorizeRuntimeCommandExecution(
     };
   }
 
+  // Observação de intenção (ex.: uso de `gh` vira acompanhamento de PR). Este é
+  // o caminho por onde pi e grok autorizam comando, e roda depois do "pode
+  // rodar": comando negado não deve virar subscrição.
+  if (command.includes("gh")) {
+    const { observeGhBashCommand } = await import("../hooks/gh-watch.js");
+    await observeGhBashCommand(command, {
+      agentId: options.agentId,
+      sessionKey: options.context.sessionKey,
+      sessionName: options.context.sessionName ?? options.sessionName,
+      source: options.context.source,
+    });
+  }
+
+  // Promoção automática de comando longo **não acontece aqui**.
+  //
+  // `updatedInput` só tem efeito onde o runtime aplica a reescrita, e nenhum dos
+  // providers que passam por este caminho (pi, codex, grok) faz isso: a extensão do
+  // pi lê apenas `{allowed, reason}` e não tem como trocar o comando. Promover aqui
+  // produzia um log dizendo "promovendo" e **nenhum job criado** — pior que não
+  // promover, porque mentia sobre o que estava acontecendo no turno.
+  //
+  // A promoção real vive no hook do caminho claude (`createJobPromotionHook`), onde o
+  // contrato de hook aceita `updatedInput` de verdade. Nos demais runtimes o agente
+  // usa `ravi jobs run` explícito.
   return { approved: true, inherited, updatedInput: request.input };
 }
 
@@ -618,15 +647,17 @@ async function authorizeRuntimeToolUse(
     return { approved: false, reason: result.reason ?? `${request.toolName} permission denied.` };
   }
 
-  const requestedSkill = extractRequestedSkillFromToolCall(request.toolName, request.input);
-  if (requestedSkill && !isSkillAuthorizedForAgent(options.agentId, requestedSkill)) {
-    const reason = `SKILL_NOT_AUTHORIZED: Skill not authorized for agent: ${requestedSkill}`;
+  const deniedToolSkill = extractRequestedSkillsFromToolCall(request.toolName, request.input).find(
+    (skill) => !isSkillAuthorizedForAgent(options.agentId, skill, { capabilities: options.context.capabilities }),
+  );
+  if (deniedToolSkill) {
+    const reason = formatSkillNotAuthorizedReason(deniedToolSkill, options.agentId);
     emitRuntimePolicyDenied(options, {
       type: "tool",
-      denied: `skill:${requestedSkill}`,
+      denied: `skill:${deniedToolSkill}`,
       reason,
       blockType: "runtime_skill_not_authorized",
-      detail: { toolName: request.toolName, skill: requestedSkill },
+      detail: { toolName: request.toolName, skill: deniedToolSkill },
     });
     return { approved: false, reason };
   }

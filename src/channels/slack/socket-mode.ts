@@ -3,6 +3,7 @@ import { WebSocket as NodeWebSocket } from "ws";
 import { configStore } from "../../config-store.js";
 import {
   ensureContactFromInbound,
+  isSlackHumanUserId,
   resolvePlatformIdentity,
   saveAccountPending,
   type PlatformIdentity,
@@ -47,8 +48,14 @@ import {
   acceptResolvedChannelIngress,
   type ChannelContent,
 } from "../backend.js";
+import {
+  normalizeSlackReactionName,
+  resolveSlackApiChannelId,
+  resolveSlackApiTimestamp,
+} from "./chat-action-target.js";
 import { SlackWebApiClient } from "./client.js";
 import { resolveSlackCredentialConfigFromEnv, type SlackCredentialResolver } from "./credentials.js";
+import { markdownToSlackMrkdwn } from "./mrkdwn.js";
 import { SlackGatewayModeService } from "./gateway-mode.js";
 import {
   buildSlackInstanceProvenance,
@@ -60,6 +67,7 @@ import {
   type SlackScopedIdentityResolution,
 } from "./instance-alias.js";
 import { storeSlackInteractionResponseUrl } from "./interactions.js";
+import { slackInboundReactionFromEnvelope } from "./reactions.js";
 import {
   acceptSlackInboundEnvelope,
   claimSlackInboundEnvelope,
@@ -298,10 +306,11 @@ export class SlackChatActionDelivery implements NativeChatActionDelivery {
 
   async executeChatAction(request: NativeChatActionDeliveryRequest): Promise<NativeChatActionDeliveryResult> {
     const { action, target } = request;
+    const channel = resolveSlackApiChannelId(target);
     if (action.actionId === "thread.create") {
       const result = await this.webClient.postMessage({
-        channel: target.chatId,
-        text: action.text,
+        channel,
+        text: markdownToSlackMrkdwn(action.text),
         clientMsgId: slackClientMessageId(request.idempotencyKey),
       });
       return {
@@ -314,10 +323,11 @@ export class SlackChatActionDelivery implements NativeChatActionDelivery {
     }
 
     if (action.actionId === "message.edit") {
+      const ts = resolveSlackApiTimestamp(action.providerMessageId);
       const result = await this.webClient.updateMessage({
-        channel: target.chatId,
-        ts: action.providerMessageId,
-        text: action.text,
+        channel,
+        ts,
+        text: markdownToSlackMrkdwn(action.text),
       });
       return {
         provider: "slack",
@@ -329,46 +339,51 @@ export class SlackChatActionDelivery implements NativeChatActionDelivery {
     }
 
     if (action.actionId === "message.delete") {
+      const ts = resolveSlackApiTimestamp(action.providerMessageId);
       const raw = await this.webClient.deleteMessage({
-        channel: target.chatId,
-        ts: action.providerMessageId,
+        channel,
+        ts,
       });
       return {
         provider: "slack",
-        messageId: action.providerMessageId,
-        platformMessageId: action.providerMessageId,
-        providerTimestamp: slackTsToMs(action.providerMessageId),
+        messageId: ts,
+        platformMessageId: ts,
+        providerTimestamp: slackTsToMs(ts),
         raw,
       };
     }
 
     const name = normalizeSlackReactionName(action.emoji);
+    const timestamp = resolveSlackApiTimestamp(action.providerMessageId);
     const raw =
       action.operation === "remove"
         ? await this.webClient.removeReaction({
-            channel: target.chatId,
-            timestamp: action.providerMessageId,
+            channel,
+            timestamp,
             name,
           })
         : await this.webClient.addReaction({
-            channel: target.chatId,
-            timestamp: action.providerMessageId,
+            channel,
+            timestamp,
             name,
           });
+    assertSlackReactionAccepted(raw, action.operation);
     return {
       provider: "slack",
-      messageId: action.providerMessageId,
-      platformMessageId: action.providerMessageId,
-      providerTimestamp: slackTsToMs(action.providerMessageId),
+      messageId: timestamp,
+      platformMessageId: timestamp,
+      providerTimestamp: slackTsToMs(timestamp),
       raw,
     };
   }
 }
 
-function normalizeSlackReactionName(value: string): string {
-  const normalized = value.trim().replace(/^:+|:+$/g, "");
-  if (!normalized) throw new Error("Slack reaction emoji is required");
-  return normalized;
+function assertSlackReactionAccepted(raw: Record<string, unknown>, operation: "add" | "remove" | undefined): void {
+  if (raw.ok !== false) return;
+  const error = typeof raw.error === "string" ? raw.error : undefined;
+  const allowed = operation === "remove" ? "no_reaction" : "already_reacted";
+  if (error === allowed) return;
+  throw new Error(`Slack reaction was not accepted: ${error ?? "unknown"}`);
 }
 
 /** Stable UUID token for Slack's client_msg_id duplicate-suppression support. */
@@ -733,6 +748,18 @@ export class SlackSocketModeService {
     const workObjectEvent = this.normalizeWorkObjectEventEnvelope(envelope);
     if (workObjectEvent) {
       await this.publishInteraction("ravi.inbound.interaction", workObjectEvent);
+      return "processed";
+    }
+
+    const inboundReaction = slackInboundReactionFromEnvelope(envelope);
+    if (inboundReaction) {
+      log.info("Slack inbound reaction", inboundReaction);
+      const inboundReactionPayload: Record<string, unknown> = {
+        targetMessageId: inboundReaction.targetMessageId,
+        emoji: inboundReaction.emoji,
+        senderId: inboundReaction.senderId,
+      };
+      await this.publishInteraction("ravi.inbound.reaction", inboundReactionPayload);
       return "processed";
     }
 
@@ -1371,36 +1398,72 @@ export class SlackSocketModeService {
     }
   }
 
+  private async intakeSlackHumanSender(input: {
+    message: SlackNormalizedMessage;
+    instanceId: string;
+    instanceAliases: SlackInstanceAliasResolution;
+    intakeMode: "off" | "discovered" | "pending";
+    defaultTags?: string[] | null;
+    chatType: string;
+  }): Promise<void> {
+    if (input.intakeMode === "off") return;
+    if (input.message.senderKind === "bot") return;
+    const userId = input.message.slackUserId ?? input.message.userId;
+    if (!isSlackHumanUserId(userId)) return;
+
+    const existing = resolveScopedSlackIdentity(
+      input.instanceAliases,
+      (instanceId) => resolvePlatformIdentity({ channel: "slack", instanceId, platformUserId: userId }),
+      (identity) => (identity.ownerType && identity.ownerId ? `${identity.ownerType}:${identity.ownerId}` : null),
+    );
+    if (existing.reason === SLACK_AMBIGUOUS_INSTANCE_ALIAS_REASON) return;
+    if (existing.identity?.ownerType === "contact" || existing.identity?.ownerType === "agent") {
+      return;
+    }
+
+    const profile = await this.slackUserProfile(userId);
+    ensureContactFromInbound({
+      channel: "slack",
+      instanceId: input.instanceId,
+      platformSenderId: userId,
+      contactIdentity: userId,
+      displayName: profile?.displayName ?? null,
+      avatarUrl: profile?.avatarUrl ?? null,
+      profileData: {
+        source: "slack.event",
+        accountId: this.options.accountId,
+        teamId: input.message.teamId,
+        channelId: input.message.channelId,
+      },
+      chatId: input.message.channelId,
+      chatType: input.chatType,
+      sourceEventId: input.message.eventId ?? input.message.envelopeId ?? null,
+      providerMessageId: input.message.ts,
+      intakeMode: input.intakeMode,
+      defaultTags: input.defaultTags,
+      source: "slack.event",
+    });
+  }
+
   private async holdSlackSenderForReview(input: {
     message: SlackNormalizedMessage;
     accountId: string;
     instanceId: string;
+    instanceAliases: SlackInstanceAliasResolution;
     intakeMode: "off" | "discovered" | "pending";
+    defaultTags?: string[] | null;
     isGroup: boolean;
   }): Promise<void> {
-    const profile = input.isGroup ? null : await this.slackUserProfile(input.message.userId);
-    if (!input.isGroup) {
-      ensureContactFromInbound({
-        channel: "slack",
-        instanceId: input.instanceId,
-        platformSenderId: input.message.userId,
-        contactIdentity: input.message.userId,
-        displayName: profile?.displayName ?? null,
-        avatarUrl: profile?.avatarUrl ?? null,
-        profileData: {
-          source: "slack.event",
-          accountId: input.accountId,
-          teamId: input.message.teamId,
-          channelId: input.message.channelId,
-        },
-        chatId: input.message.channelId,
-        chatType: "dm",
-        sourceEventId: input.message.eventId ?? input.message.envelopeId ?? null,
-        providerMessageId: input.message.ts,
-        intakeMode: input.intakeMode,
-        source: "slack.event",
-      });
-    }
+    await this.intakeSlackHumanSender({
+      message: input.message,
+      instanceId: input.instanceId,
+      instanceAliases: input.instanceAliases,
+      intakeMode: input.intakeMode,
+      defaultTags: input.defaultTags,
+      chatType: input.isGroup ? "group" : "dm",
+    });
+    const profileUserId = input.message.slackUserId ?? input.message.userId;
+    const profile = input.isGroup ? null : await this.slackUserProfile(profileUserId);
     saveAccountPending(input.accountId, input.isGroup ? input.message.channelId : input.message.userId, {
       name: profile?.displayName ?? null,
       chatId: input.message.channelId,
@@ -1501,7 +1564,9 @@ export class SlackSocketModeService {
         message,
         accountId: routeAccountId,
         instanceId,
+        instanceAliases,
         intakeMode: instanceConfig?.contactIntakeMode ?? "off",
+        defaultTags: instanceConfig?.defaultContactTags ?? null,
         isGroup,
       });
       log.info("Slack inbound held for owner review", {
@@ -1566,6 +1631,14 @@ export class SlackSocketModeService {
         }
       }
     }
+    await this.intakeSlackHumanSender({
+      message,
+      instanceId,
+      instanceAliases,
+      intakeMode: instanceConfig?.contactIntakeMode ?? "off",
+      defaultTags: instanceConfig?.defaultContactTags ?? null,
+      chatType: routeThreadId ? "thread" : peerKind,
+    });
     const actorIdentity = resolveSlackActorIdentity({
       chatId: canonicalChat.id,
       instanceAliases,

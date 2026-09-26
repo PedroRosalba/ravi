@@ -58,12 +58,14 @@ const contextCapabilityReturnSchema = z
   })
   .strict();
 
-const contextSourceReturnSchema = z
+export const contextSourceReturnSchema = z
   .object({
     channel: z.string(),
     accountId: z.string(),
     chatId: z.string(),
     threadId: z.string().optional(),
+    instanceId: z.string().optional(),
+    canonicalChatId: z.string().optional(),
   })
   .strict();
 
@@ -259,6 +261,25 @@ export const contextCodexBashHookReturnSchema = z
   })
   .strict();
 
+/**
+ * Mirrors `RuntimeSkillVisibilityEvidence` in `src/runtime/types.ts`.
+ * The runtime persists these diagnostic fields on every evidence row; a
+ * narrower `.strict()` object here is what produced RETURN_SHAPE_ERROR on
+ * `context visibility --json`.
+ */
+export const contextSkillVisibilityEvidenceReturnSchema = z
+  .object({
+    kind: z.string(),
+    observedAt: z.number().optional(),
+    path: z.string().optional(),
+    eventType: z.string().optional(),
+    eventId: z.string().optional(),
+    turnId: z.string().optional(),
+    itemId: z.string().optional(),
+    detail: z.string().optional(),
+  })
+  .strict();
+
 export const contextVisibilityReturnSchema = z
   .object({
     sessionKey: z.string(),
@@ -287,17 +308,7 @@ export const contextVisibilityReturnSchema = z
           state: z.string(),
           confidence: z.string(),
           source: z.string().optional(),
-          evidence: z
-            .array(
-              z
-                .object({
-                  kind: z.string(),
-                  itemId: z.string().optional(),
-                  detail: z.string().optional(),
-                })
-                .strict(),
-            )
-            .optional(),
+          evidence: z.array(contextSkillVisibilityEvidenceReturnSchema).optional(),
           loadedAt: z.number().nullable().optional(),
           lastSeenAt: z.number(),
         })
@@ -1956,7 +1967,7 @@ const runtimeCapabilityReturnSchema = z.object({
 
 const agentRuntimePermissionsConfigReturnSchema = z
   .object({
-    profile: z.enum(["bootstrap", "full-access"]).optional(),
+    profile: z.enum(["bootstrap", "chat-only", "full-access"]).optional(),
     capabilities: z.array(z.union([z.string(), runtimeCapabilityReturnSchema])).optional(),
   })
   .nullable();
@@ -2080,6 +2091,35 @@ export const agentDeleteReturnSchema = z
   })
   .passthrough();
 
+const agentSessionOverrideReasonSchema = z.enum([
+  "provider_override",
+  "model_override",
+  "effort_override",
+  "thinking_override",
+]);
+
+const agentSessionOverrideReportSchema = z
+  .object({
+    sessionName: z.string(),
+    reasons: z.array(agentSessionOverrideReasonSchema),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    effort: z.enum(RUNTIME_EFFORT_LEVELS).optional(),
+    thinking: z.enum(["off", "normal", "verbose"]).optional(),
+  })
+  .strict();
+
+export const agentSessionRematerializeReportSchema = z
+  .object({
+    sessionName: z.string(),
+    sessionKey: z.string(),
+    reasons: z.array(z.literal("stale_runtime_provider")),
+    previousRuntimeProvider: z.string().nullable(),
+    runtimeProvider: z.string().nullable(),
+    clearedProviderSession: z.boolean(),
+  })
+  .strict();
+
 export const agentSetReturnSchema = z
   .object({
     action: z.literal("set"),
@@ -2088,16 +2128,9 @@ export const agentSetReturnSchema = z
     key: z.string(),
     value: z.unknown(),
     agent: agentRecordReturnSchema.optional(),
-    sessionOverrides: z.array(
-      z
-        .object({
-          sessionName: z.string(),
-          model: z.string().optional(),
-          effort: z.enum(RUNTIME_EFFORT_LEVELS).optional(),
-          thinking: z.enum(["off", "normal", "verbose"]).optional(),
-        })
-        .strict(),
-    ),
+    sessionOverrides: z.array(agentSessionOverrideReportSchema),
+    rematerializedSessions: z.array(agentSessionRematerializeReportSchema),
+    forcedClearedOverrides: z.array(agentSessionOverrideReportSchema),
   })
   .passthrough();
 
@@ -2111,6 +2144,14 @@ export const agentPermissionsReturnSchema = z.object({
   after: agentRuntimePermissionsConfigReturnSchema.optional(),
   defaults: jsonObjectSchema.nullable().optional(),
   command: z.string().optional(),
+  inspectCommand: z.string().optional(),
+  recurringAccessCommand: z.string().optional(),
+  leastPrivilegeExample: z.string().optional(),
+  chatOnlyCommand: z.string().optional(),
+  resetToBootstrapCommand: z.string().optional(),
+  breakGlassCommand: z.string().optional(),
+  authorityLayer: z.string().optional(),
+  effectiveOn: z.string().optional(),
   agent: agentJsonSummaryReturnSchema.optional(),
 });
 

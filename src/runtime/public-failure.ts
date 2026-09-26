@@ -4,6 +4,13 @@ const INTERNAL_RUNTIME_FAILURE_MESSAGE =
 
 const INTERNAL_ERROR_PATTERNS = [
   /\b(?:ENOENT|EACCES|EPERM|ENOTDIR|EISDIR|EMFILE|ENFILE|scandir|ERR_[A-Z0-9_]+)\b/i,
+  // Local SQLite storage failures (bun:sqlite `SQLiteError`, SQLITE_* codes,
+  // "out of memory", lock/disk/corruption messages) are operator problems and
+  // are never actionable in chat.
+  /\bSQLiteError\b/i,
+  /\bSQLITE_[A-Z][A-Z0-9_]*\b/,
+  /\bout of memory\b/i,
+  /\b(?:database (?:is locked|table is locked|or disk is full|disk image is malformed)|disk I\/O error|unable to open database file|no such (?:table|column)|(?:UNIQUE|NOT NULL|CHECK|FOREIGN KEY) constraint failed)\b/i,
   /\b(?:Type|Reference|Range|Syntax|Aggregate|URI|Eval|Internal|Invariant|Assertion)Error(?:\s+\[[^\]]+\])?:/i,
   /^(?:Cannot (?:read|set) properties of (?:undefined|null)|Cannot access [A-Za-z_$][\w$]* before initialization|(?:[A-Za-z_$][\w$]*|\([^)]+\)) is not (?:defined|a function)|Maximum call stack size exceeded|Cannot find (?:module|package)|Unexpected token|Invalid or unexpected token|require\(\) of ES Module|Cannot use import statement)\b/i,
   /\bfile:\/\/[^\s'"`]+/i,
@@ -49,6 +56,46 @@ export const PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE =
 
 export function formatUserFacingTurnFailure(error: unknown): string {
   return `Error: ${publicRuntimeFailureDetail(error)}`;
+}
+
+export function isOpenToolsTurnFailure(error: unknown): boolean {
+  return publicRuntimeFailureDetail(error) === PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE;
+}
+
+/**
+ * Recoverable open-tools / interrupt-class failures belong on the existing
+ * `suppressedRecoverable` path: no chat `Error:`, stash pending inbound, and
+ * restart the session. Fatal (`recoverable: false`) stays user-visible.
+ */
+export function isRecoverableOpenToolsOrInterruptFailure(input: {
+  error: unknown;
+  recoverable?: boolean;
+  interrupted?: boolean;
+  internalAbortReason?: string | null;
+}): boolean {
+  if (input.recoverable === false) {
+    return false;
+  }
+  return isOpenToolsTurnFailure(input.error) || Boolean(input.interrupted) || Boolean(input.internalAbortReason);
+}
+
+/**
+ * Classic WhatsApp/omni chat delivery policy for `turn.failed`.
+ * Recoverable open-tools / interrupt-class failures must not emit a
+ * user-facing `Error: …` line. The host folds those into
+ * `suppressedRecoverable` so this is defense in depth at the emit site.
+ */
+export function shouldEmitUserFacingTurnFailure(input: {
+  error: unknown;
+  recoverable?: boolean;
+  suppressedRecoverable?: boolean;
+  interrupted?: boolean;
+  internalAbortReason?: string | null;
+}): boolean {
+  if (input.suppressedRecoverable) {
+    return false;
+  }
+  return !isRecoverableOpenToolsOrInterruptFailure(input);
 }
 
 function runtimeFailureText(error: unknown): string | null {

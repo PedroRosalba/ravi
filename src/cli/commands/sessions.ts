@@ -6,10 +6,11 @@ import "reflect-metadata";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { Group, Command, CommandAccess, CliOnly, Arg, Option } from "../decorators.js";
-import { contractDryRun, contractFail, pickFields } from "../agent-contract.js";
+import { CONTRACT_EXIT_USAGE, ContractError, contractDryRun, contractFail, pickFields } from "../agent-contract.js";
 import { fail, getContext } from "../context.js";
 import { buildCliOffsetPagination, paginateCliItems } from "../pagination.js";
 import {
+  agentSessionRematerializeReportSchema,
   commandEnvelopeReturnSchema,
   declareCommandReturns,
   pagedItemsReturnSchema,
@@ -59,7 +60,12 @@ import {
   SessionAttachConflictError,
 } from "../../router/sessions.js";
 import { deriveSourceFromSessionKey } from "../../router/session-key.js";
-import { loadRouterConfig, expandHome } from "../../router/index.js";
+import { loadRouterConfig, expandHome, getAgent, updateAgent } from "../../router/index.js";
+import {
+  describeSessionAgentDefaultDiff,
+  rematerializeSessionToAgentRuntime,
+  syncAgentSessionsToAgentRuntime,
+} from "../../runtime/agent-session-runtime-sync.js";
 import { createRuntimeProvider, listRegisteredRuntimeProviderIds } from "../../runtime/provider-registry.js";
 import { resolveEffectiveSessionRuntime } from "../../runtime/runtime-selection.js";
 import type { ChannelContext, ResponseMessage, SessionRelayAction } from "../../runtime/message-types.js";
@@ -74,6 +80,8 @@ import {
   type ChatActionId,
   type ChatActionSurface,
 } from "../../channels/chat-actions.js";
+import { nativeChannelCredentialConfigured } from "../../channels/account-resolution.js";
+import { overlayMediaSendAvailability, resolveRuntimeMediaSendCapabilities } from "../media-send-access.js";
 import { buildChannelChatActionJob } from "../../channels/outbound-stream.js";
 import { publishChannelOutboundJobDurably } from "../../channels/outbound-publish-outbox.js";
 import {
@@ -244,7 +252,7 @@ const sessionMutationSnapshotReturnSchema = z.object({
   expiresAt: z.number().nullable(),
   runtimeOptions: sessionRuntimeOptionsReturnSchema,
 });
-const sessionSetEffortReturnSchema = z.object({
+export const sessionSetEffortReturnSchema = z.object({
   action: z.literal("set-effort"),
   changed: z.boolean(),
   sessionKey: z.string(),
@@ -256,7 +264,16 @@ const sessionSetEffortReturnSchema = z.object({
   effectiveEffortSource: sessionEffortSourceReturnSchema,
   appliesOn: z.literal("next-turn-runtime-restart"),
 });
-const sessionSetProviderReturnSchema = z.object({
+const sessionAgentDefaultDiffReturnSchema = {
+  agentDefaultDiffers: z.boolean().optional(),
+  agentDefaultProvider: z.string().nullable().optional(),
+  agentDefaultModel: z.string().nullable().optional(),
+  hint: z.string().nullable().optional(),
+  propagateCommand: z.string().nullable().optional(),
+  propagated: z.boolean().optional(),
+  rematerializedSessions: z.array(agentSessionRematerializeReportSchema).optional(),
+};
+export const sessionSetProviderReturnSchema = z.object({
   action: z.literal("set-provider"),
   changed: z.boolean(),
   sessionKey: z.string(),
@@ -267,6 +284,20 @@ const sessionSetProviderReturnSchema = z.object({
   effectiveProvider: z.string(),
   providerSource: z.string(),
   appliesOn: z.literal("next-turn-runtime-restart"),
+  ...sessionAgentDefaultDiffReturnSchema,
+});
+export const sessionSetModelReturnSchema = z.object({
+  action: z.literal("set-model"),
+  changed: z.boolean(),
+  sessionKey: z.string(),
+  sessionName: z.string().nullable(),
+  before: sessionMutationSnapshotReturnSchema,
+  after: sessionMutationSnapshotReturnSchema.nullable(),
+  modelOverride: z.string().nullable(),
+  effectiveModel: z.string(),
+  event: z.object({}).passthrough().optional(),
+  notification: z.object({}).passthrough().optional(),
+  ...sessionAgentDefaultDiffReturnSchema,
 });
 const sessionCommandTargetReturnSchema = z
   .object({
@@ -870,17 +901,7 @@ function buildSessionActionSurfaces(session: SessionEntry, chatIds: string[]): C
 }
 
 function slackCredentialConfigured(config: ReturnType<typeof loadRouterConfig>, instanceId: string): boolean {
-  const aliases = new Set<string>([instanceId.trim().toLowerCase()]);
-  const mappedAccount = config.instanceToAccount[instanceId];
-  if (mappedAccount) aliases.add(mappedAccount.trim().toLowerCase());
-  const configuredInstanceId = config.instances[instanceId]?.instanceId;
-  if (configuredInstanceId) aliases.add(configuredInstanceId.trim().toLowerCase());
-
-  return Object.values(config.channels ?? {}).some((channel) => {
-    if (channel.enabled === false || channel.provider.toLowerCase() !== "slack") return false;
-    if (!channel.credentialConnection?.trim()) return false;
-    return [channel.name, channel.credentialConnection].some((value) => aliases.has(value.trim().toLowerCase()));
-  });
+  return nativeChannelCredentialConfigured(config, instanceId, "slack");
 }
 
 function aggregateChatActionAvailability(
@@ -1007,9 +1028,15 @@ function buildSessionActionsPayload(session: SessionEntry, options: { limit?: nu
     order: "desc",
   });
   const surfaces = buildSessionActionSurfaces(session, chatIds);
+  const runtimeMediaSendCapabilities = resolveRuntimeMediaSendCapabilities(getContext()?.context);
   const actionAvailability = new Map(
     CHAT_ACTION_DESCRIPTORS.map((descriptor) => {
-      const availabilityBySurface = surfaces.map((surface) => resolveChatActionAvailability(surface, descriptor.id));
+      const availabilityBySurface = surfaces.map((surface) => {
+        const availability = resolveChatActionAvailability(surface, descriptor.id);
+        return descriptor.id === "media.send"
+          ? overlayMediaSendAvailability(availability, runtimeMediaSendCapabilities)
+          : availability;
+      });
       return [
         descriptor.id,
         {
@@ -1046,14 +1073,15 @@ function buildSessionActionsPayload(session: SessionEntry, options: { limit?: nu
       ...CHAT_ACTION_DESCRIPTORS.map((descriptor) => {
         const resolved = actionAvailability.get(descriptor.id)!;
         const aggregate = resolved.aggregate;
-        const threadToolIsRunnable =
-          (descriptor.id !== "thread.create" && descriptor.id !== "thread.close") || aggregate.status === "available";
+        const exposeRunnableCommand =
+          aggregate.status === "available" ||
+          (descriptor.id !== "thread.create" && descriptor.id !== "thread.close" && descriptor.id !== "media.send");
         return {
           id: descriptor.id,
           status: aggregate.status,
           description: descriptor.description,
           targetKind: descriptor.targetKind,
-          ...(threadToolIsRunnable ? sessionActionToolFields(descriptor.id, toolHints) : {}),
+          ...(exposeRunnableCommand ? sessionActionToolFields(descriptor.id, toolHints) : {}),
           ...(aggregate.executionMode ? { executionMode: aggregate.executionMode } : {}),
           ...(aggregate.requiredScopes ? { requiredScopes: aggregate.requiredScopes } : {}),
           ...(aggregate.scopeVerification ? { scopeVerification: aggregate.scopeVerification } : {}),
@@ -1194,6 +1222,22 @@ function buildSessionMutationJson(
     after: after ? buildSessionJson(after) : null,
     ...extra,
   };
+}
+
+function readPersistedSessionMutation(
+  before: SessionEntry,
+  command: string,
+  persisted: (session: SessionEntry) => boolean,
+): SessionEntry {
+  const label = before.name ?? before.sessionKey;
+  const after = resolveSession(before.sessionKey);
+  if (!after || !persisted(after)) {
+    fail(
+      `sessions ${command} did not persist for ${label}.`,
+      `Inspect the session with 'ravi sessions info ${label}' before retrying`,
+    );
+  }
+  return after;
 }
 
 function toIsoTimestamp(value: string | number | null | undefined): string {
@@ -1852,24 +1896,57 @@ function formatWaitTimeoutError(sessionName: string): string {
   return `Timed out waiting for response from ${sessionName} after ${seconds}s`;
 }
 
+function failSessionUsage(op: string, message: string, suggestedAction: string, asJson?: boolean): never {
+  contractFail(op, "USAGE_ERROR", message, {
+    asJson,
+    exitCode: CONTRACT_EXIT_USAGE,
+    details: { suggestedAction },
+  });
+}
+
+function failSessionRelay(op: string, error: unknown, asJson?: boolean): never {
+  if (error instanceof ContractError) throw error;
+  contractFail(op, "SESSION_RELAY_FAILED", publicRuntimeFailureDetail(error), {
+    asJson,
+    details: {
+      suggestedAction: "Confirm the daemon and NATS runtime are available, then retry",
+    },
+  });
+}
+
 function resolveDeliveryBarrierOptionWithDefault(
   value: string | undefined,
   fallback: DeliveryBarrier,
-  options: { steer?: boolean; immediate?: boolean } = {},
+  options: { steer?: boolean; immediate?: boolean; op: string; asJson?: boolean },
 ): { barrier: DeliveryBarrier; source: DeliveryBarrierSource } {
   const barrier = normalizeDeliveryBarrier(value);
   if (options.immediate && options.steer) {
-    throw new Error("--immediate cannot be combined with --steer.");
+    failSessionUsage(
+      options.op,
+      "--immediate cannot be combined with --steer.",
+      "Use either --immediate or --steer, not both",
+      options.asJson,
+    );
   }
   if (options.immediate) {
     if (value && barrier !== "immediate_interrupt") {
-      throw new Error("--immediate cannot be combined with a non-immediate --barrier value.");
+      failSessionUsage(
+        options.op,
+        "--immediate cannot be combined with a non-immediate --barrier value.",
+        "Use --immediate without --barrier, or pass --barrier immediate / p0",
+        options.asJson,
+      );
     }
     return { barrier: "immediate_interrupt", source: "explicit" };
   }
   if (options.steer) {
     if (value && barrier !== "after_tool") {
-      throw new Error("--steer cannot be combined with a non-steer --barrier value.");
+      failSessionUsage(
+        options.op,
+        "--steer cannot be combined with a non-steer --barrier value.",
+        "Use --steer without --barrier, or pass --barrier steer / p1",
+        options.asJson,
+      );
     }
     return { barrier: "after_tool", source: "explicit" };
   }
@@ -1877,7 +1954,12 @@ function resolveDeliveryBarrierOptionWithDefault(
     return { barrier: fallback, source: "default" };
   }
   if (!barrier) {
-    throw new Error(`Unknown delivery barrier: ${value}. Use p0, p1, p2, p3 or the named aliases.`);
+    failSessionUsage(
+      options.op,
+      `Unknown delivery barrier: ${value}. Use p0, p1, p2, p3 or the named aliases.`,
+      "Pass a valid --barrier value: followup, steer, p0, p1, p2, p3",
+      options.asJson,
+    );
   }
   return { barrier, source: "explicit" };
 }
@@ -3349,6 +3431,11 @@ export class SessionCommands {
     provider: string,
     @Option({ flags: "--json", description: "Print raw JSON result" })
     asJson?: boolean,
+    @Option({
+      flags: "--propagate",
+      description: "Also set the agent default provider and rematerialize sibling sessions without overrides",
+    })
+    propagate?: boolean,
   ) {
     const s = resolveSession(nameOrKey);
     if (!s) {
@@ -3381,10 +3468,42 @@ export class SessionCommands {
 
     const label = s.name ?? s.sessionKey;
     const beforeProviderOverride = s.runtimeProviderOverride ?? null;
+    const agent = getAgent(s.agentId) ?? loadRouterConfig().agents[s.agentId] ?? null;
     updateSessionRuntimeProviderOverride(s.sessionKey, providerOverride);
     if (providerOverride && s.providerSessionId && s.runtimeProvider && s.runtimeProvider !== providerOverride) {
       clearProviderSession(s.sessionKey);
     }
+
+    let rematerializedSessions: ReturnType<typeof syncAgentSessionsToAgentRuntime>["rematerializedSessions"] = [];
+    if (!providerOverride && agent) {
+      const clearedSession =
+        resolveSession(s.sessionKey) ??
+        ({
+          ...s,
+          runtimeProviderOverride: undefined,
+        } as SessionEntry);
+      const rematerialized = rematerializeSessionToAgentRuntime(clearedSession, agent);
+      if (rematerialized) rematerializedSessions = [rematerialized];
+    }
+
+    let propagated = false;
+    if (propagate === true && providerOverride && agent) {
+      updateAgent(s.agentId, { provider: providerOverride });
+      const siblingSync = syncAgentSessionsToAgentRuntime({
+        agent: { ...agent, id: s.agentId, provider: providerOverride },
+        rematerialize: true,
+      });
+      rematerializedSessions = siblingSync.rematerializedSessions;
+      propagated = true;
+    }
+
+    const agentDiff = describeSessionAgentDefaultDiff({
+      agentId: s.agentId,
+      sessionName: label,
+      axis: "provider",
+      sessionValue: providerOverride,
+      agent: propagated && providerOverride ? { ...agent, id: s.agentId, provider: providerOverride } : agent,
+    });
 
     if (!asJson) {
       if (providerOverride) {
@@ -3393,25 +3512,40 @@ export class SessionCommands {
         console.log(`Cleared runtime provider override for: ${label}`);
       }
       console.log("Note: takes effect on the next turn; existing provider session state is cleared when incompatible.");
+      if (rematerializedSessions.length > 0 && !providerOverride) {
+        console.log(
+          `Rematerialized last-used runtime_provider to follow agent default (${rematerializedSessions[0]?.runtimeProvider}).`,
+        );
+      }
+      if (propagated) {
+        console.log(
+          `Propagated provider to agent '${s.agentId}'. Rematerialized ${rematerializedSessions.length} sibling session(s) without overrides.`,
+        );
+      } else if (agentDiff.agentDefaultDiffers && agentDiff.hint) {
+        console.log(`Note: ${agentDiff.hint}`);
+        if (agentDiff.propagateCommand) {
+          console.log(`Propagate upward: ${agentDiff.propagateCommand}`);
+        }
+      }
     }
 
-    const after =
-      resolveSession(s.sessionKey) ??
-      ({
-        ...s,
-        ...(providerOverride === null
-          ? { runtimeProviderOverride: undefined }
-          : { runtimeProviderOverride: providerOverride }),
-      } as SessionEntry);
-    if (asJson) {
+    if (shouldReturnStructuredResult(asJson)) {
+      const after = readPersistedSessionMutation(
+        s,
+        "set-provider",
+        (session) => (session.runtimeProviderOverride ?? null) === providerOverride,
+      );
+      const effective = resolveEffectiveSessionSelection(after, after.modelOverride ?? null);
       const payload = buildSessionMutationJson("set-provider", s, after, beforeProviderOverride !== providerOverride, {
         runtimeProviderOverride: providerOverride,
-        effectiveProvider: resolveEffectiveSessionSelection(after, after.modelOverride ?? null).effectiveProvider,
-        providerSource: resolveEffectiveSessionSelection(after, after.modelOverride ?? null).providerSource,
+        effectiveProvider: effective.effectiveProvider,
+        providerSource: effective.providerSource,
         appliesOn: "next-turn-runtime-restart",
+        ...agentDiff,
+        propagated,
+        rematerializedSessions,
       });
-      printJson(payload);
-      return payload;
+      return returnStructuredResult(payload, asJson);
     }
   }
 
@@ -3430,6 +3564,11 @@ export class SessionCommands {
     model: string,
     @Option({ flags: "--json", description: "Print raw JSON result" })
     asJson?: boolean,
+    @Option({
+      flags: "--propagate",
+      description: "Also set the agent default model and rematerialize sibling sessions without overrides",
+    })
+    propagate?: boolean,
   ) {
     const s = resolveSession(nameOrKey);
     if (!s) {
@@ -3447,6 +3586,7 @@ export class SessionCommands {
     const label = s.name ?? s.sessionKey;
     const modelOverride = model === "clear" ? null : model;
     const beforeModelOverride = s.modelOverride ?? null;
+    const agent = getAgent(s.agentId) ?? loadRouterConfig().agents[s.agentId] ?? null;
     if (model === "clear") {
       updateSessionModelOverride(s.sessionKey, null);
       if (!asJson) console.log(`Cleared model override for: ${label}`);
@@ -3454,6 +3594,26 @@ export class SessionCommands {
       updateSessionModelOverride(s.sessionKey, model);
       if (!asJson) console.log(`Set model to "${model}" for: ${label}`);
     }
+
+    let rematerializedSessions: ReturnType<typeof syncAgentSessionsToAgentRuntime>["rematerializedSessions"] = [];
+    let propagated = false;
+    if (propagate === true && modelOverride && agent) {
+      updateAgent(s.agentId, { model: modelOverride, modelPresetId: null });
+      const siblingSync = syncAgentSessionsToAgentRuntime({
+        agent: { ...agent, id: s.agentId, model: modelOverride, modelPresetId: undefined },
+        rematerialize: true,
+      });
+      rematerializedSessions = siblingSync.rematerializedSessions;
+      propagated = true;
+    }
+
+    const agentDiff = describeSessionAgentDefaultDiff({
+      agentId: s.agentId,
+      sessionName: label,
+      axis: "model",
+      sessionValue: modelOverride,
+      agent: propagated && modelOverride ? { ...agent, id: s.agentId, model: modelOverride } : agent,
+    });
 
     const event: SessionModelChangedEvent = {
       sessionKey: s.sessionKey,
@@ -3477,13 +3637,25 @@ export class SessionCommands {
       if (!asJson) console.log("Saved override. Live daemon notification failed; next cold session will use it.");
     }
 
-    const after =
-      resolveSession(s.sessionKey) ??
-      ({
-        ...s,
-        ...(modelOverride === null ? { modelOverride: undefined } : { modelOverride }),
-      } as SessionEntry);
-    if (asJson) {
+    if (!asJson) {
+      if (propagated) {
+        console.log(
+          `Propagated model to agent '${s.agentId}'. Rematerialized ${rematerializedSessions.length} sibling session(s) without overrides.`,
+        );
+      } else if (agentDiff.agentDefaultDiffers && agentDiff.hint) {
+        console.log(`Note: ${agentDiff.hint}`);
+        if (agentDiff.propagateCommand) {
+          console.log(`Propagate upward: ${agentDiff.propagateCommand}`);
+        }
+      }
+    }
+
+    if (shouldReturnStructuredResult(asJson)) {
+      const after = readPersistedSessionMutation(
+        s,
+        "set-model",
+        (session) => (session.modelOverride ?? null) === modelOverride,
+      );
       const payload = buildSessionMutationJson("set-model", s, after, beforeModelOverride !== modelOverride, {
         modelOverride,
         effectiveModel: event.effectiveModel,
@@ -3492,9 +3664,11 @@ export class SessionCommands {
           topic: SESSION_MODEL_CHANGED_TOPIC,
           ...notification,
         },
+        ...agentDiff,
+        propagated,
+        rematerializedSessions,
       });
-      printJson(payload);
-      return payload;
+      return returnStructuredResult(payload, asJson);
     }
   }
 
@@ -3545,21 +3719,19 @@ export class SessionCommands {
     }
 
     const effective = resolveEffectiveSessionEffort(s, effortOverride);
-    const after =
-      resolveSession(s.sessionKey) ??
-      ({
-        ...s,
-        ...(effortOverride === null ? { effortOverride: undefined } : { effortOverride }),
-      } as SessionEntry);
-    if (asJson) {
+    if (shouldReturnStructuredResult(asJson)) {
+      const after = readPersistedSessionMutation(
+        s,
+        "set-effort",
+        (session) => (session.effortOverride ?? null) === effortOverride,
+      );
       const payload = buildSessionMutationJson("set-effort", s, after, beforeEffortOverride !== effortOverride, {
         effortOverride,
         effectiveEffort: effective.effort,
         effectiveEffortSource: effective.source,
         appliesOn: "next-turn-runtime-restart",
       });
-      printJson(payload);
-      return payload;
+      return returnStructuredResult(payload, asJson);
     }
 
     console.log("Note: takes effect on the next turn; active runtime restarts when effort changes.");
@@ -4294,6 +4466,8 @@ export class SessionCommands {
     const delivery = resolveDeliveryBarrierOptionWithDefault(barrier, "after_response", {
       steer: Boolean(steer),
       immediate: Boolean(immediate),
+      op: "sessions send",
+      asJson,
     });
     const deliveryBarrier = delivery.barrier;
 
@@ -4408,6 +4582,7 @@ export class SessionCommands {
               silent: true,
               promptPayload,
               cliDestination,
+              asJson,
               onResponse: (chunk) => {
                 responseText += chunk;
               },
@@ -4458,6 +4633,7 @@ export class SessionCommands {
           {
             promptPayload,
             cliDestination,
+            asJson,
           },
         );
         if (preparedThread) {
@@ -4485,6 +4661,7 @@ export class SessionCommands {
           delivery.source,
           promptPayload,
           cliDestination,
+          asJson,
         );
         if (preparedThread) {
           preparedThread = {
@@ -4565,6 +4742,8 @@ export class SessionCommands {
     const delivery = resolveDeliveryBarrierOptionWithDefault(barrier, "after_response", {
       steer: Boolean(steer),
       immediate: Boolean(immediate),
+      op: "sessions ask",
+      asJson,
     });
     const deliveryBarrier = delivery.barrier;
     const { source, context } = this.resolveSource(session, channel, to);
@@ -4578,6 +4757,9 @@ export class SessionCommands {
       to,
       deliveryBarrier,
       delivery.source,
+      undefined,
+      false,
+      asJson,
     );
     if (asJson) {
       const payload = {
@@ -4647,6 +4829,8 @@ export class SessionCommands {
     const delivery = resolveDeliveryBarrierOptionWithDefault(barrier, "after_response", {
       steer: Boolean(steer),
       immediate: Boolean(immediate),
+      op: "sessions answer",
+      asJson,
     });
     const deliveryBarrier = delivery.barrier;
     const { source, context } = this.resolveSource(session, channel, to);
@@ -4660,6 +4844,9 @@ export class SessionCommands {
       to,
       deliveryBarrier,
       delivery.source,
+      undefined,
+      false,
+      asJson,
     );
     if (asJson) {
       const payload = {
@@ -4721,6 +4908,8 @@ export class SessionCommands {
     const delivery = resolveDeliveryBarrierOptionWithDefault(barrier, "after_task", {
       steer: Boolean(steer),
       immediate: Boolean(immediate),
+      op: "sessions execute",
+      asJson,
     });
     const deliveryBarrier = delivery.barrier;
     const { source, context } = this.resolveSource(session, channel, to);
@@ -4734,6 +4923,9 @@ export class SessionCommands {
       to,
       deliveryBarrier,
       delivery.source,
+      undefined,
+      false,
+      asJson,
     );
     if (asJson) {
       const payload = {
@@ -4794,6 +4986,8 @@ export class SessionCommands {
     const delivery = resolveDeliveryBarrierOptionWithDefault(barrier, "after_response", {
       steer: Boolean(steer),
       immediate: Boolean(immediate),
+      op: "sessions inform",
+      asJson,
     });
     const deliveryBarrier = delivery.barrier;
     const { source, context } = this.resolveSource(session, channel, to);
@@ -4807,6 +5001,9 @@ export class SessionCommands {
       to,
       deliveryBarrier,
       delivery.source,
+      undefined,
+      false,
+      asJson,
     );
     if (asJson) {
       const payload = {
@@ -5529,23 +5726,28 @@ export class SessionCommands {
     deliveryBarrierSource: DeliveryBarrierSource = "default",
     promptPayload?: Record<string, unknown>,
     cliDestination = false,
+    asJson?: boolean,
   ): Promise<void> {
     const { source, context } = this.resolveSource(session, channelOverride, toOverride);
 
     // Resolve caller's source for approval delegation (cascading approvals)
     const _approvalSource = this.resolveCallerApprovalSource();
 
-    await publishSessionPrompt(sessionName, {
-      prompt,
-      source,
-      context,
-      _approvalSource,
-      deliveryBarrier,
-      deliveryBarrierSource,
-      ...(promptPayload ?? {}),
-      ...(cliDestination ? { _cliDestination: true } : {}),
-      _turnOrigin: buildSessionRelayTurnOrigin(action, getContext()),
-    } as Record<string, unknown>);
+    try {
+      await publishSessionPrompt(sessionName, {
+        prompt,
+        source,
+        context,
+        _approvalSource,
+        deliveryBarrier,
+        deliveryBarrierSource,
+        ...(promptPayload ?? {}),
+        ...(cliDestination ? { _cliDestination: true } : {}),
+        _turnOrigin: buildSessionRelayTurnOrigin(action, getContext()),
+      } as Record<string, unknown>);
+    } catch (error) {
+      failSessionRelay(`sessions ${action}`, error, asJson);
+    }
   }
 
   /**
@@ -5564,6 +5766,7 @@ export class SessionCommands {
       onResponse?: (chunk: string) => void;
       promptPayload?: Record<string, unknown>;
       cliDestination?: boolean;
+      asJson?: boolean;
     } = {},
   ): Promise<number> {
     let responseLength = 0;
@@ -5673,17 +5876,21 @@ export class SessionCommands {
 
     const { source, context } = this.resolveSource(session, channelOverride, toOverride);
     const _approvalSource = this.resolveCallerApprovalSource();
-    await publishSessionPrompt(sessionName, {
-      prompt,
-      source,
-      context,
-      _approvalSource,
-      deliveryBarrier,
-      deliveryBarrierSource,
-      ...(options.promptPayload ?? {}),
-      ...(options.cliDestination ? { _cliDestination: true } : {}),
-      _turnOrigin: buildSessionRelayTurnOrigin("send", getContext()),
-    } as Record<string, unknown>);
+    try {
+      await publishSessionPrompt(sessionName, {
+        prompt,
+        source,
+        context,
+        _approvalSource,
+        deliveryBarrier,
+        deliveryBarrierSource,
+        ...(options.promptPayload ?? {}),
+        ...(options.cliDestination ? { _cliDestination: true } : {}),
+        _turnOrigin: buildSessionRelayTurnOrigin("send", getContext()),
+      } as Record<string, unknown>);
+    } catch (error) {
+      failSessionRelay("sessions send", error, options.asJson);
+    }
 
     const completionState = await completion;
     cleanup();
@@ -5691,10 +5898,20 @@ export class SessionCommands {
     await Promise.race([streaming, new Promise((r) => setTimeout(r, 100))]);
 
     if (completionState.kind === "failed" || completionState.kind === "interrupted") {
-      throw new Error(publicRuntimeFailureDetail(completionState.error));
+      contractFail("sessions send", "SESSION_RUNTIME_FAILED", publicRuntimeFailureDetail(completionState.error), {
+        asJson: options.asJson,
+        details: {
+          suggestedAction: "Inspect the target session runtime and retry",
+        },
+      });
     }
     if (completionState.kind === "timeout") {
-      throw new Error(formatWaitTimeoutError(sessionName));
+      contractFail("sessions send", "SESSION_WAIT_TIMEOUT", formatWaitTimeoutError(sessionName), {
+        asJson: options.asJson,
+        details: {
+          suggestedAction: "Retry when the target session is running, or omit --wait",
+        },
+      });
     }
 
     if (options.cliDestination) {
@@ -6650,7 +6867,7 @@ declareCommandReturns(SessionCommands, {
   send: sessionSendReturnSchema,
   setDisplay: commandEnvelopeReturnSchema,
   setProvider: sessionSetProviderReturnSchema,
-  setModel: commandEnvelopeReturnSchema,
+  setModel: sessionSetModelReturnSchema,
   setEffort: sessionSetEffortReturnSchema,
   setThinking: commandEnvelopeReturnSchema,
   setTtl: commandEnvelopeReturnSchema,

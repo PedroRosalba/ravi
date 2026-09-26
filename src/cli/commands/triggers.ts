@@ -14,7 +14,13 @@ import {
   triggerTopicsReturnSchema,
 } from "./operational-return-schemas.js";
 import { nats } from "../../nats.js";
-import { getScopeContext, isScopeEnforced, canAccessResource } from "../../permissions/scope.js";
+import {
+  getScopeContext,
+  isScopeEnforced,
+  canAccessResource,
+  recordResourceAccessDenial,
+  type ScopeContext,
+} from "../../permissions/scope.js";
 import { getAgent } from "../../router/config.js";
 import { getAccountForAgent, getDefaultAgentId } from "../../router/router-db.js";
 import { parseDurationMs, formatDurationMs } from "../../cron/schedule.js";
@@ -35,6 +41,7 @@ import {
 } from "../../triggers/topic-catalog.js";
 import { getTriggerTopicWarnings } from "../../triggers/topic-policy.js";
 import { validateFilter } from "../../triggers/filter.js";
+import { resolveTriggerActivation } from "../../triggers/activation.js";
 import { filterItemsByCanonicalTag } from "../../tags/helpers.js";
 
 function printJson(payload: unknown): void {
@@ -49,6 +56,18 @@ function printJson(payload: unknown): void {
 // ============================================================
 
 /**
+ * A trigger without an explicit agent fires as the default agent, so that
+ * agent is its effective owner for visibility and mutation checks.
+ */
+function triggerOwnerId(trigger: Pick<Trigger, "agentId">): string {
+  return trigger.agentId ?? getDefaultAgentId();
+}
+
+function canReadTrigger(scopeCtx: ScopeContext, trigger: Pick<Trigger, "agentId">): boolean {
+  return canAccessResource(scopeCtx, triggerOwnerId(trigger), "read");
+}
+
+/**
  * Trigger ids are public through `triggers list`, so TRIGGER_NOT_FOUND enriches
  * the envelope with real similar ids/names. Candidates keep the same REBAC
  * visibility filter as `triggers list`, so scope isolation stays intact.
@@ -56,7 +75,7 @@ function printJson(payload: unknown): void {
 function failTriggerNotFound(op: string, id: string, asJson?: boolean): never {
   const scopeCtx = getScopeContext();
   const candidates = dbListTriggers()
-    .filter((trigger) => canAccessResource(scopeCtx, trigger.agentId))
+    .filter((trigger) => canReadTrigger(scopeCtx, trigger))
     .flatMap((trigger) => [trigger.id, trigger.name]);
   contractFail(op, "TRIGGER_NOT_FOUND", `Trigger not found: ${id}`, {
     asJson,
@@ -67,7 +86,37 @@ function failTriggerNotFound(op: string, id: string, asJson?: boolean): never {
   });
 }
 
+/**
+ * Mutating an existing trigger the caller may not modify fails with an explicit
+ * PERMISSION_DENIED (exit 1) instead of masquerading as TRIGGER_NOT_FOUND. The
+ * envelope only echoes the id the caller supplied plus the missing grant.
+ */
+function assertTriggerMutable(op: string, id: string, trigger: Trigger, asJson?: boolean): void {
+  const scopeCtx = getScopeContext();
+  const ownerAgentId = triggerOwnerId(trigger);
+  if (canAccessResource(scopeCtx, ownerAgentId, "mutate")) return;
+
+  const denial = recordResourceAccessDenial({
+    ctx: scopeCtx,
+    resourceAgentId: ownerAgentId,
+    mode: "mutate",
+    resourceLabel: `trigger ${id}`,
+    command: op,
+  });
+  contractFail(op, "PERMISSION_DENIED", denial.message, {
+    asJson,
+    details: {
+      suggestedAction: denial.requiredCapability
+        ? `Request ${denial.requiredCapability} from an operator and retry '${op}'`
+        : `Request modify authority on the owning agent from an operator and retry '${op}'`,
+      ...(denial.requiredCapability ? { requiredCapability: denial.requiredCapability } : {}),
+      ...(denial.denialId ? { denialId: denial.denialId } : {}),
+    },
+  });
+}
+
 function serializeTrigger(trigger: Trigger) {
+  const activation = resolveTriggerActivation(trigger);
   return {
     ...trigger,
     executionType: trigger.executionType ?? "agent",
@@ -77,7 +126,17 @@ function serializeTrigger(trigger: Trigger) {
       (trigger.executionType ?? "agent") === "shell"
         ? formatDurationMs(trigger.shellTimeoutMs ?? DEFAULT_CRON_SHELL_TIMEOUT_MS)
         : undefined,
+    filterStatus: activation.filterStatus,
+    ...(activation.filterStatus === "invalid" ? { filterError: activation.filter.error ?? "Invalid filter" } : {}),
+    runtimeState: activation.state,
+    ...(activation.reason ? { runtimeStateReason: activation.reason } : {}),
   };
+}
+
+function invalidFilterWarning(trigger: Pick<Trigger, "id" | "enabled" | "topic" | "filter">): string | undefined {
+  const activation = resolveTriggerActivation(trigger);
+  if (activation.state !== "invalid_filter") return undefined;
+  return `Trigger ${trigger.id} has an invalid filter (${activation.filter.error ?? "unknown error"}) and will not fire. Fix it with: ravi triggers set ${trigger.id} filter '<expression>' (or clear it with: ravi triggers set ${trigger.id} filter -)`;
 }
 
 function printTopicSummary(): void {
@@ -114,7 +173,7 @@ function printTopicCatalog(topics: TriggerTopicCatalogEntry[]): void {
   }
 }
 
-function printTopicWarnings(warnings: string[]): void {
+function printWarnings(warnings: string[]): void {
   for (const warning of warnings) {
     console.warn(`Warning: ${warning}`);
   }
@@ -216,10 +275,10 @@ export class TriggersCommands {
   ) {
     let triggers = dbListTriggers();
 
-    // Scope isolation: filter to own agent's triggers
+    // Scope isolation: own triggers plus those of agents the caller can view
     const scopeCtx = getScopeContext();
     if (isScopeEnforced(scopeCtx)) {
-      triggers = triggers.filter((t) => canAccessResource(scopeCtx, t.agentId));
+      triggers = triggers.filter((t) => canReadTrigger(scopeCtx, t));
     }
     const tagFilter = tagSlug?.trim() || null;
     triggers = filterItemsByCanonicalTag(triggers, "trigger", tagFilter ?? undefined, (trigger) => trigger.id);
@@ -237,12 +296,14 @@ export class TriggersCommands {
 
     // Compact mode (Manual v2 7.9): --fields narrows each serialized item.
     const serializedTriggers = pickFields(pageTriggers.map(serializeTrigger), fields);
+    const warnings = triggers.map(invalidFilterWarning).filter((warning): warning is string => Boolean(warning));
     const payload = {
       total: page.total,
       pagination,
       ...(tagFilter ? { filters: { tag: tagFilter } } : {}),
       items: serializedTriggers,
       triggers: serializedTriggers,
+      ...(warnings.length ? { warnings } : {}),
     };
 
     if (asJson) {
@@ -259,22 +320,31 @@ export class TriggersCommands {
       printTopicSummary();
     } else {
       console.log("\nEvent Triggers:\n");
-      console.log("  ID        NAME                      ENABLED  TOPIC                           FIRES");
-      console.log("  --------  ------------------------  -------  ------------------------------  -----");
+      console.log(
+        "  ID        NAME                      ENABLED  STATE           TOPIC                           FIRES",
+      );
+      console.log(
+        "  --------  ------------------------  -------  --------------  ------------------------------  -----",
+      );
 
       for (const t of pageTriggers) {
         const id = t.id.padEnd(8);
         const name = t.name.slice(0, 24).padEnd(24);
         const enabled = (t.enabled ? "yes" : "no").padEnd(7);
+        const state = resolveTriggerActivation(t).state.padEnd(14);
         const topic = t.topic.slice(0, 30).padEnd(30);
         const fires = String(t.fireCount);
 
-        console.log(`  ${id}  ${name}  ${enabled}  ${topic}  ${fires}`);
+        console.log(`  ${id}  ${name}  ${enabled}  ${state}  ${topic}  ${fires}`);
       }
 
       console.log(
         `\n  Total: ${page.total} triggers (${pageTriggers.length} returned, limit ${page.limit}, offset ${page.offset})`,
       );
+      if (warnings.length) {
+        console.log("");
+        printWarnings(warnings);
+      }
       if (pagination.nextCommand) {
         console.log("\n  Next page:");
         console.log(`    ${pagination.nextCommand}`);
@@ -294,12 +364,15 @@ export class TriggersCommands {
     @Arg("id", { description: "Trigger ID" }) id: string,
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
   ) {
+    // Lookups stay enumeration-resistant: an unauthorized existing trigger
+    // looks exactly like a missing one (permissions/resource-visibility).
     const trigger = dbGetTrigger(id);
-    if (!trigger || !canAccessResource(getScopeContext(), trigger.agentId)) {
+    if (!trigger || !canReadTrigger(getScopeContext(), trigger)) {
       failTriggerNotFound("triggers show", id, asJson);
     }
 
-    const payload = { trigger: serializeTrigger(trigger) };
+    const serialized = serializeTrigger(trigger);
+    const payload = { trigger: serialized };
     if (asJson) {
       printJson(payload);
     } else {
@@ -308,6 +381,10 @@ export class TriggersCommands {
       console.log(`  Agent:           ${trigger.agentId ?? "(default)"}`);
       console.log(`  Account:         ${trigger.accountId ?? "(auto)"}`);
       console.log(`  Enabled:         ${trigger.enabled ? "yes" : "no"}`);
+      console.log(`  State:           ${serialized.runtimeState}`);
+      if (serialized.runtimeStateReason) {
+        console.log(`  State reason:    ${serialized.runtimeStateReason}`);
+      }
       console.log(`  Topic:           ${trigger.topic}`);
       console.log(`  Execution:       ${trigger.executionType ?? "agent"}`);
       if ((trigger.executionType ?? "agent") === "shell") {
@@ -323,6 +400,10 @@ export class TriggersCommands {
       console.log(`  Cooldown:        ${formatDurationMs(trigger.cooldownMs)}`);
       if (trigger.filter) {
         console.log(`  Filter:          ${trigger.filter}`);
+      }
+      if (serialized.filterError) {
+        console.log(`  Filter error:    ${serialized.filterError}`);
+        console.log(`  Fix:             ravi triggers set ${trigger.id} filter '<expression>'  (clear: filter -)`);
       }
       console.log("");
       if ((trigger.executionType ?? "agent") === "agent") {
@@ -526,7 +607,7 @@ export class TriggersCommands {
       if (asJson) {
         printJson(payload);
       } else {
-        printTopicWarnings(topicWarnings);
+        printWarnings(topicWarnings);
         console.log(`\n✓ Created trigger: ${trigger.id}`);
         console.log(`  Name:       ${trigger.name}`);
         console.log(`  Topic:      ${trigger.topic}`);
@@ -550,23 +631,25 @@ export class TriggersCommands {
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
   ) {
     const trigger = dbGetTrigger(id);
-    if (!trigger || !canAccessResource(getScopeContext(), trigger.agentId)) {
-      failTriggerNotFound("triggers enable", id, asJson);
-    }
+    if (!trigger) failTriggerNotFound("triggers enable", id, asJson);
+    assertTriggerMutable("triggers enable", id, trigger, asJson);
 
     try {
       const updated = dbUpdateTrigger(id, { enabled: true });
       await nats.emit("ravi.triggers.refresh", {});
+      const filterWarning = invalidFilterWarning(updated);
       const payload = {
         status: "enabled" as const,
         target: { type: "trigger" as const, id },
         changedCount: 1,
         trigger: serializeTrigger(updated),
+        ...(filterWarning ? { warnings: [filterWarning] } : {}),
       };
       if (asJson) {
         printJson(payload);
       } else {
         console.log(`✓ Enabled trigger: ${id} (${trigger.name})`);
+        if (filterWarning) printWarnings([filterWarning]);
       }
       return payload;
     } catch (err) {
@@ -582,9 +665,8 @@ export class TriggersCommands {
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
   ) {
     const trigger = dbGetTrigger(id);
-    if (!trigger || !canAccessResource(getScopeContext(), trigger.agentId)) {
-      failTriggerNotFound("triggers disable", id, asJson);
-    }
+    if (!trigger) failTriggerNotFound("triggers disable", id, asJson);
+    assertTriggerMutable("triggers disable", id, trigger, asJson);
 
     try {
       const updated = dbUpdateTrigger(id, { enabled: false });
@@ -620,9 +702,8 @@ export class TriggersCommands {
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
   ) {
     const trigger = dbGetTrigger(id);
-    if (!trigger || !canAccessResource(getScopeContext(), trigger.agentId)) {
-      failTriggerNotFound("triggers set", id, asJson);
-    }
+    if (!trigger) failTriggerNotFound("triggers set", id, asJson);
+    assertTriggerMutable("triggers set", id, trigger, asJson);
 
     try {
       let updated: Trigger | null = null;
@@ -705,7 +786,7 @@ export class TriggersCommands {
         case "topic": {
           warnings = getTriggerTopicWarnings(value);
           updated = dbUpdateTrigger(id, { topic: value });
-          if (!asJson) printTopicWarnings(warnings);
+          if (!asJson) printWarnings(warnings);
           logHuman(`✓ Topic set: ${id} -> ${value}`);
           break;
         }
@@ -753,8 +834,8 @@ export class TriggersCommands {
         }
 
         case "filter": {
-          const filterValue = value === "null" || value === "-" ? undefined : value;
-          assertValidTriggerFilter(filterValue);
+          const filterValue = value === "null" || value === "-" ? null : value;
+          assertValidTriggerFilter(filterValue ?? undefined);
           updated = dbUpdateTrigger(id, { filter: filterValue });
           normalizedValue = filterValue ?? null;
           logHuman(`✓ Filter set: ${id} -> ${filterValue ?? "(none)"}`);
@@ -822,9 +903,8 @@ export class TriggersCommands {
     execute?: boolean,
   ) {
     const trigger = dbGetTrigger(id);
-    if (!trigger || !canAccessResource(getScopeContext(), trigger.agentId)) {
-      failTriggerNotFound("triggers test", id, asJson);
-    }
+    if (!trigger) failTriggerNotFound("triggers test", id, asJson);
+    assertTriggerMutable("triggers test", id, trigger, asJson);
 
     if (execute !== true) {
       contractDryRun(
@@ -885,9 +965,8 @@ export class TriggersCommands {
     execute?: boolean,
   ) {
     const trigger = dbGetTrigger(id);
-    if (!trigger || !canAccessResource(getScopeContext(), trigger.agentId)) {
-      failTriggerNotFound("triggers rm", id, asJson);
-    }
+    if (!trigger) failTriggerNotFound("triggers rm", id, asJson);
+    assertTriggerMutable("triggers rm", id, trigger, asJson);
 
     if (execute !== true) {
       // Write brake (Manual v2 7.8): deleting a trigger is destructive (topic

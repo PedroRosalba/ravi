@@ -25,6 +25,20 @@ function buildTriggerRecord(): Record<string, unknown> {
 
 let triggerRecord: Record<string, unknown> | null = buildTriggerRecord();
 let triggerList: Array<Record<string, unknown>> = [];
+let mockScopeContext: Record<string, unknown> | undefined;
+let mockScopeEnforced = false;
+// Cross-agent grants held by the mock caller, e.g. { permission: "view", objectType: "agent", objectId: "*" }.
+let mockGrants: Array<{ permission: string; objectType: string; objectId: string }> = [];
+const recordedResourceDenials: Array<Record<string, unknown>> = [];
+
+function mockHasGrant(relation: string, resourceAgentId: string): boolean {
+  return mockGrants.some(
+    (grant) =>
+      grant.permission === relation &&
+      grant.objectType === "agent" &&
+      (grant.objectId === "*" || grant.objectId === resourceAgentId),
+  );
+}
 
 mock.module("../decorators.js", () => ({
   Group: () => () => {},
@@ -63,12 +77,39 @@ mock.module("../../nats.js", () => ({
 }));
 
 mock.module("../../permissions/scope.js", () => ({
-  getScopeContext: () => undefined,
-  isScopeEnforced: () => false,
+  getScopeContext: () => mockScopeContext,
+  isScopeEnforced: () => mockScopeEnforced,
   canAccessSession: () => true,
   canModifySession: () => true,
   canAccessContact: () => true,
-  canAccessResource: () => true,
+  // Mirrors the real check: operator/superadmin (scope not enforced) and own
+  // resources always pass; other agents' resources need `view agent:<owner>`
+  // for read and `modify agent:<owner>` for mutate.
+  canAccessResource: (_ctx: unknown, resourceAgentId: string | undefined, mode: "read" | "mutate") => {
+    if (!mockScopeEnforced || !mockScopeContext?.agentId) return true;
+    if (!resourceAgentId) return false;
+    if (mockScopeContext.agentId === resourceAgentId) return true;
+    return mockHasGrant(mode === "mutate" ? "modify" : "view", resourceAgentId);
+  },
+  recordResourceAccessDenial: (input: {
+    ctx: { agentId?: string };
+    resourceAgentId: string;
+    mode: "read" | "mutate";
+    resourceLabel: string;
+    command: string;
+  }) => {
+    recordedResourceDenials.push(input);
+    const relation = input.mode === "mutate" ? "modify" : "view";
+    const verb = input.mode === "mutate" ? "modify" : "read";
+    return mockHasGrant("view", input.resourceAgentId)
+      ? {
+          message: `Permission denied: agent:${input.ctx.agentId} cannot ${verb} ${input.resourceLabel} owned by agent:${input.resourceAgentId}; requires ${relation} on agent:${input.resourceAgentId}`,
+          requiredCapability: `${relation}:agent:${input.resourceAgentId}`,
+        }
+      : {
+          message: `Permission denied: agent:${input.ctx.agentId} cannot ${verb} ${input.resourceLabel}; requires ${relation} authority on the owning agent`,
+        };
+  },
   canViewAgent: () => true,
   canWriteContacts: () => true,
   filterAccessibleSessions: <T>(_: unknown, sessions: T[]) => sessions,
@@ -129,7 +170,6 @@ mock.module("../../triggers/index.js", () => ({
   dbUpdateTrigger: (id: string, patch: Record<string, unknown>) => {
     updatedTriggers.push({ id, patch });
     return {
-      id,
       name: "trigger",
       topic: "ravi.external.topic",
       message: "hello",
@@ -139,6 +179,8 @@ mock.module("../../triggers/index.js", () => ({
       session: "isolated",
       fireCount: 0,
       createdAt: 1,
+      ...triggerRecord,
+      id,
       updatedAt: 2,
       ...patch,
     };
@@ -151,6 +193,13 @@ mock.module("../../triggers/index.js", () => ({
 
 const { TriggersCommands } = await import("./triggers.js");
 const { ContractError } = await import("../agent-contract.js");
+
+beforeEach(() => {
+  mockScopeContext = undefined;
+  mockScopeEnforced = false;
+  mockGrants = [];
+  recordedResourceDenials.length = 0;
+});
 
 async function captureJson(run: () => Promise<unknown>): Promise<Record<string, unknown>> {
   const lines: string[] = [];
@@ -715,5 +764,254 @@ describe("triggers agent-first contract", () => {
     expect(Object.keys(items[0]).sort()).toEqual(["id", "name"]);
     const triggers = payload.triggers as Array<Record<string, unknown>>;
     expect(Object.keys(triggers[0]).sort()).toEqual(["id", "name"]);
+  });
+});
+
+describe("triggers cross-agent access", () => {
+  const OWNER_NAME = "SENTINEL_OWNER_TRIGGER_NAME_7X1Q";
+
+  async function captureContractError(run: () => unknown): Promise<InstanceType<typeof ContractError>> {
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = () => {};
+    console.error = () => {};
+    let thrown: unknown;
+    try {
+      await run();
+    } catch (error) {
+      thrown = error;
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+    expect(thrown).toBeInstanceOf(ContractError);
+    return thrown as InstanceType<typeof ContractError>;
+  }
+
+  beforeEach(() => {
+    updatedTriggers.length = 0;
+    deletedTriggerIds.length = 0;
+    emitMock.mockClear();
+    // Caller is `viewer`; the trigger under test belongs to `owner`.
+    mockScopeContext = { agentId: "viewer" };
+    mockScopeEnforced = true;
+    triggerRecord = { ...buildTriggerRecord(), id: "trg_owner", name: OWNER_NAME, agentId: "owner" };
+    triggerList = [
+      triggerRecord,
+      { ...buildTriggerRecord(), id: "trg_viewer", name: "viewer trigger", agentId: "viewer" },
+      { ...buildTriggerRecord(), id: "trg_default", name: "default trigger", agentId: undefined },
+    ];
+  });
+
+  it("list shows other agents' triggers only through view agent:<owner>", async () => {
+    const own = await captureJson(async () => new TriggersCommands().list(true));
+    expect((own.items as Array<Record<string, unknown>>).map((t) => t.id)).toEqual(["trg_viewer"]);
+
+    mockGrants = [{ permission: "view", objectType: "agent", objectId: "*" }];
+    const all = await captureJson(async () => new TriggersCommands().list(true));
+    expect((all.items as Array<Record<string, unknown>>).map((t) => t.id).sort()).toEqual([
+      "trg_default",
+      "trg_owner",
+      "trg_viewer",
+    ]);
+  });
+
+  it("show keeps an unauthorized existing trigger indistinguishable from a missing one", async () => {
+    const error = await captureContractError(() => new TriggersCommands().show("trg_owner", true));
+
+    const envelope = error.envelope();
+    expect(envelope.error.code).toBe("TRIGGER_NOT_FOUND");
+    expect(envelope.error.suggestions).not.toContain("trg_owner");
+    expect(JSON.stringify(envelope)).not.toContain(OWNER_NAME);
+  });
+
+  it.each([
+    ["enable", (c: InstanceType<typeof TriggersCommands>) => c.enable("trg_owner", true)],
+    ["disable", (c: InstanceType<typeof TriggersCommands>) => c.disable("trg_owner", true)],
+    ["set", (c: InstanceType<typeof TriggersCommands>) => c.set("trg_owner", "name", "Renamed", true)],
+    ["test", (c: InstanceType<typeof TriggersCommands>) => c.test("trg_owner", true, true)],
+    ["rm", (c: InstanceType<typeof TriggersCommands>) => c.rm("trg_owner", true, true)],
+  ])("triggers %s on another agent's trigger is PERMISSION_DENIED, not 'Trigger not found'", async (op, invoke) => {
+    const error = await captureContractError(() => invoke(new TriggersCommands()));
+
+    expect(error.exitCode).toBe(1);
+    const envelope = error.envelope();
+    expect(envelope.op).toBe(`triggers ${op}`);
+    expect(envelope.error.code).toBe("PERMISSION_DENIED");
+    expect(envelope.error.message).toContain("Permission denied: agent:viewer cannot modify trigger trg_owner");
+    expect(JSON.stringify(envelope)).not.toContain(OWNER_NAME);
+    expect(updatedTriggers).toEqual([]);
+    expect(deletedTriggerIds).toEqual([]);
+    expect(emitMock).not.toHaveBeenCalled();
+    expect(recordedResourceDenials).toEqual([
+      expect.objectContaining({ resourceAgentId: "owner", mode: "mutate", command: `triggers ${op}` }),
+    ]);
+  });
+
+  it("disable succeeds across agents with modify agent:<owner>", async () => {
+    mockGrants = [{ permission: "modify", objectType: "agent", objectId: "owner" }];
+
+    const payload = await captureJson(() => new TriggersCommands().disable("trg_owner", true));
+
+    expect(payload).toMatchObject({ status: "disabled", target: { type: "trigger", id: "trg_owner" } });
+    expect(updatedTriggers).toEqual([{ id: "trg_owner", patch: { enabled: false } }]);
+    expect(emitMock).toHaveBeenCalledWith("ravi.triggers.refresh", {});
+  });
+});
+
+describe("triggers invalid filter visibility", () => {
+  const LEGACY_FILTER = `data.payload.repository == "o/r" && data.payload.number == 7`;
+
+  function invalidShellTrigger(): Record<string, unknown> {
+    return {
+      ...buildTriggerRecord(),
+      id: "trg_bad",
+      name: "legacy shell",
+      topic: "ravi.watch.github.*",
+      executionType: "shell",
+      shellCommand: "bun scripts/open-ticket.ts",
+      filter: LEGACY_FILTER,
+    };
+  }
+
+  function validTrigger(): Record<string, unknown> {
+    return { ...buildTriggerRecord(), id: "trg_ok", name: "valid", filter: `data.provider == "slack"` };
+  }
+
+  async function captureOutput(run: () => unknown): Promise<{ log: string; warn: string }> {
+    const logs: string[] = [];
+    const warns: string[] = [];
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+    console.warn = (...args: unknown[]) => warns.push(args.map(String).join(" "));
+    try {
+      await run();
+    } finally {
+      console.log = originalLog;
+      console.warn = originalWarn;
+    }
+    return { log: logs.join("\n"), warn: warns.join("\n") };
+  }
+
+  beforeEach(() => {
+    createdTriggers.length = 0;
+    updatedTriggers.length = 0;
+    deletedTriggerIds.length = 0;
+    emitMock.mockClear();
+    triggerRecord = invalidShellTrigger();
+    triggerList = [validTrigger(), invalidShellTrigger()];
+  });
+
+  it("list --json marks the invalid filter as inactive and leaves valid triggers active", async () => {
+    const payload = await captureJson(async () => new TriggersCommands().list(true));
+
+    const items = payload.items as Array<Record<string, unknown>>;
+    expect(items.find((item) => item.id === "trg_ok")).toMatchObject({
+      enabled: true,
+      filterStatus: "valid",
+      runtimeState: "active",
+    });
+    expect(items.find((item) => item.id === "trg_ok")).not.toHaveProperty("filterError");
+
+    const bad = items.find((item) => item.id === "trg_bad");
+    expect(bad).toMatchObject({
+      enabled: true,
+      executionType: "shell",
+      filterStatus: "invalid",
+      runtimeState: "invalid_filter",
+    });
+    expect(String(bad?.filterError)).toContain("Expected quoted string value");
+    expect(String(bad?.runtimeStateReason)).toContain("will not activate");
+
+    expect(payload.warnings).toEqual([expect.stringContaining("Trigger trg_bad has an invalid filter")]);
+    expect((payload.warnings as string[])[0]).toContain("ravi triggers set trg_bad filter");
+  });
+
+  it("list --fields compact mode still reports invalid filters at the top level", async () => {
+    const payload = await captureJson(async () =>
+      new TriggersCommands().list(true, undefined, undefined, undefined, "id,name"),
+    );
+
+    expect(Object.keys((payload.items as Array<Record<string, unknown>>)[0]).sort()).toEqual(["id", "name"]);
+    expect(payload.warnings).toEqual([expect.stringContaining("trg_bad")]);
+  });
+
+  it("list text output shows a STATE column and warns about the invalid filter", async () => {
+    const output = await captureOutput(() => new TriggersCommands().list());
+
+    expect(output.log).toContain("STATE");
+    const badRow = output.log.split("\n").find((line) => line.includes("trg_bad"));
+    const okRow = output.log.split("\n").find((line) => line.includes("trg_ok"));
+    expect(badRow).toContain("invalid_filter");
+    expect(okRow).toContain("active");
+    expect(output.warn).toContain("Warning: Trigger trg_bad has an invalid filter");
+  });
+
+  it("list omits warnings when every filter is valid", async () => {
+    triggerList = [validTrigger()];
+    const payload = await captureJson(async () => new TriggersCommands().list(true));
+
+    expect(payload).not.toHaveProperty("warnings");
+  });
+
+  it("show surfaces the invalid state, parse error, and fix command", async () => {
+    const payload = await captureJson(async () => new TriggersCommands().show("trg_bad", true));
+    expect(payload.trigger).toMatchObject({
+      id: "trg_bad",
+      filterStatus: "invalid",
+      runtimeState: "invalid_filter",
+    });
+
+    const output = await captureOutput(() => new TriggersCommands().show("trg_bad"));
+    expect(output.log).toMatch(/State:\s+invalid_filter/);
+    expect(output.log).toMatch(/Filter error:\s+Expected quoted string value/);
+    expect(output.log).toContain("ravi triggers set trg_bad filter");
+  });
+
+  it("enable warns that an invalid-filter trigger will still not fire", async () => {
+    triggerRecord = { ...invalidShellTrigger(), enabled: false };
+
+    const payload = await captureJson(() => new TriggersCommands().enable("trg_bad", true));
+    expect(payload).toMatchObject({
+      status: "enabled",
+      trigger: { enabled: true, runtimeState: "invalid_filter" },
+      warnings: [expect.stringContaining("will not fire")],
+    });
+
+    const output = await captureOutput(() => new TriggersCommands().enable("trg_bad"));
+    expect(output.log).toContain("Enabled trigger: trg_bad");
+    expect(output.warn).toContain("Warning: Trigger trg_bad has an invalid filter");
+  });
+
+  it("enable on a valid trigger reports it active without warnings", async () => {
+    triggerRecord = { ...validTrigger(), enabled: false };
+
+    const payload = await captureJson(() => new TriggersCommands().enable("trg_ok", true));
+    expect(payload).toMatchObject({ status: "enabled", trigger: { runtimeState: "active" } });
+    expect(payload).not.toHaveProperty("warnings");
+  });
+
+  it("fixing the filter with set clears the invalid state", async () => {
+    const payload = await captureJson(() =>
+      new TriggersCommands().set("trg_bad", "filter", `data.payload.number == "7"`, true),
+    );
+
+    expect(payload.trigger).toMatchObject({
+      filter: `data.payload.number == "7"`,
+      filterStatus: "valid",
+      runtimeState: "active",
+    });
+    expect(payload.trigger).not.toHaveProperty("filterError");
+    expect(emitMock).toHaveBeenCalledWith("ravi.triggers.refresh", {});
+  });
+
+  it("clearing the filter with set - persists a null filter and reactivates the trigger", async () => {
+    const payload = await captureJson(() => new TriggersCommands().set("trg_bad", "filter", "-", true));
+
+    expect(updatedTriggers).toEqual([{ id: "trg_bad", patch: { filter: null } }]);
+    expect(payload).toMatchObject({ value: null });
+    expect(payload.trigger).toMatchObject({ filterStatus: "none", runtimeState: "active" });
+    expect(emitMock).toHaveBeenCalledWith("ravi.triggers.refresh", {});
   });
 });

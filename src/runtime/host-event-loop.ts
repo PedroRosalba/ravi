@@ -25,7 +25,7 @@ import {
 import { recordRuntimeTraceEvent, recordTerminalTurnTrace } from "../session-trace/runtime-trace.js";
 import { applyTaskSessionTtlForAgent, shouldRefreshTaskSessionTtlOnTurnComplete } from "../tasks/session-retention.js";
 import { logger } from "../utils/logger.js";
-import { resolveVisibleAssistantUtterances } from "./assistant-transcript.js";
+import { classifyVisibleAssistantUtterances } from "./assistant-transcript.js";
 import { revokeAgentRuntimeContextsForSession } from "./context-registry.js";
 import {
   buildRuntimeContextRecoveryPrompt,
@@ -53,6 +53,7 @@ import type { RuntimeCredentialFailureSignal } from "./credential-types.js";
 import type { RuntimeCrashRecoveryCoordinator } from "./crash-recovery.js";
 import { hasRuntimeTurnAttemptInputMutation, type RuntimeTurnAttemptTerminalStatus } from "./crash-recovery-store.js";
 import { createQueuedRuntimeUserMessage } from "./delivery-queue.js";
+import { classifyFatalToolFailure, FATAL_TOOL_FAILURE_REASON, type FatalToolFailure } from "./fatal-tool-failure.js";
 import {
   LEGACY_RUNTIME_PROVIDER_ID,
   getCrashRecoveryReplayablePendingRuntimeMessages,
@@ -74,8 +75,11 @@ import {
 import { markRuntimeLiveIdle, updateRuntimeLiveState } from "./live-state.js";
 import {
   formatUserFacingTurnFailure,
+  isOpenToolsTurnFailure,
+  isRecoverableOpenToolsOrInterruptFailure,
   PROVIDER_ENDED_AFTER_TOOLS_USER_MESSAGE,
   publicRuntimeFailureDetail,
+  shouldEmitUserFacingTurnFailure,
 } from "./public-failure.js";
 import {
   createTurnToolContinuationLedger,
@@ -95,10 +99,12 @@ import {
   type ObservationEvent,
 } from "./observation-plane.js";
 import {
+  diffLoadedSkills,
   markLoadedFromRaviSkillToolCall,
   mergeSkillVisibilitySnapshots,
   readSkillVisibilityFromParams,
   resetLoadedSkillVisibilitySnapshot,
+  skillIdentifiersMatch,
 } from "./skill-visibility.js";
 import type {
   RuntimeCapabilities,
@@ -111,7 +117,16 @@ import type {
 import { classifyTurnProvenance } from "./turn-provenance.js";
 import { buildRuntimeToolPresentation } from "./tool-presentation.js";
 import type { ResponseContentPart, ResponseMediaAttachment } from "./message-types.js";
-import { createToolLivenessLease, DEFAULT_TOOL_INACTIVITY_TIMEOUT_MS } from "./tool-liveness.js";
+import {
+  createToolLivenessLease,
+  DEFAULT_TOOL_INACTIVITY_TIMEOUT_MS,
+  resolveDeclaredToolTimeoutMs,
+} from "./tool-liveness.js";
+import {
+  buildSlowToolLivePatch,
+  resolveSlowToolWatchConfig,
+  shouldPublishSlowToolLiveState,
+} from "./slow-tool-notice.js";
 
 const log = logger.child("bot");
 
@@ -120,8 +135,33 @@ const MAX_TURN_FAILURE_LOG_DETAIL = 1800;
 const PROVIDER_INACTIVE_AFTER_TOOL_REASON = "provider_inactive";
 const PROVIDER_TURN_INACTIVITY_REASON = "provider_turn_inactive";
 const PROVIDER_TRANSPORT_FAILURE_REASON = "provider_transport_failure";
+const OPEN_TOOLS_RECOVERABLE_FAILURE_REASON = "open_tools_recoverable_failure";
 const TOOL_INACTIVITY_REASON = "tool_inactive";
 const IDLE_SESSION_TTL_REASON = "idle_session_ttl";
+
+/**
+ * How many times one session may be recovered from inactivity before the runtime
+ * stops retrying and says so out loud.
+ *
+ * "Never end the turn in the dark" cannot mean "retry forever": a provider that
+ * is genuinely gone would loop without ever producing anything. Past this budget
+ * the turn ends as failed with a reason a human can read, which is still not a
+ * silent death.
+ */
+export const MAX_INACTIVITY_RECOVERIES = 3;
+
+/**
+ * Consecutive inactivity recoveries per session.
+ *
+ * Module scope on purpose: a recovery restarts the runtime, so a counter kept on
+ * the streaming session would reset on every attempt and could never bound the
+ * loop. It is cleared when a turn completes, because that is real progress.
+ */
+const inactivityRecoveryAttempts = new Map<string, number>();
+
+export function resetInactivityRecoveryBudget(sessionName: string): void {
+  inactivityRecoveryAttempts.delete(sessionName);
+}
 const RUNTIME_SESSION_CLOSE_TIMEOUT_MS = 5_000;
 const USER_FACING_LIMIT_SUPPRESSION_DEFAULT_MS = 60 * 60_000;
 const USER_FACING_LIMIT_SUPPRESSION_MAX_MS = 24 * 60 * 60_000;
@@ -650,40 +690,6 @@ function isAlreadyProcessingFailure(event: { error?: string; rawEvent?: Record<s
   return details.includes("already processing");
 }
 
-function isRecoverableInterruptionFailure(event: {
-  error?: string;
-  recoverable?: boolean;
-  rawEvent?: Record<string, unknown>;
-}): boolean {
-  if (event.recoverable === false) return false;
-
-  const details = [
-    event.error,
-    event.rawEvent?.error,
-    event.rawEvent?.errors,
-    event.rawEvent?.message,
-    event.rawEvent?.result,
-  ]
-    .filter((value) => value !== undefined && value !== null)
-    .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
-    .join("\n")
-    .toLowerCase();
-
-  const hasAbortMarker =
-    details.includes("request was aborted") ||
-    details.includes("operation was aborted") ||
-    details.includes("aborterror") ||
-    details.includes("aborted by user") ||
-    details.includes("process aborted");
-  const hasInterruptedDiagnostic =
-    details.includes("[ede_diagnostic]") &&
-    details.includes("result_type=user") &&
-    details.includes("last_content_type=n/a") &&
-    (details.includes("stop_reason=null") || details.includes("stop_reason=tool_use"));
-
-  return hasAbortMarker || hasInterruptedDiagnostic;
-}
-
 type UserFacingRuntimeLimitFailure = {
   kind: "session_limit";
   windowKey: string;
@@ -991,6 +997,7 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
   let providerRawEventCount = 0;
   let responseText = "";
   let channelResponseText = "";
+  const deliveredVisibleThisTurn: string[] = [];
   const turnToolContinuation = createTurnToolContinuationLedger();
   let pendingGeneratedMedia: ResponseMediaAttachment[] = [];
   const generatedMediaKeys = new Set<string>();
@@ -1118,6 +1125,16 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
     const batch = observationEvents.splice(0, observationEvents.length);
     deliverObservationBatch(batch, ["end_of_turn"], "end_of_turn");
   };
+  // Seed the live view from the persisted vector merged with the provider's
+  // start-up catalog. The provider snapshot alone carries an empty
+  // `loadedSkills`, and the newer live `updatedAt` outranked the stored one in
+  // the visibility payload, so every process restart displayed nothing loaded.
+  const initialSkillVisibility = isRecord(session.runtimeSessionParams?.skillVisibility)
+    ? mergeSkillVisibilitySnapshots(
+        readSkillVisibilityFromParams(session.runtimeSessionParams),
+        runtimeSession.skillVisibility,
+      )
+    : runtimeSession.skillVisibility;
   updateRuntimeLiveState(sessionName, {
     activity: "thinking",
     summary: "runtime active",
@@ -1126,8 +1143,8 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
     provider: runtimeSession.provider,
     model,
     source: streaming.currentSource,
-    skills: runtimeSession.skillVisibility?.skills,
-    loadedSkills: runtimeSession.skillVisibility?.loadedSkills,
+    skills: initialSkillVisibility?.skills,
+    loadedSkills: initialSkillVisibility?.loadedSkills,
   });
   // Tight timeout for the well-known codex bug: after we deliver a tool result,
   // codex's app-server occasionally drops the JSON-RPC callback and never asks
@@ -1147,23 +1164,191 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
   const IDLE_SESSION_TTL_MS = resolveRuntimeIdleSessionTtlMs();
   let providerInactivityTimer: ReturnType<typeof setTimeout> | undefined;
   let providerInactivityWatchArmed = false;
+  /**
+   * Continue the session after an inactivity watchdog fires.
+   *
+   * Ending the runtime here is what made a silent tool or provider look like a
+   * dead agent: the turn died with no message, no reason, and the work in flight
+   * was gone. Preserve what was queued, tell the session what happened, and let
+   * it carry on.
+   *
+   * The terminal record MUST come before the teardown: it is what terminalizes
+   * the durable crash-recovery attempt, and `clearTraceTurnState` refuses to run
+   * while that attempt is still bound.
+   */
+  const recoverTurnAfterInactivity = (input: {
+    reason: string;
+    kind: "tool" | "provider";
+    name: string;
+    timeoutMs: number;
+  }): void => {
+    const seconds = Math.round(input.timeoutMs / 1000);
+    const subject = input.kind === "tool" ? `o tool \`${input.name}\`` : "o provider";
+    const attempts = (inactivityRecoveryAttempts.get(sessionName) ?? 0) + 1;
+    const exhausted = attempts > MAX_INACTIVITY_RECOVERIES;
+
+    const explain = (lines: string[]): string =>
+      [
+        `[System] Inatividade: ${subject} ficou ${seconds}s sem produzir evento.`,
+        ...lines,
+        "Se a tarefa e demorada, rode em background (nohup) e consulte em fatias curtas, declarando `timeout` no comando.",
+      ].join("\n");
+
+    const notice = createQueuedRuntimeUserMessage({
+      prompt: exhausted
+        ? explain([
+            `Ja recuperei esta sessao ${attempts - 1} vezes seguidas sem progresso real.`,
+            "Nao vou continuar tentando sozinho: preciso de intervencao.",
+          ])
+        : explain(["O turno nao foi encerrado: ele continua agora, a partir daqui."]),
+      deliveryBarrier: "after_tool",
+      deliveryBarrierSource: "inferred",
+      source: streaming.currentSource,
+      taskBarrierTaskId: streaming.currentTaskBarrierTaskId,
+      _agentId: agent.id,
+      _runtimeProviderId: runtimeSession.provider,
+    });
+
+    stashPendingRuntimeMessages(sessionName, streaming, stashedMessages, { crashRecovery });
+    const queued = stashedMessages.get(sessionName) ?? [];
+    const deduped = notice.clientMessageId
+      ? queued.filter((message) => message.clientMessageId !== notice.clientMessageId)
+      : queued;
+
+    if (exhausted) {
+      // Stop retrying, but never silently: the terminal carries a reason a human
+      // can act on, and the notice is still delivered to the session.
+      inactivityRecoveryAttempts.set(sessionName, attempts);
+      stashedMessages.set(sessionName, [notice, ...deduped]);
+      log.error("Inactivity recovery budget exhausted", {
+        runId,
+        sessionName,
+        reason: input.reason,
+        kind: input.kind,
+        name: input.name,
+        attempts,
+        budget: MAX_INACTIVITY_RECOVERIES,
+      });
+      recordTerminalTraceOnce({
+        status: "failed",
+        eventType: "turn.failed",
+        abortReason: "inactivity_recovery_exhausted",
+        error: `${attempts - 1} tentativas seguidas de recuperacao por inatividade (${input.kind}: ${input.name}) sem progresso real.`,
+        payloadJson: {
+          autoRecovered: false,
+          kind: input.kind,
+          name: input.name,
+          timeoutMs: input.timeoutMs,
+          attempts,
+          budget: MAX_INACTIVITY_RECOVERIES,
+        },
+      });
+      void emitHostRuntimeTerminal({
+        type: "turn.failed",
+        error: `${attempts - 1} tentativas seguidas de recuperacao por inatividade (${input.kind}: ${input.name}) sem progresso real.`,
+        reason: "inactivity_recovery_exhausted",
+        phase: "runtime.inactivity_recovery",
+        autoRecovered: false,
+        ...(streaming.currentSource ? { _source: streaming.currentSource } : {}),
+      });
+    } else {
+      inactivityRecoveryAttempts.set(sessionName, attempts);
+      stashedMessages.set(sessionName, [notice, ...deduped]);
+      restartStashedReason = input.reason;
+
+      log.warn("Continuing session after inactivity instead of ending it", {
+        runId,
+        sessionName,
+        reason: input.reason,
+        kind: input.kind,
+        name: input.name,
+        timeoutMs: input.timeoutMs,
+        attempt: attempts,
+        budget: MAX_INACTIVITY_RECOVERIES,
+        stashedMessages: stashedMessages.get(sessionName)?.length ?? 0,
+      });
+
+      recordTerminalTraceOnce({
+        status: "interrupted",
+        eventType: "turn.interrupted",
+        abortReason: input.reason,
+        payloadJson: {
+          autoRecovered: true,
+          kind: input.kind,
+          name: input.name,
+          timeoutMs: input.timeoutMs,
+          attempt: attempts,
+          budget: MAX_INACTIVITY_RECOVERIES,
+        },
+      });
+      // The session and its observers must see the interruption; a terminal that
+      // only lands in the trace ledger leaves the channel with a dead turn.
+      void emitHostRuntimeTerminal({
+        type: "turn.interrupted",
+        reason: input.reason,
+        phase: "runtime.inactivity_recovery",
+        autoRecovered: true,
+        ...(streaming.currentSource ? { _source: streaming.currentSource } : {}),
+      });
+    }
+    recordTraceEvent({
+      turnId: streaming.currentTraceTurnId,
+      provider: runtimeSession.provider,
+      model,
+      eventType: "session.inactivity_recovered",
+      eventGroup: "session",
+      status: "recovering",
+      source: streaming.currentSource,
+      payloadJson: {
+        reason: input.reason,
+        kind: input.kind,
+        name: input.name,
+        timeoutMs: input.timeoutMs,
+        stashedMessages: stashedMessages.get(sessionName)?.length ?? 0,
+      },
+    });
+    updateRuntimeLiveState(sessionName, {
+      activity: "thinking",
+      summary: "continuando apos inatividade",
+      agentId: agent.id,
+      runId,
+      provider: runtimeSession.provider,
+      model,
+      source: streaming.currentSource,
+    });
+
+    streaming.currentTurnToolStarted = false;
+    resetTurnToolContinuationLedger(turnToolContinuation);
+    streaming.currentTurnInputMutated = false;
+    streaming.internalAbortReason = input.reason;
+    streaming.interrupted = true;
+    signalTurnComplete();
+    clearTraceTurnState();
+    streaming.done = true;
+    streaming.currentChannelBackend = undefined;
+    if (!streaming.abortController.signal.aborted) {
+      streaming.abortController.abort();
+    }
+    void closeRuntimeSession();
+  };
+
   const toolLivenessLease = createToolLivenessLease({
     inactivityTimeoutMs: DEFAULT_TOOL_INACTIVITY_TIMEOUT_MS,
-    onInactive: (toolUseId) => {
+    onInactive: (toolUseId, timeoutMs) => {
       if (!streaming.toolRunning || streaming.currentToolId !== toolUseId) return;
       const inactiveTool = streaming.currentToolName ?? "unknown";
-      log.warn("Tool inactive — aborting session", {
+      log.warn("Tool inactive - continuing session", {
         sessionName,
         tool: inactiveTool,
         toolId: toolUseId,
-        timeoutMs: DEFAULT_TOOL_INACTIVITY_TIMEOUT_MS,
+        timeoutMs,
       });
       pushObservationEvent("tool.inactive", {
         preview: inactiveTool,
         payload: {
           toolId: toolUseId,
           toolName: inactiveTool,
-          timeoutMs: DEFAULT_TOOL_INACTIVITY_TIMEOUT_MS,
+          timeoutMs,
         },
       });
       safeEmit(`ravi.session.${sessionName}.runtime`, {
@@ -1171,25 +1356,124 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         reason: TOOL_INACTIVITY_REASON,
         tool: inactiveTool,
         toolId: toolUseId,
-        timeoutMs: DEFAULT_TOOL_INACTIVITY_TIMEOUT_MS,
+        timeoutMs,
         sessionName,
       }).catch(() => {});
-      updateRuntimeLiveState(sessionName, {
-        activity: "blocked",
-        summary: `${inactiveTool} inactive`,
-        agentId: agent.id,
-        runId,
-        provider: runtimeSession.provider,
-        model,
-        toolName: inactiveTool,
-        source: streaming.currentSource,
+      // A stuck tool is not an answer, but it is also not a reason to end the
+      // session in the dark. Tell the session and keep going.
+      recoverTurnAfterInactivity({
+        reason: TOOL_INACTIVITY_REASON,
+        kind: "tool",
+        name: inactiveTool,
+        timeoutMs,
       });
-      if (!streaming.abortController.signal.aborted) {
-        streaming.internalAbortReason = TOOL_INACTIVITY_REASON;
-        streaming.abortController.abort();
-      }
     },
   });
+
+  /**
+   * Destino do chat para saída do turno, conforme `.ravi/specs/sessions/attach/SPEC.md`.
+   * Attach decide qual chat recebe a saída externa da sessão.
+   *
+   * Quatro casos distintos, e a diferença importa:
+   * - `target`: há chat resolvido.
+   * - `sentinel`: agente sentinela observa em silêncio; a emissão acontece sem
+   *   destino (comportamento histórico) e o gateway descarta.
+   * - `suppressed`: supressão do turno ou sessão observadora: nem emite.
+   * - `unresolved`: deveria haver destino e não há: não emite e avisa.
+   */
+  const resolveChatEmitTarget = ():
+    | { kind: "target"; target: NonNullable<ReturnType<typeof resolveSessionOutputTargetPreserving>["target"]> }
+    | { kind: "sentinel" | "suppressed" | "unresolved" } => {
+    if (streaming.suppressChatEmit || isObserverRuntimeSessionName(sessionName)) {
+      log.debug("Chat emit suppressed", {
+        sessionName,
+        reason: streaming.suppressChatEmit ? "turn_suppress" : "observer_session",
+      });
+      return { kind: "suppressed" };
+    }
+    if (streaming.currentReplyTarget) {
+      return { kind: "target", target: streaming.currentReplyTarget };
+    }
+    const resolution = resolveSessionOutputTargetPreserving({
+      sessionKey: session.sessionKey,
+      fallback: streaming.currentSource,
+      previous: streaming.lastBoundReplyTarget,
+    });
+    if (resolution.target) {
+      streaming.currentReplyTarget = { ...resolution.target };
+      streaming.lastBoundReplyTarget = { ...resolution.target };
+      return { kind: "target", target: resolution.target };
+    }
+    return { kind: streaming.agentMode === "sentinel" ? "sentinel" : "unresolved" };
+  };
+
+  const slowToolWatchConfig = resolveSlowToolWatchConfig();
+  let slowToolTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const clearSlowToolNotice = () => {
+    if (slowToolTimer !== undefined) {
+      clearTimeout(slowToolTimer);
+      slowToolTimer = undefined;
+    }
+  };
+
+  /**
+   * Enquanto uma tool roda: mantém a presença viva e publica o estado ao vivo.
+   *
+   * Nada aqui vira mensagem no chat. Estado operacional é estado — contínuo,
+   * sobrescrito, visível no UI. Mensagem é discreta e acumula, e foi exatamente
+   * isso que transformou "transparência" em spam na primeira versão.
+   */
+  const armSlowToolNotice = (toolId: string, toolName: string) => {
+    clearSlowToolNotice();
+
+    const tick = () => {
+      slowToolTimer = undefined;
+      if (!streaming.toolRunning || streaming.currentToolId !== toolId || !streaming.turnActive || streaming.done) {
+        return;
+      }
+      const now = Date.now();
+      const elapsedMs = now - (streaming.toolStartTime ?? now);
+
+      // Renova a presença: a sessão está ocupada, não morta.
+      void safeEmit(`ravi.session.${sessionName}.runtime`, {
+        type: "tool.running",
+        tool: toolName,
+        toolId,
+        elapsedMs,
+        sessionName,
+      }).catch(() => {});
+
+      // Re-check immediately before writing. A turn can complete between the
+      // opening guard and this patch; a late write would resurrect busy/blocked
+      // after idle.
+      if (
+        shouldPublishSlowToolLiveState({
+          toolRunning: streaming.toolRunning,
+          currentToolId: streaming.currentToolId,
+          armedToolId: toolId,
+          elapsedMs,
+          announceAfterMs: slowToolWatchConfig.announceAfterMs,
+          turnActive: streaming.turnActive,
+          sessionDone: streaming.done,
+        })
+      ) {
+        updateRuntimeLiveState(sessionName, {
+          ...buildSlowToolLivePatch(toolName, elapsedMs, streaming.pendingMessages.length),
+          agentId: agent.id,
+          runId,
+          provider: runtimeSession.provider,
+          model,
+        });
+      }
+
+      slowToolTimer = setTimeout(tick, slowToolWatchConfig.tickMs);
+      slowToolTimer.unref?.();
+    };
+
+    slowToolTimer = setTimeout(tick, slowToolWatchConfig.tickMs);
+    slowToolTimer.unref?.();
+  };
   const clearProviderInactivityWatch = () => {
     providerInactivityWatchArmed = false;
     if (providerInactivityTimer !== undefined) {
@@ -1210,7 +1494,13 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
       providerInactivityWatchArmed = false;
       if (streaming.done || !streaming.turnActive || streaming.compacting || streaming.abortController.signal.aborted)
         return;
-      log.warn("Provider inactive after tool result — aborting session", {
+      // A running tool owns its own window: the provider is not the one being
+      // waited on, so tool time must not be charged to the provider.
+      if (streaming.toolRunning) {
+        armProviderInactivityWatch();
+        return;
+      }
+      log.warn("Provider inactive - continuing session", {
         sessionName,
         timeoutMs: PROVIDER_INACTIVITY_TIMEOUT_MS,
       });
@@ -1219,10 +1509,12 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         timeoutMs: PROVIDER_INACTIVITY_TIMEOUT_MS,
         sessionName,
       }).catch(() => {});
-      if (!streaming.abortController.signal.aborted) {
-        streaming.internalAbortReason = PROVIDER_INACTIVE_AFTER_TOOL_REASON;
-        streaming.abortController.abort();
-      }
+      recoverTurnAfterInactivity({
+        reason: PROVIDER_INACTIVE_AFTER_TOOL_REASON,
+        kind: "provider",
+        name: runtimeSession.provider,
+        timeoutMs: PROVIDER_INACTIVITY_TIMEOUT_MS,
+      });
     }, PROVIDER_INACTIVITY_TIMEOUT_MS);
   };
   const clearIdleSessionEvictionTimer = () => {
@@ -1273,6 +1565,7 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
   };
   const clearActiveToolState = () => {
     toolLivenessLease.clear();
+    clearSlowToolNotice();
     streaming.toolRunning = false;
     streaming.toolResultDeliveryPending = false;
     streaming.currentToolId = undefined;
@@ -1337,6 +1630,96 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         error,
       });
     }
+  };
+  const terminateTurnAfterFatalTool = (failure: FatalToolFailure) => {
+    if (streaming.done || streaming.abortController.signal.aborted) {
+      return;
+    }
+
+    streaming.pendingMessages = getCrashRecoveryReplayablePendingRuntimeMessages(streaming, crashRecovery);
+    const stashedCount = stashPendingRuntimeMessages(sessionName, streaming, stashedMessages, { crashRecovery });
+    if (stashedCount > 0) {
+      restartStashedReason = FATAL_TOOL_FAILURE_REASON;
+    }
+
+    log.warn("Fatal tool failure — closing unterminated turn", {
+      runId,
+      sessionName,
+      tool: streaming.currentToolName ?? failure.summary,
+      reason: failure.reason,
+      exitCode: failure.exitCode,
+      pendingMessages: streaming.pendingMessages.length,
+      stashedMessages: stashedCount,
+    });
+    recordTraceEvent({
+      turnId: streaming.currentTraceTurnId,
+      provider: runtimeSession.provider,
+      model,
+      eventType: "session.fatal_tool",
+      eventGroup: "session",
+      status: "failed",
+      source: streaming.currentSource,
+      payloadJson: {
+        reason: FATAL_TOOL_FAILURE_REASON,
+        signal: failure.reason ?? null,
+        exitCode: failure.exitCode ?? null,
+        toolId: streaming.currentToolId ?? streaming.lastToolFailure?.toolId ?? null,
+        toolName: streaming.currentToolName ?? streaming.lastToolFailure?.toolName ?? null,
+        pendingMessages: streaming.pendingMessages.length,
+        stashedMessages: stashedCount,
+        autoRecovered: stashedCount > 0,
+      },
+      preview: failure.reason ?? FATAL_TOOL_FAILURE_REASON,
+    });
+    recordTerminalTraceOnce({
+      status: "failed",
+      eventType: "turn.failed",
+      abortReason: FATAL_TOOL_FAILURE_REASON,
+      error: failure.summary,
+      payloadJson: {
+        reason: FATAL_TOOL_FAILURE_REASON,
+        signal: failure.reason ?? null,
+        exitCode: failure.exitCode ?? null,
+        autoRecovered: stashedCount > 0,
+      },
+    });
+    flushObservationEvents("turn.failed", {
+      provider: runtimeSession.provider,
+      reason: FATAL_TOOL_FAILURE_REASON,
+      signal: failure.reason ?? null,
+      exitCode: failure.exitCode ?? null,
+      autoRecovered: stashedCount > 0,
+    });
+    void emitHostRuntimeTerminal({
+      type: "turn.failed",
+      error: failure.summary,
+      recoverable: true,
+      reason: FATAL_TOOL_FAILURE_REASON,
+      signal: failure.reason ?? null,
+      exitCode: failure.exitCode ?? null,
+    });
+    void safeEmit(`ravi.session.${sessionName}.runtime`, {
+      type: "tool.fatal",
+      reason: FATAL_TOOL_FAILURE_REASON,
+      signal: failure.reason ?? null,
+      exitCode: failure.exitCode ?? null,
+      tool: streaming.currentToolName ?? streaming.lastToolFailure?.toolName ?? null,
+      toolId: streaming.currentToolId ?? streaming.lastToolFailure?.toolId ?? null,
+      sessionName,
+    }).catch(() => {});
+
+    streaming.interrupted = true;
+    streaming.turnActive = false;
+    streaming.internalAbortReason = FATAL_TOOL_FAILURE_REASON;
+    clearActiveToolState();
+    markRuntimeLiveIdle(sessionName, "fatal tool failure");
+    signalTurnComplete();
+    clearTraceTurnState();
+    streaming.done = true;
+    if (!streaming.abortController.signal.aborted) {
+      streaming.abortController.abort();
+    }
+    void closeRuntimeSession();
   };
   const signalTurnComplete = () => {
     clearProviderInactivityWatch();
@@ -1803,6 +2186,71 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
     return runtimeSessionParams;
   };
 
+  /**
+   * Publish a skill-load observation to the trace ledger and the runtime
+   * stream. `skill.visibility.loaded` is the event the telemetry counts; skill
+   * gate deliveries used to be persisted without ever reaching it, which is
+   * why the metric collapsed once the soft gate replaced `ravi skills show`.
+   */
+  const announceLoadedSkills = async (
+    skillVisibility: RuntimeSkillVisibilitySnapshot,
+    payload: Record<string, unknown>,
+  ) => {
+    recordTraceEvent({
+      turnId: streaming.currentTraceTurnId,
+      provider: runtimeSession.provider,
+      model,
+      eventType: "skill.visibility.loaded",
+      eventGroup: "runtime",
+      status: "complete",
+      payloadJson: {
+        ...payload,
+        loadedSkills: skillVisibility.loadedSkills,
+        skillVisibility,
+      },
+      preview: skillVisibility.loadedSkills.join(", "),
+    });
+    await emitRuntimeEvent({
+      type: "skill.visibility.loaded",
+      provider: runtimeSession.provider,
+      skillVisibility,
+      loadedSkills: skillVisibility.loadedSkills,
+      ...payload,
+    });
+  };
+
+  // The gate already wrote the vector to the DB and refreshed
+  // `session.runtimeSessionParams`; this mirrors it into the live view and the
+  // telemetry inside the same turn instead of waiting for turn.complete.
+  streaming.onSkillGatePersisted = (skillVisibility, info) => {
+    runtimeSession.skillVisibility = skillVisibility;
+    // The gate names the catalog alias (`ravi-system-routes-manager`) but may
+    // have marked the record the provider advertises under the short id
+    // (`routes-manager`); report the ids that actually sit in the vector.
+    const markedSkills = skillVisibility.loadedSkills.filter((loadedSkill) =>
+      skillIdentifiersMatch(loadedSkill, info.skill),
+    );
+    patchLiveState(
+      {
+        activity: "thinking",
+        summary: `${info.skill} delivered by skill gate for ${info.toolName}`,
+        agentId: agent.id,
+        runId,
+        provider: runtimeSession.provider,
+        model,
+        toolName: info.toolName,
+        source: streaming.currentSource,
+      },
+      skillVisibility,
+    );
+    announceLoadedSkills(skillVisibility, {
+      origin: "skill-gate",
+      toolName: info.toolName,
+      skill: info.skill,
+      newlyLoaded: markedSkills.length > 0 ? markedSkills : [info.skill],
+    }).catch((err) => log.warn("Failed to announce skill-gate load", { sessionName, error: err }));
+  };
+
   const recentAssistantContents = (): string[] =>
     getRecentHistory(sessionName, 48)
       .filter((message) => message.role === "assistant")
@@ -1841,42 +2289,21 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
     // Resolve the target chat per `.ravi/specs/sessions/attach/SPEC.md`.
     // Attach selects the chat that receives this session's external output.
     // Sentinel agents observe silently → no target.
-    let resolvedTarget = undefined as ReturnType<typeof resolveSessionOutputTargetPreserving>["target"] | undefined;
-    let resolvedSource: ReturnType<typeof resolveSessionOutputTargetPreserving>["source"] = "unresolved";
-    if (streaming.agentMode !== "sentinel") {
-      if (streaming.suppressChatEmit || isObserverRuntimeSessionName(sessionName)) {
-        log.debug("Chat emit suppressed", {
-          sessionName,
-          reason: streaming.suppressChatEmit ? "turn_suppress" : "observer_session",
-        });
-        clearPendingGeneratedMedia();
-        return;
-      }
-      if (streaming.currentReplyTarget) {
-        resolvedTarget = streaming.currentReplyTarget;
-        resolvedSource = streaming.currentSource ? "source-chat" : "attached-output";
-      } else {
-        const resolution = resolveSessionOutputTargetPreserving({
-          sessionKey: session.sessionKey,
-          fallback: streaming.currentSource,
-          previous: streaming.lastBoundReplyTarget,
-        });
-        resolvedTarget = resolution.target;
-        resolvedSource = resolution.source;
-        if (resolution.target) {
-          streaming.currentReplyTarget = { ...resolution.target };
-          streaming.lastBoundReplyTarget = { ...resolution.target };
-        }
-      }
-      if (!resolvedTarget) {
-        log.warn("Response target unresolved — dropping emit", {
-          sessionName,
-          source: resolvedSource,
-        });
-        clearPendingGeneratedMedia();
-        return;
-      }
+    const chatTarget = resolveChatEmitTarget();
+    if (chatTarget.kind === "suppressed") {
+      clearPendingGeneratedMedia();
+      return;
     }
+    if (chatTarget.kind === "unresolved") {
+      log.warn("Response target unresolved — dropping emit", {
+        sessionName,
+        source: "unresolved",
+      });
+      clearPendingGeneratedMedia();
+      return;
+    }
+    const resolvedTarget = chatTarget.kind === "target" ? chatTarget.target : undefined;
+    const resolvedSource = chatTarget.kind === "target" ? "resolved" : "sentinel";
     const content =
       mediaParts.length > 0
         ? ([
@@ -2106,12 +2533,14 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
       }
       if (
         event.type === "turn.complete" &&
-        (streaming._providerAuthFailure || isRuntimeProviderLoginStub(responseText))
+        (streaming._providerAuthFailure ||
+          isRuntimeProviderLoginStub(responseText, { provider: runtimeSession.provider }))
       ) {
         const error = streaming._providerAuthFailure ?? responseText.trim();
         streaming._providerAuthFailure = undefined;
         responseText = "";
         channelResponseText = "";
+        deliveredVisibleThisTurn.length = 0;
         event = {
           type: "turn.failed",
           error,
@@ -2182,20 +2611,27 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
       const receivedFailureClassification =
         event.type === "turn.failed"
           ? (() => {
-              const interruptedRecoverable = streaming.interrupted && isRecoverableInterruptionFailure(event);
               const internalAbortReason = streaming.internalAbortReason;
-              const internalRecoverable = Boolean(internalAbortReason) && isRecoverableInterruptionFailure(event);
+              const openToolsOrInterruptRecoverable = isRecoverableOpenToolsOrInterruptFailure({
+                error: event.error,
+                recoverable: event.recoverable,
+                interrupted: streaming.interrupted,
+                internalAbortReason,
+              });
               const replayable = getRuntimeTurnReplaySafety(streaming, crashRecovery).replayable;
               const transportRecoverable =
                 event.recoverable !== false &&
                 replayable &&
                 (event.failureKind === "transport" || isAlreadyProcessingFailure(event));
+              const openToolsRecoverable = event.recoverable !== false && isOpenToolsTurnFailure(event.error);
               return {
                 internalAbortReason,
-                suppressedRecoverable: interruptedRecoverable || internalRecoverable || transportRecoverable,
+                suppressedRecoverable: openToolsOrInterruptRecoverable || transportRecoverable,
                 recoveryReason: transportRecoverable
                   ? PROVIDER_TRANSPORT_FAILURE_REASON
-                  : (internalAbortReason ?? "recoverable_interrupt_failure"),
+                  : openToolsRecoverable && !streaming.interrupted && !internalAbortReason
+                    ? OPEN_TOOLS_RECOVERABLE_FAILURE_REASON
+                    : (internalAbortReason ?? "recoverable_interrupt_failure"),
               };
             })()
           : undefined;
@@ -2374,11 +2810,12 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         }
 
         // External compaction announcements are user-facing runtime responses.
-        // They are suppressed for automation-originated turns (cron, trigger,
-        // session followup, heartbeat, and other background automation) while
-        // human/channel turns keep them when enabled and not in sentinel mode.
-        // Internal status/trace/live-state/skill-visibility handling above is
-        // preserved for every origin.
+        // They stay off unless announceCompaction is explicitly true, and they
+        // are also suppressed for automation-originated turns (cron, trigger,
+        // session followup, heartbeat, and other background automation).
+        // Human/channel turns keep them only when the setting is enabled and
+        // the agent is not in sentinel mode. Internal status/trace/live-state/
+        // skill-visibility handling above is preserved for every origin.
         if (
           getAnnounceCompaction() &&
           streaming.currentSource &&
@@ -2411,7 +2848,11 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         });
         // Expire only after a full inactivity window. Provider progress events
         // renew this lease without exposing their output to channels or traces.
-        toolLivenessLease.start(event.toolUse.id);
+        // Tools that declare their own `timeout` keep ownership of it: a long
+        // scan or build must not be killed by the generic inactivity window.
+        toolLivenessLease.start(event.toolUse.id, resolveDeclaredToolTimeoutMs(event.toolUse.input));
+        // O lease cuida da paciência; este aviso cuida do silêncio.
+        armSlowToolNotice(event.toolUse.id, event.toolUse.name);
         streaming.currentToolSafety = getToolSafety(
           event.toolUse.name,
           (event.toolUse.input as Record<string, unknown> | undefined) ?? {},
@@ -2573,7 +3014,7 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
                 type: "silent",
                 provider: runtimeSession.provider,
               });
-            } else if (isRuntimeProviderLoginStub(messageText)) {
+            } else if (isRuntimeProviderLoginStub(messageText, { provider: runtimeSession.provider })) {
               suppressProviderRawForCurrentTurn = true;
               streaming._providerAuthFailure = messageText.trim();
               log.warn("Provider login stub classified as auth failure", {
@@ -2589,15 +3030,26 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
               // This content will be persisted/projected/emitted. Fence replay
               // before any of those effects; silent and discarded responses do
               // not advance the materialized-output marker.
-              const visibleUtterances = commentaryResponse
-                ? [messageText]
-                : resolveVisibleAssistantUtterances(messageText, recentAssistantContents());
+              const visibility = commentaryResponse
+                ? { utterances: [messageText] }
+                : classifyVisibleAssistantUtterances(messageText, recentAssistantContents(), {
+                    alreadyDeliveredThisTurn: deliveredVisibleThisTurn,
+                  });
+              const visibleUtterances = visibility.utterances;
               if (!commentaryResponse && visibleUtterances.length === 0) {
+                const skipReason = visibility.skipReason ?? "mashed_replay";
                 suppressProviderRawForCurrentTurn = true;
                 recordAssistantState(false);
-                log.info("Skipping replayed or empty-join mashed assistant history", {
+                log.warn("Skipping replayed or empty-join mashed assistant history", {
                   sessionName,
                   textLen: messageText.length,
+                  reason: skipReason,
+                });
+                await emitLegacyProviderEvent({ type: "silent" });
+                await emitRuntimeEvent({
+                  type: "silent",
+                  provider: runtimeSession.provider,
+                  reason: skipReason,
                 });
                 continue;
               }
@@ -2609,6 +3061,7 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
                 if (!commentaryResponse) {
                   channelResponseText = appendAssistantResponse(channelResponseText, utterance);
                   persistVisibleAssistantMessage(utterance);
+                  deliveredVisibleThisTurn.push(utterance);
                 }
                 await emitRuntimeEvent({
                   type: "assistant.message",
@@ -2660,6 +3113,17 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         armProviderInactivityWatch();
         if (streaming.toolResultDeliveryPending || streaming.toolRunning) {
           await finishActiveToolBarrier();
+        }
+        const pendingFatal = streaming.lastToolFailure;
+        if (pendingFatal?.fatal) {
+          terminateTurnAfterFatalTool({
+            fatal: true,
+            reason: pendingFatal.fatalReason as FatalToolFailure["reason"],
+            summary:
+              typeof pendingFatal.output === "string" && pendingFatal.output.trim().length > 0
+                ? pendingFatal.output
+                : `${pendingFatal.toolName ?? "tool"} fatal ${pendingFatal.fatalReason ?? FATAL_TOOL_FAILURE_REASON}`,
+          });
         }
         continue;
       }
@@ -2785,32 +3249,22 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
               },
               nextSkillVisibility,
             );
-            recordTraceEvent({
-              turnId: streaming.currentTraceTurnId,
-              provider: runtimeSession.provider,
-              model,
-              eventType: "skill.visibility.loaded",
-              eventGroup: "runtime",
-              status: "complete",
-              payloadJson: {
-                toolId,
-                toolName,
-                loadedSkills: nextSkillVisibility.loadedSkills,
-                skillVisibility: nextSkillVisibility,
-                metadata: event.metadata,
-              },
-              preview: nextSkillVisibility.loadedSkills.join(", "),
-            });
-            await emitRuntimeEvent({
-              type: "skill.visibility.loaded",
-              provider: runtimeSession.provider,
-              skillVisibility: nextSkillVisibility,
-              loadedSkills: nextSkillVisibility.loadedSkills,
+            await announceLoadedSkills(nextSkillVisibility, {
+              origin: "ravi-skills-show",
+              toolId,
+              toolName,
+              newlyLoaded: diffLoadedSkills(previousSkillVisibility, nextSkillVisibility),
               metadata: event.metadata,
             });
           }
         }
 
+        const fatalToolFailure = classifyFatalToolFailure({
+          isError: event.isError,
+          content: event.content,
+          metadata: event.metadata,
+          toolName,
+        });
         streaming.lastToolFailure = event.isError
           ? {
               at: Date.now(),
@@ -2818,11 +3272,17 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
               toolName,
               output,
               metadata: event.metadata,
+              fatal: fatalToolFailure.fatal,
+              ...(fatalToolFailure.reason ? { fatalReason: fatalToolFailure.reason } : {}),
             }
           : undefined;
         // Dynamic Codex callbacks finish on the later result-delivered marker.
         if (!awaitsToolResultDelivery) {
           await finishActiveToolBarrier();
+          if (fatalToolFailure.fatal) {
+            terminateTurnAfterFatalTool(fatalToolFailure);
+            continue;
+          }
           // Grok/Claude/Pi do not emit tool.result_delivered. After a mid-turn
           // utterance plus an in-process tool, session/prompt can stall with no
           // further events. Arm the after-tool inactivity watch so the turn
@@ -2850,6 +3310,8 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
           sessionId: event.session?.displayId ?? event.providerSessionId,
         });
         const completedCredentialAttemptId = streaming.currentRuntimeCredential?.attemptId;
+        // A completed turn is real progress: the inactivity budget starts over.
+        resetInactivityRecoveryBudget(sessionName);
         await recordRuntimeCredentialTurnSuccess(
           streaming,
           resolveModelBrokerEffectState(getRuntimeTurnReplaySafety(streaming, crashRecovery)),
@@ -2858,12 +3320,25 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         const runtimeSessionDisplayId = event.session?.displayId ?? event.providerSessionId;
         // Skill gates can be persisted by the Codex Bash hook in a separate process.
         // Refresh before merging the provider's terminal snapshot so those marks survive turn.complete.
+        const announcedSkillVisibility = runtimeSkillVisibilityFromParams(session.runtimeSessionParams);
         refreshRuntimeSessionParamsFromDb();
         const runtimeSessionParams = mergeRuntimeCredentialSessionMetadata(
           mergeRuntimeSessionParams(event.session?.params ?? undefined),
           streaming.currentRuntimeCredential,
         );
         const terminalSkillVisibility = runtimeSkillVisibilityFromParams(runtimeSessionParams);
+        // Loads this loop never saw (out-of-process gate, provider-reported
+        // instruction sources) still need their telemetry row.
+        const externallyLoadedSkills = terminalSkillVisibility
+          ? diffLoadedSkills(announcedSkillVisibility, terminalSkillVisibility)
+          : [];
+        if (terminalSkillVisibility && externallyLoadedSkills.length > 0) {
+          await announceLoadedSkills(terminalSkillVisibility, {
+            origin: "turn-complete",
+            newlyLoaded: externallyLoadedSkills,
+            metadata: event.metadata,
+          });
+        }
         const persistedSessionId =
           runtimeSessionDisplayId ??
           (typeof runtimeSessionParams?.sessionId === "string" ? runtimeSessionParams.sessionId : undefined);
@@ -3004,6 +3479,7 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         // only closes the in-memory buffer so the next turn cannot mash into it.
         responseText = "";
         channelResponseText = "";
+        deliveredVisibleThisTurn.length = 0;
         clearPendingGeneratedMedia();
         clearActiveToolState();
         streaming.compacting = false;
@@ -3118,6 +3594,7 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         }
         responseText = "";
         channelResponseText = "";
+        deliveredVisibleThisTurn.length = 0;
         clearPendingGeneratedMedia();
         clearActiveToolState();
         streaming.compacting = false;
@@ -3203,6 +3680,7 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
 
         responseText = "";
         channelResponseText = "";
+        deliveredVisibleThisTurn.length = 0;
         clearPendingGeneratedMedia();
         clearActiveToolState();
         streaming.compacting = false;
@@ -3438,7 +3916,7 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         }
 
         const channelBackendFailure = streaming.currentChannelBackend !== undefined;
-        const loginStubFailure = isRuntimeProviderLoginStub(event.error);
+        const loginStubFailure = isRuntimeProviderLoginStub(event.error, { provider: runtimeSession.provider });
         if (!loginStubFailure) {
           await projectRuntimeEventToChannel(event);
         }
@@ -3477,24 +3955,46 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         clearRuntimeCredentialAttempt(streaming, failedCredentialAttemptId);
 
         if (streaming.agentMode !== "sentinel" && !channelBackendFailure && !loginStubFailure) {
-          const suppression = shouldSuppressUserFacingRuntimeLimitFailure({
-            error: event.error,
-            scope: buildUserFacingFailureSuppressionScope({
-              sessionKey: session.sessionKey,
-              provider: runtimeSession.provider,
-              source: streaming.currentSource,
-            }),
-          });
-          if (suppression.suppressed) {
-            log.info("Suppressing repeated user-facing runtime limit failure", {
+          // Defense in depth: open-tools / interrupt-class recoverables are
+          // folded into suppressedRecoverable above (stash + restart, no chat
+          // Error). Channel-backend already projects an opaque safe error.
+          if (
+            !shouldEmitUserFacingTurnFailure({
+              error: event.error,
+              recoverable: event.recoverable,
+              suppressedRecoverable,
+              interrupted: streaming.interrupted,
+              internalAbortReason,
+            })
+          ) {
+            log.info("Suppressing user-facing recoverable open-tool or interrupt failure", {
               runId,
               sessionName,
-              provider: runtimeSession.provider,
-              windowKey: suppression.classified.windowKey,
-              previousExpiresAt: suppression.previousExpiresAt,
+              recoverable: event.recoverable ?? true,
+              interrupted: streaming.interrupted,
+              internalAbortReason,
+              error: event.error,
             });
           } else {
-            await emitResponse(formatUserFacingTurnFailure(event.error));
+            const suppression = shouldSuppressUserFacingRuntimeLimitFailure({
+              error: event.error,
+              scope: buildUserFacingFailureSuppressionScope({
+                sessionKey: session.sessionKey,
+                provider: runtimeSession.provider,
+                source: streaming.currentSource,
+              }),
+            });
+            if (suppression.suppressed) {
+              log.info("Suppressing repeated user-facing runtime limit failure", {
+                runId,
+                sessionName,
+                provider: runtimeSession.provider,
+                windowKey: suppression.classified.windowKey,
+                previousExpiresAt: suppression.previousExpiresAt,
+              });
+            } else {
+              await emitResponse(formatUserFacingTurnFailure(event.error));
+            }
           }
         }
         updateRuntimeLiveState(sessionName, {
@@ -3551,6 +4051,7 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
       });
     }
     streaming.durableTurnPreparationFailed = false;
+    streaming.onSkillGatePersisted = undefined;
     clearProviderInactivityWatch();
     clearIdleSessionEvictionTimer();
     toolLivenessLease.clear();

@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import {
   dbListSkillGateRules,
   getSession,
@@ -6,13 +7,7 @@ import {
   updateRuntimeProviderState,
   type ContextRecord,
 } from "../router/index.js";
-import {
-  findInstalledSkill,
-  findSkillByName,
-  listCatalogSkills,
-  slugifySkillName,
-  type RaviSkill,
-} from "../skills/manager.js";
+import { findInstalledSkill, findSkillByName, listCatalogSkills, type RaviSkill } from "../skills/manager.js";
 import { parseBashCommand } from "../bash/parser.js";
 import {
   inferRaviCommandSkillGate,
@@ -23,7 +18,7 @@ import {
 import { nats } from "../nats.js";
 import type { SessionEntry } from "../router/types.js";
 import { isSkillAuthorizedForAgent } from "./skill-authorization.js";
-import { markLoadedFromSkillGate, readSkillVisibilityFromParams } from "./skill-visibility.js";
+import { markLoadedFromSkillGate, readSkillVisibilityFromParams, skillIdentifiersMatch } from "./skill-visibility.js";
 import type { RuntimeSkillVisibilitySnapshot } from "./types.js";
 
 export type ConfiguredSkillGateRule = SkillGateRuleConfig;
@@ -42,10 +37,20 @@ export interface EvaluateSkillGateInput {
   toolName: string;
 }
 
+export interface SkillGatePersistedInfo {
+  skill: string;
+  toolName: string;
+}
+
+export type SkillGatePersistedListener = (
+  skillVisibility: RuntimeSkillVisibilitySnapshot,
+  info: SkillGatePersistedInfo,
+) => void;
+
 export interface EvaluateRuntimeToolSkillGateInput {
   toolName: string;
   context?: ContextRecord | null;
-  onSkillGatePersisted?: (skillVisibility: RuntimeSkillVisibilitySnapshot) => void;
+  onSkillGatePersisted?: SkillGatePersistedListener;
 }
 
 export interface EvaluateRuntimeCommandSkillGateInput {
@@ -53,7 +58,7 @@ export interface EvaluateRuntimeCommandSkillGateInput {
   context?: ContextRecord | null;
   toolName?: string;
   executables?: readonly string[];
-  onSkillGatePersisted?: (skillVisibility: RuntimeSkillVisibilitySnapshot) => void;
+  onSkillGatePersisted?: SkillGatePersistedListener;
 }
 
 export function runtimeSkillGateForTool(toolName: string): SkillGateMetadata | undefined {
@@ -88,12 +93,15 @@ export function evaluateRuntimeCommandSkillGate(input: EvaluateRuntimeCommandSki
 
 function evaluateResolvedRuntimeSkillGate(
   input: EvaluateSkillGateInput & {
-    onSkillGatePersisted?: (skillVisibility: RuntimeSkillVisibilitySnapshot) => void;
+    onSkillGatePersisted?: SkillGatePersistedListener;
   },
 ): SkillGateDecision {
   const decision = evaluateSkillGate(input);
   if (decision.skillVisibility) {
-    input.onSkillGatePersisted?.(decision.skillVisibility);
+    input.onSkillGatePersisted?.(decision.skillVisibility, {
+      skill: decision.skill ?? input.gate?.skill ?? "",
+      toolName: input.toolName,
+    });
   }
   return decision;
 }
@@ -121,8 +129,12 @@ export function evaluateSkillGate(input: EvaluateSkillGateInput): SkillGateDecis
     return { allowed: true };
   }
 
-  if (!isSkillAuthorizedForAgent(session.agentId, input.gate.skill)) {
-    const reason = `RAVI_SKILL_GATE_CONFIG_ERROR: ${input.toolName} requires skill ${input.gate.skill}, but that skill is not visible to agent ${session.agentId}. Grant it via 'ravi skills grant' or a group permission.`;
+  if (
+    !isSkillAuthorizedForAgent(session.agentId, input.gate.skill, {
+      capabilities: input.context?.capabilities,
+    })
+  ) {
+    const reason = `RAVI_SKILL_GATE_CONFIG_ERROR: ${input.toolName} requires skill ${input.gate.skill}, but that skill is not visible to agent ${session.agentId}. Grant it via 'ravi skills grant' or a matching command capability.`;
     emitSkillGateEvent(session, {
       type: "skill.gate.error",
       toolName: input.toolName,
@@ -154,6 +166,13 @@ export function evaluateSkillGate(input: EvaluateSkillGateInput): SkillGateDecis
       skill: input.gate.skill,
       reason,
     };
+  }
+
+  // The loaded marker may carry a physical alias the plain string check does
+  // not know (custom plugin buckets). The skill is already resolved here, so
+  // comparing against its aliases costs no extra filesystem work.
+  if (snapshot.loadedSkills.some((loadedSkill) => loadedSkillMatchesGate(loadedSkill, input.gate!.skill, skill))) {
+    return { allowed: true };
   }
 
   const nextSkillVisibility = markLoadedFromSkillGate(snapshot, {
@@ -295,6 +314,34 @@ export function skillGateErrorPayload(decision: SkillGateDecision): Record<strin
   };
 }
 
-export function loadedSkillMatchesGate(loadedSkill: string, gateSkill: string): boolean {
-  return loadedSkill === gateSkill || slugifySkillName(loadedSkill) === slugifySkillName(gateSkill);
+/**
+ * Whether a loaded-skill marker satisfies a gate. The marker and the gate may
+ * name the same skill through different aliases: the gate rules use the
+ * plugin-qualified catalog name (`ravi-system-pages`) while provider snapshots
+ * and `ravi skills show` record the plugin short id (`pages`).
+ *
+ * When the gate skill has already been resolved, its physical aliases are
+ * accepted too (covers plugins outside the managed `ravi-*` prefixes).
+ */
+export function loadedSkillMatchesGate(
+  loadedSkill: string,
+  gateSkill: string,
+  resolvedSkill?: Pick<RaviSkill, "name" | "path" | "pluginName"> | null,
+): boolean {
+  if (skillIdentifiersMatch(loadedSkill, gateSkill)) {
+    return true;
+  }
+  if (!resolvedSkill) {
+    return false;
+  }
+  return resolvedSkillAliases(resolvedSkill).some((alias) => skillIdentifiersMatch(loadedSkill, alias));
+}
+
+function resolvedSkillAliases(skill: Pick<RaviSkill, "name" | "path" | "pluginName">): string[] {
+  const aliases = [skill.name];
+  if (skill.pluginName) {
+    aliases.push(`${skill.pluginName}-${skill.name}`);
+    aliases.push(`${skill.pluginName}-${basename(skill.path)}`);
+  }
+  return aliases;
 }

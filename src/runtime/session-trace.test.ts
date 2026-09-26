@@ -15,7 +15,7 @@ import {
   type SessionEntry,
 } from "../router/index.js";
 import { getSessionTurnUsageSummary } from "../router/sessions.js";
-import { dbUpsertChat, getDb } from "../router/router-db.js";
+import { dbSetSetting, dbUpsertChat, getDb } from "../router/router-db.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
 import { getSessionTraceBlob, getSessionTurn, listSessionEvents } from "../session-trace/session-trace-db.js";
 import { recordAdapterRequestTrace } from "../session-trace/runtime-trace.js";
@@ -29,10 +29,16 @@ import {
 import { RuntimeCrashRecoveryCoordinator } from "./crash-recovery.js";
 import { getRuntimeTurnAttempt } from "./crash-recovery-store.js";
 import { RUNTIME_CONTEXT_WINDOW_RECOVERY_REASON } from "./context-window-recovery.js";
-import { createQueuedRuntimeUserMessage } from "./delivery-queue.js";
+import {
+  canReleaseRuntimeDeliveryBarrier,
+  createQueuedRuntimeUserMessage,
+  createRuntimeMessageGenerator,
+} from "./delivery-queue.js";
 import type { RuntimeHostStreamingSession, RuntimeMessageTarget, RuntimeUserMessage } from "./host-session.js";
 import {
   classifyUserFacingRuntimeLimitFailure,
+  MAX_INACTIVITY_RECOVERIES,
+  resetInactivityRecoveryBudget,
   resetUserFacingRuntimeLimitSuppressionsForTest,
   runRuntimeEventLoop,
   shouldSuppressUserFacingRuntimeLimitFailure,
@@ -53,6 +59,8 @@ import {
 } from "./runtime-request-builder.js";
 import { RuntimeSessionDispatcher } from "./session-dispatcher.js";
 import { resolveSessionOutputTarget } from "./session-output-target.js";
+import { loadedSkillMatchesGate } from "./skill-gate.js";
+import { markLoadedFromSkillGate, readSkillVisibilityFromParams } from "./skill-visibility.js";
 import { buildSessionRelayTurnOrigin } from "./turn-origin.js";
 import type {
   RuntimeCapabilities,
@@ -289,6 +297,91 @@ function makeLoadedRaviTaskSkillVisibility(): RuntimeSkillVisibilitySnapshot {
     ],
     loadedSkills: ["ravi-system-tasks"],
     updatedAt: 100,
+  };
+}
+
+/**
+ * Claude re-attaches its plugin catalog to every turn.complete, keyed by the
+ * frontmatter `name` (`routes-manager`), never by the gate alias
+ * (`ravi-system-routes-manager`).
+ */
+function makeClaudeCatalogSkillVisibility(now = 100): RuntimeSkillVisibilitySnapshot {
+  return {
+    skills: [
+      {
+        id: "routes-manager",
+        provider: "claude",
+        state: "advertised",
+        confidence: "declared",
+        source: "plugin:ravi-system/routes",
+        evidence: [{ kind: "plugin-bootstrap", observedAt: now }],
+        loadedAt: null,
+        lastSeenAt: now,
+      },
+      {
+        id: "sessions",
+        provider: "claude",
+        state: "advertised",
+        confidence: "declared",
+        source: "plugin:ravi-system/sessions",
+        evidence: [{ kind: "plugin-bootstrap", observedAt: now }],
+        loadedAt: null,
+        lastSeenAt: now,
+      },
+    ],
+    loadedSkills: [],
+    updatedAt: now,
+  };
+}
+
+/**
+ * What the gate persists for `ravi-system-routes-manager` today: alias
+ * equivalence marks the record Claude already advertises under the short id.
+ */
+function makeGateLoadedRoutesSkillVisibility(): RuntimeSkillVisibilitySnapshot {
+  return markLoadedFromSkillGate(makeClaudeCatalogSkillVisibility(100), {
+    provider: "claude",
+    skill: "ravi-system-routes-manager",
+    source: "catalog:ravi-system/routes",
+    toolName: "Bash",
+    now: 200,
+  });
+}
+
+/**
+ * What sessions gated before alias equivalence still carry: the loaded record
+ * sits under the gate alias, which no provider catalog ever re-announces.
+ */
+function makeLegacyGateAliasSkillVisibility(): RuntimeSkillVisibilitySnapshot {
+  const catalog = makeClaudeCatalogSkillVisibility(100);
+  return {
+    skills: [
+      {
+        id: "ravi-system-routes-manager",
+        provider: "claude",
+        state: "loaded",
+        confidence: "observed",
+        source: "catalog:ravi-system/routes",
+        evidence: [{ kind: "skill-gate", observedAt: 200, detail: "delivered by skill gate for Bash" }],
+        loadedAt: 200,
+        lastSeenAt: 200,
+      },
+      ...catalog.skills,
+    ],
+    loadedSkills: ["ravi-system-routes-manager"],
+    updatedAt: 200,
+  };
+}
+
+function makeClaudeTurnComplete(displayId: string): RuntimeEvent {
+  return {
+    type: "turn.complete",
+    providerSessionId: displayId,
+    session: {
+      displayId,
+      params: { sessionId: displayId, skillVisibility: makeClaudeCatalogSkillVisibility() },
+    },
+    usage: { inputTokens: 10, outputTokens: 4 },
   };
 }
 
@@ -1851,16 +1944,25 @@ describe("runtime session trace instrumentation", () => {
     );
 
     const events = listSessionEvents(SESSION_KEY);
+    // The provider reported `trace-skill` as loaded for the first time on this
+    // terminal, so the vector mutation gets its own telemetry row before the
+    // terminal is recorded.
     expect(events.map((event) => event.eventType)).toEqual([
       "adapter.request",
       "tool.start",
       "tool.end",
+      "skill.visibility.loaded",
       "turn.complete",
     ]);
     expect(emitted.some(({ data }) => data.type === "tool.progress")).toBe(false);
-    expect(events.map((event) => event.seq)).toEqual([1, 2, 3, 4]);
-    expect(events.map((event) => event.runId)).toEqual(["run-1", "run-1", "run-1", "run-1"]);
-    expect(events.map((event) => event.turnId)).toEqual(["turn-1", "turn-1", "turn-1", "turn-1"]);
+    expect(events.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(events.map((event) => event.runId)).toEqual(["run-1", "run-1", "run-1", "run-1", "run-1"]);
+    expect(events.map((event) => event.turnId)).toEqual(["turn-1", "turn-1", "turn-1", "turn-1", "turn-1"]);
+    expect(events[3]?.payloadJson).toMatchObject({
+      origin: "turn-complete",
+      newlyLoaded: ["trace-skill"],
+      loadedSkills: ["trace-skill"],
+    });
     const turn = getSessionTurn("turn-1");
     expect(turn?.status).toBe("complete");
     expect(turn?.providerSessionIdAfter).toBe("provider-after");
@@ -2089,6 +2191,63 @@ describe("runtime session trace instrumentation", () => {
     expect(live?.toolName).toBeUndefined();
   });
 
+  it("keeps a slow in-progress tool as thinking and returns to idle on turn.complete", async () => {
+    const previousNoticeMs = process.env.RAVI_RUNTIME_SLOW_TOOL_NOTICE_MS;
+    process.env.RAVI_RUNTIME_SLOW_TOOL_NOTICE_MS = "20";
+    const streaming = makeStreamingSession();
+    seedAdapterTrace(streaming);
+
+    try {
+      await runTraceLoop(streaming, {
+        provider: PROVIDER,
+        events: (async function* () {
+          yield {
+            type: "tool.started",
+            toolUse: { id: "slow-1", name: "Bash", input: { cmd: "sleep 30" } },
+          } satisfies RuntimeEvent;
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          const midLive = getRuntimeLiveStateForSession(makeSession());
+          expect(midLive?.activity).toBe("thinking");
+          expect(midLive?.toolName).toBe("Bash");
+          expect(midLive?.busySince).toBeDefined();
+          expect(midLive?.summary).toContain("rodando");
+          yield {
+            type: "tool.completed",
+            toolUseId: "slow-1",
+            toolName: "Bash",
+            content: "ok",
+          } satisfies RuntimeEvent;
+          yield {
+            type: "turn.complete",
+            providerSessionId: "provider-after",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          } satisfies RuntimeEvent;
+        })(),
+        interrupt: async () => {},
+      });
+    } finally {
+      if (previousNoticeMs === undefined) delete process.env.RAVI_RUNTIME_SLOW_TOOL_NOTICE_MS;
+      else process.env.RAVI_RUNTIME_SLOW_TOOL_NOTICE_MS = previousNoticeMs;
+    }
+
+    const live = getRuntimeLiveStateForSession(makeSession());
+    expect(live).toMatchObject({
+      activity: "idle",
+      summary: "turn complete",
+    });
+    expect(live?.busySince).toBeUndefined();
+    expect(live?.toolName).toBeUndefined();
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const afterLateTick = getRuntimeLiveStateForSession(makeSession());
+    expect(afterLateTick).toMatchObject({
+      activity: "idle",
+      summary: "turn complete",
+    });
+    expect(afterLateTick?.busySince).toBeUndefined();
+    expect(afterLateTick?.toolName).toBeUndefined();
+  });
+
   it("clears compaction at terminal boundaries even without an idle status", async () => {
     const streaming = makeStreamingSession();
     seedAdapterTrace(streaming);
@@ -2252,7 +2411,40 @@ describe("runtime session trace instrumentation", () => {
     }
   });
 
-  it("emits external compaction announcements for a human/channel turn", async () => {
+  it("does not emit external compaction announcements by default for a human/channel turn", async () => {
+    const attachedSource = attachSpeakingOutputChat();
+    const streaming = makeStreamingSession({
+      agentMode: "active",
+      currentSource: attachedSource,
+      currentTurnProvenance: classifyTurnProvenance({ source: attachedSource }),
+    });
+    seedAdapterTrace(streaming);
+    const attemptId = streaming.currentCrashRecoveryAttemptId!;
+
+    const responses: string[] = [];
+    const emitSpy = spyOn(nats, "emit").mockImplementation(async (topic: string, data: unknown) => {
+      if (topic === `ravi.session.${SESSION_NAME}.response` && data && typeof data === "object") {
+        const response = (data as { response?: unknown }).response;
+        if (typeof response === "string") responses.push(response);
+      }
+    });
+
+    try {
+      await runTraceLoop(streaming, makeRuntimeSession(compactingThenIdle));
+    } finally {
+      emitSpy.mockRestore();
+    }
+
+    expect(responses.some((text) => text.includes("Compactando") || text.includes("compactada"))).toBe(false);
+    expect(collectRuntimeStatusCompacting()).toEqual([true, false]);
+    expect(getRuntimeTurnAttempt(attemptId)).toMatchObject({
+      status: "complete",
+      materializedOutput: false,
+    });
+  });
+
+  it("emits external compaction announcements for a human/channel turn when announceCompaction is enabled", async () => {
+    dbSetSetting("announceCompaction", "true");
     const attachedSource = attachSpeakingOutputChat();
     const streaming = makeStreamingSession({
       agentMode: "active",
@@ -2563,6 +2755,168 @@ describe("runtime session trace instrumentation", () => {
     expect(persisted.loadedSkills).toEqual(["ravi-system-tasks"]);
     expect(persisted.skills).toEqual([expect.objectContaining({ id: "ravi-system-tasks", state: "loaded" })]);
     expect(getRuntimeLiveStateForSession(makeSession())?.loadedSkills).toEqual(["ravi-system-tasks"]);
+  });
+
+  /**
+   * Turn 1 already happened: `ravi routes --help` was gated, the skill was
+   * delivered, the vector was persisted, the retry ran. Turns 2 and 3 are later
+   * user messages whose turn.complete re-attaches Claude's advertised catalog
+   * (`routes-manager`, `sessions`) with the record back at `advertised`.
+   */
+  async function expectLoadedVectorSurvivesLaterTurns(
+    persistedAfterTurnOne: RuntimeSkillVisibilitySnapshot,
+    expectedSkills: Array<[string, string]>,
+  ) {
+    const [loadedId] = persistedAfterTurnOne.loadedSkills;
+    updateRuntimeProviderState(SESSION_KEY, PROVIDER, {
+      providerSessionId: "provider-turn-1",
+      runtimeSessionDisplayId: "provider-turn-1",
+      runtimeSessionParams: { sessionId: "provider-turn-1", skillVisibility: persistedAfterTurnOne },
+    });
+
+    for (const [index, displayId] of ["provider-turn-2", "provider-turn-3"].entries()) {
+      const streaming = makeStreamingSession();
+      seedAdapterTrace(streaming, `turn-${index + 2}`);
+      const session = getSession(SESSION_KEY)!;
+      const runtimeSession = makeRuntimeSession([makeClaudeTurnComplete(displayId)]);
+      runtimeSession.skillVisibility = makeClaudeCatalogSkillVisibility();
+
+      await runTraceLoop(streaming, runtimeSession, { session });
+
+      const persisted = getSession(SESSION_KEY)?.runtimeSessionParams
+        ?.skillVisibility as RuntimeSkillVisibilitySnapshot;
+      expect(persisted.loadedSkills).toEqual([loadedId]);
+      expect(persisted.skills.map((skill) => [skill.id, skill.state])).toEqual(expectedSkills);
+      const loadedRecord = persisted.skills.find((skill) => skill.id === loadedId);
+      expect(loadedRecord?.loadedAt).toBe(200);
+      expect(loadedRecord?.evidence).toContainEqual(expect.objectContaining({ kind: "skill-gate", observedAt: 200 }));
+      expect(getRuntimeLiveStateForSession(makeSession())?.loadedSkills).toEqual([loadedId]);
+    }
+
+    // The gate reads the same persisted vector, so the retry stays unblocked.
+    const gateView = readSkillVisibilityFromParams(getSession(SESSION_KEY)?.runtimeSessionParams);
+    expect(gateView.loadedSkills.some((skill) => loadedSkillMatchesGate(skill, "ravi-system-routes-manager"))).toBe(
+      true,
+    );
+    // Nothing re-announced the load, so no duplicate telemetry rows either.
+    expect(listSessionEvents(SESSION_KEY).filter((event) => event.eventType === "skill.visibility.loaded")).toEqual([]);
+  }
+
+  it("keeps the gate-marked short id loaded across later turns when Claude re-announces its catalog", async () => {
+    const persisted = makeGateLoadedRoutesSkillVisibility();
+    expect(persisted.loadedSkills).toEqual(["routes-manager"]);
+    await expectLoadedVectorSurvivesLaterTurns(persisted, [
+      ["routes-manager", "loaded"],
+      ["sessions", "advertised"],
+    ]);
+  });
+
+  it("keeps a pre-equivalence gate alias loaded across later turns even though no catalog re-announces it", async () => {
+    await expectLoadedVectorSurvivesLaterTurns(makeLegacyGateAliasSkillVisibility(), [
+      ["ravi-system-routes-manager", "loaded"],
+      ["routes-manager", "advertised"],
+      ["sessions", "advertised"],
+    ]);
+  });
+
+  it("mirrors an in-process skill-gate delivery into live state and skill.visibility.loaded telemetry", async () => {
+    const streaming = makeStreamingSession();
+    seedAdapterTrace(streaming);
+    const session = makeSession();
+    session.runtimeProvider = PROVIDER;
+    session.providerSessionId = "provider-before";
+    session.runtimeSessionDisplayId = "provider-before";
+    session.runtimeSessionParams = {
+      sessionId: "provider-before",
+      skillVisibility: makeClaudeCatalogSkillVisibility(),
+    };
+    const emitted: Array<{ topic: string; data: Record<string, unknown> }> = [];
+    const gateSnapshot = makeGateLoadedRoutesSkillVisibility();
+
+    const runtimeSession: RuntimeSessionHandle = {
+      provider: PROVIDER,
+      events: (async function* () {
+        // The authorize path fires while the provider turn is in flight; the
+        // bootstrap closure has already refreshed the in-memory params.
+        session.runtimeSessionParams = { ...session.runtimeSessionParams, skillVisibility: gateSnapshot };
+        streaming.onSkillGatePersisted?.(gateSnapshot, { skill: "ravi-system-routes-manager", toolName: "Bash" });
+        expect(getRuntimeLiveStateForSession(makeSession())?.loadedSkills).toEqual(["routes-manager"]);
+        yield makeClaudeTurnComplete("provider-after");
+      })(),
+      interrupt: async () => {},
+    };
+    runtimeSession.skillVisibility = makeClaudeCatalogSkillVisibility();
+
+    await runTraceLoop(streaming, runtimeSession, {
+      session,
+      safeEmit: async (topic, data) => {
+        emitted.push({ topic, data });
+      },
+    });
+
+    const loadedEvents = listSessionEvents(SESSION_KEY).filter(
+      (event) => event.eventType === "skill.visibility.loaded",
+    );
+    expect(loadedEvents).toHaveLength(1);
+    expect(loadedEvents[0]).toMatchObject({ turnId: "turn-1", runId: "run-1" });
+    // `skill` is the gate alias; `newlyLoaded` names the record alias
+    // equivalence actually marked in the vector.
+    expect(loadedEvents[0]?.payloadJson).toMatchObject({
+      origin: "skill-gate",
+      skill: "ravi-system-routes-manager",
+      toolName: "Bash",
+      newlyLoaded: ["routes-manager"],
+      loadedSkills: ["routes-manager"],
+    });
+    const runtimeLoaded = emitted.filter(
+      ({ topic, data }) => topic === `ravi.session.${SESSION_NAME}.runtime` && data.type === "skill.visibility.loaded",
+    );
+    expect(runtimeLoaded).toHaveLength(1);
+    expect(runtimeLoaded[0]?.data).toMatchObject({
+      origin: "skill-gate",
+      newlyLoaded: ["routes-manager"],
+      loadedSkills: ["routes-manager"],
+    });
+
+    // turn.complete re-announced `routes-manager` as advertised; loaded wins.
+    const persisted = getSession(SESSION_KEY)?.runtimeSessionParams?.skillVisibility as RuntimeSkillVisibilitySnapshot;
+    expect(persisted.loadedSkills).toEqual(["routes-manager"]);
+    expect(getRuntimeLiveStateForSession(makeSession())?.loadedSkills).toEqual(["routes-manager"]);
+    expect(streaming.onSkillGatePersisted).toBeUndefined();
+  });
+
+  it("seeds live state from the persisted loaded vector when a runtime process starts", async () => {
+    const streaming = makeStreamingSession();
+    seedAdapterTrace(streaming);
+    const session = makeSession();
+    session.runtimeProvider = PROVIDER;
+    session.providerSessionId = "provider-before";
+    session.runtimeSessionDisplayId = "provider-before";
+    session.runtimeSessionParams = {
+      sessionId: "provider-before",
+      skillVisibility: makeGateLoadedRoutesSkillVisibility(),
+    };
+    let liveAtStart: string[] | undefined;
+
+    const runtimeSession: RuntimeSessionHandle = {
+      provider: PROVIDER,
+      events: (async function* () {
+        liveAtStart = getRuntimeLiveStateForSession(makeSession())?.loadedSkills;
+        yield makeClaudeTurnComplete("provider-after");
+      })(),
+      interrupt: async () => {},
+    };
+    // A fresh provider process only knows its advertised catalog.
+    runtimeSession.skillVisibility = makeClaudeCatalogSkillVisibility();
+
+    await runTraceLoop(streaming, runtimeSession, { session });
+
+    expect(liveAtStart).toEqual(["routes-manager"]);
+    const liveSkills = getRuntimeLiveStateForSession(makeSession())?.skills;
+    expect(liveSkills?.map((skill) => [skill.id, skill.state])).toEqual([
+      ["routes-manager", "loaded"],
+      ["sessions", "advertised"],
+    ]);
   });
 
   it("does not persist raw stream lifecycle events in the trace ledger", async () => {
@@ -3164,20 +3518,23 @@ describe("runtime session trace instrumentation", () => {
       ["turn.complete", "turn.failed", "turn.interrupted"].includes(event.eventType),
     );
     expect(terminals).toHaveLength(1);
-    expect(terminals[0]?.eventType).toBe(hangsAfterCompaction ? "turn.failed" : "turn.complete");
-    expect(getSessionTurn(turnId)?.status).toBe(hangsAfterCompaction ? "timeout" : "complete");
+    // A provider that goes silent is interrupted and auto-recovered, never failed:
+    // the session is told what happened and continues instead of dying in the dark.
+    expect(terminals[0]?.eventType).toBe(hangsAfterCompaction ? "turn.interrupted" : "turn.complete");
+    expect(getSessionTurn(turnId)?.status).toBe(hangsAfterCompaction ? "interrupted" : "complete");
     if (hangsAfterCompaction) {
       expect(terminals[0]!.timestamp - compactionCompletedAt).toBeGreaterThanOrEqual(1_000);
       expect(terminals[0]?.payloadJson).toMatchObject({ abort_reason: "provider_inactive" });
     }
   });
 
-  it("terminalizes a mid-turn utterance plus tool hang instead of leaving only the mid row", async () => {
+  it("recovers a mid-turn utterance plus tool hang by interrupting and continuing", async () => {
     const previousTimeout = process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS;
     process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS = "1000";
     const streaming = makeStreamingSession();
     seedAdapterTrace(streaming, "turn-mid-then-tool-hang");
     const emitted: Array<{ topic: string; data: Record<string, unknown> }> = [];
+    const stashed = new Map<string, RuntimeUserMessage[]>();
     const providerLifecycle: string[] = [];
     const started = Date.now();
 
@@ -3204,6 +3561,7 @@ describe("runtime session trace instrumentation", () => {
           safeEmit: async (topic, data) => {
             emitted.push({ topic, data });
           },
+          stashedMessages: stashed,
         },
       );
     } finally {
@@ -3214,6 +3572,13 @@ describe("runtime session trace instrumentation", () => {
       }
     }
 
+    // The promise to the caller is that the session is TOLD what happened, so
+    // assert the notice itself and not only the terminal state.
+    const queued = stashed.get(SESSION_NAME) ?? [];
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.message.content).toContain("Inatividade");
+    expect(queued[0]?.message.content).toContain("O turno nao foi encerrado");
+
     expect(Date.now() - started).toBeLessThan(8_000);
     expect(providerLifecycle).toEqual(["close"]);
     expect(
@@ -3222,16 +3587,78 @@ describe("runtime session trace instrumentation", () => {
         .map(({ content }) => content),
     ).toEqual(["Vou listar os agentes deste Ravi."]);
     expect(emitted.some((event) => event.data.type === "provider.inactive")).toBe(true);
-    expect(emitted.some((event) => event.data.type === "turn.failed")).toBe(true);
+    // Interrupted and auto-recovered, not failed: the runtime tells the session
+    // what happened and keeps it alive instead of ending the turn in the dark.
+    expect(emitted.some((event) => event.data.type === "turn.interrupted")).toBe(true);
+    expect(emitted.some((event) => event.data.type === "turn.failed")).toBe(false);
 
     const lastTurn = getSessionTurnUsageSummary(SESSION_KEY).lastTurn;
-    expect(lastTurn?.status).toBe("timeout");
+    expect(lastTurn?.status).toBe("interrupted");
     expect(lastTurn?.completedAt).toBeGreaterThan(0);
-    expect(getSessionTurn("turn-mid-then-tool-hang")?.status).toBe("timeout");
-    const terminal = listSessionEvents(SESSION_KEY).find((event) => event.eventType === "turn.failed");
+    expect(getSessionTurn("turn-mid-then-tool-hang")?.status).toBe("interrupted");
+    const terminal = listSessionEvents(SESSION_KEY).find((event) => event.eventType === "turn.interrupted");
     expect(terminal?.payloadJson).toMatchObject({
       abort_reason: "provider_inactive",
+      autoRecovered: true,
     });
+    // Nothing about this turn is recorded as a failure: it was interrupted and
+    // the session continues with a notice.
+    expect(listSessionEvents(SESSION_KEY).some((event) => event.eventType === "turn.failed")).toBe(false);
+  });
+
+  it("stops retrying and says so once inactivity recovery is exhausted", async () => {
+    const previousTimeout = process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS;
+    process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS = "1000";
+    resetInactivityRecoveryBudget(SESSION_NAME);
+
+    const terminals: string[] = [];
+    const exhaustedNotices: string[] = [];
+
+    try {
+      for (let attempt = 0; attempt <= MAX_INACTIVITY_RECOVERIES; attempt += 1) {
+        const streaming = makeStreamingSession();
+        seedAdapterTrace(streaming, `turn-budget-${attempt}`);
+        const emitted: Array<{ topic: string; data: Record<string, unknown> }> = [];
+        const stashed = new Map<string, RuntimeUserMessage[]>();
+
+        await runTraceLoop(
+          streaming,
+          // Yield a completed tool so the after-tool provider watch is armed, then
+          // hang: this is the shape that reaches the inactivity recovery.
+          makeRuntimeSessionThenHang([
+            { type: "assistant.message", text: "trabalhando" },
+            { type: "tool.started", toolUse: { id: `tool-${attempt}`, name: "bash", input: {} } },
+            { type: "tool.completed", toolUseId: `tool-${attempt}`, toolName: "bash", content: "ok" },
+          ]),
+          {
+            safeEmit: async (topic, data) => {
+              emitted.push({ topic, data });
+            },
+            stashedMessages: stashed,
+          },
+        );
+
+        const terminal = emitted.find((entry) => String(entry.data.type).startsWith("turn."));
+        terminals.push(String(terminal?.data.type));
+        const notice = stashed.get(SESSION_NAME)?.[0]?.message.content;
+        if (notice?.includes("preciso de intervencao")) exhaustedNotices.push(notice);
+      }
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS;
+      } else {
+        process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS = previousTimeout;
+      }
+      resetInactivityRecoveryBudget(SESSION_NAME);
+    }
+
+    // The budget is spent on recovery; the attempt past it stops retrying.
+    expect(terminals.slice(0, MAX_INACTIVITY_RECOVERIES)).toEqual(
+      new Array(MAX_INACTIVITY_RECOVERIES).fill("turn.interrupted"),
+    );
+    expect(terminals[MAX_INACTIVITY_RECOVERIES]).toBe("turn.failed");
+    // Never silently: the last attempt tells the session a human is needed.
+    expect(exhaustedNotices).toHaveLength(1);
   });
 
   it("does not persist silent heartbeat, no-response, or @@SILENT@@ assistant text", async () => {
@@ -3368,6 +3795,95 @@ describe("runtime session trace instrumentation", () => {
     expect(assistants.map(({ content }) => content)).toEqual(["primeiro?", "Olá"]);
     expect(assistants).toHaveLength(2);
     expect(assistants[0]!.id).not.toBe(assistants[1]!.id);
+  });
+
+  it("delivers a new-turn exact repeat of an earlier assistant phrase", async () => {
+    saveMessage(SESSION_NAME, "user", "oi", null, { agentId: AGENT_ID });
+    saveMessage(SESSION_NAME, "assistant", "Tô aqui.", null, { agentId: AGENT_ID });
+    saveMessage(SESSION_NAME, "user", "miranda", null, { agentId: AGENT_ID });
+
+    const streaming = makeStreamingSession();
+    seedAdapterTrace(streaming, "turn-exact-repeat");
+    const emitted: Array<{ topic: string; data: Record<string, unknown> }> = [];
+    const outbound: Array<{ topic: string; data: Record<string, unknown> }> = [];
+    natsEmitSpy?.mockImplementation(async (topic: string, data: unknown) => {
+      outbound.push({ topic, data: data as Record<string, unknown> });
+    });
+
+    await runTraceLoop(
+      streaming,
+      makeRuntimeSession([
+        { type: "assistant.message", text: "Tô aqui." },
+        {
+          type: "turn.complete",
+          providerSessionId: "provider-exact-repeat",
+          usage: { inputTokens: 1, outputTokens: 2 },
+        },
+      ]),
+      {
+        safeEmit: async (topic, data) => {
+          emitted.push({ topic, data });
+        },
+      },
+    );
+
+    expect(
+      getRecentHistory(SESSION_NAME)
+        .filter(({ role }) => role === "assistant")
+        .map(({ content }) => content),
+    ).toEqual(["Tô aqui.", "Tô aqui."]);
+    const assistantEvent = emitted.find(
+      (entry) => entry.topic.endsWith(".runtime") && entry.data.type === "assistant.message",
+    );
+    expect(assistantEvent?.data.text).toBe("Tô aqui.");
+    expect(emitted.some((entry) => entry.data.type === "silent")).toBe(false);
+    expect(
+      outbound.some(
+        (entry) =>
+          entry.topic.endsWith(".response") &&
+          typeof entry.data.response === "string" &&
+          entry.data.response === "Tô aqui.",
+      ),
+    ).toBe(true);
+  });
+
+  it("skips a pure mashed replay with a warn-visible silent runtime event", async () => {
+    saveMessage(SESSION_NAME, "user", "oi", null, { agentId: AGENT_ID });
+    saveMessage(SESSION_NAME, "assistant", "primeiro?", null, { agentId: AGENT_ID });
+    saveMessage(SESSION_NAME, "assistant", "Olá", null, { agentId: AGENT_ID });
+    saveMessage(SESSION_NAME, "user", "oi", null, { agentId: AGENT_ID });
+
+    const streaming = makeStreamingSession();
+    seedAdapterTrace(streaming, "turn-mashed-replay-skip");
+    const emitted: Array<{ topic: string; data: Record<string, unknown> }> = [];
+
+    await runTraceLoop(
+      streaming,
+      makeRuntimeSession([
+        { type: "assistant.message", text: "primeiro?Olá" },
+        {
+          type: "turn.complete",
+          providerSessionId: "provider-mashed-skip",
+          usage: { inputTokens: 1, outputTokens: 2 },
+        },
+      ]),
+      {
+        safeEmit: async (topic, data) => {
+          emitted.push({ topic, data });
+        },
+      },
+    );
+
+    expect(
+      getRecentHistory(SESSION_NAME)
+        .filter(({ role }) => role === "assistant")
+        .map(({ content }) => content),
+    ).toEqual(["primeiro?", "Olá"]);
+    expect(emitted.some((entry) => entry.data.type === "assistant.message")).toBe(false);
+    expect(emitted.some((entry) => entry.topic.endsWith(".runtime") && entry.data.type === "silent")).toBe(true);
+    expect(emitted.find((entry) => entry.topic.endsWith(".runtime") && entry.data.type === "silent")?.data.reason).toBe(
+      "mashed_replay",
+    );
   });
 
   it("classifies a provider login stub as turn.failed and keeps it off the transcript", async () => {
@@ -3559,47 +4075,143 @@ describe("runtime session trace instrumentation", () => {
   });
 
   it("refuses Grok turn.complete on the 15:52 open-Bash timeline", async () => {
+    const active = createQueuedRuntimeUserMessage({ prompt: "inspect env", source, _agentId: AGENT_ID });
+    const successor = createQueuedRuntimeUserMessage({
+      prompt: "follow-up inbound",
+      source,
+      _agentId: AGENT_ID,
+    });
     const streaming = makeStreamingSession({
       agentMode: "active",
       currentReplyTarget: source,
+      pendingMessages: [active, successor],
+      currentTurnPendingIds: active.pendingId ? [active.pendingId] : [],
     });
     seedAdapterTrace(streaming, "turn-grok-open-bash");
     const responses: Array<{ response?: string }> = [];
+    const stashedMessages = new Map<string, RuntimeUserMessage[]>();
+    const restartRequests: Array<{ sessionName: string; reason: string }> = [];
     natsEmitSpy?.mockImplementation(async (topic: string, data: unknown) => {
       if (topic === `ravi.session.${SESSION_NAME}.response` && data && typeof data === "object") {
         responses.push(data as { response?: string });
       }
     });
 
-    await runTraceLoop(streaming, {
-      ...makeRuntimeSession([
-        { type: "assistant.message", text: "Vou inspecionar o ambiente." },
-        {
-          type: "tool.started",
-          toolUse: { id: "call_read", name: "Read", input: { path: "README.md" } },
+    await runTraceLoop(
+      streaming,
+      {
+        ...makeRuntimeSession([
+          { type: "assistant.message", text: "Vou inspecionar o ambiente." },
+          {
+            type: "tool.started",
+            toolUse: { id: "call_read", name: "Read", input: { path: "README.md" } },
+          },
+          {
+            type: "tool.completed",
+            toolUseId: "call_read",
+            toolName: "Read",
+            content: "ok",
+          },
+          {
+            type: "tool.started",
+            toolUse: { id: "call_bash", name: "Bash", input: { command: "uname" } },
+          },
+          { type: "turn.complete", usage: { inputTokens: 1, outputTokens: 1 } },
+        ]),
+        provider: "grok",
+      },
+      {
+        stashedMessages,
+        restartStashedSession: async (input) => {
+          restartRequests.push(input);
         },
-        {
-          type: "tool.completed",
-          toolUseId: "call_read",
-          toolName: "Read",
-          content: "ok",
-        },
-        {
-          type: "tool.started",
-          toolUse: { id: "call_bash", name: "Bash", input: { command: "uname" } },
-        },
-        { type: "turn.complete", usage: { inputTokens: 1, outputTokens: 1 } },
-      ]),
-      provider: "grok",
-    });
+      },
+    );
 
-    expect(listSessionEvents(SESSION_KEY).map((event) => event.eventType)).toContain("turn.failed");
     expect(listSessionEvents(SESSION_KEY).some((event) => event.eventType === "turn.complete")).toBe(false);
+    const terminal = listSessionEvents(SESSION_KEY).find((event) => event.eventType === "turn.interrupted");
+    expect(terminal?.status).toBe("interrupted");
+    expect(terminal?.payloadJson).toMatchObject({
+      recoverable: true,
+      suppressedRecoverable: true,
+      abort_reason: "open_tools_recoverable_failure",
+    });
+    expect(responses.some((entry) => entry.response === "Vou inspecionar o ambiente.")).toBe(true);
     expect(
       responses.some(
         (entry) => entry.response === formatUserFacingTurnFailure(PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE),
       ),
-    ).toBe(true);
+    ).toBe(false);
+    expect(responses.some((entry) => (entry.response ?? "").includes("The model stopped while a tool"))).toBe(false);
+    expect(stashedMessages.get(SESSION_NAME)?.map((message) => message.message.content)).toEqual(["follow-up inbound"]);
+    expect(restartRequests).toEqual([{ sessionName: SESSION_NAME, reason: "open_tools_recoverable_failure" }]);
+    expect(streaming.done).toBe(true);
+  });
+
+  it("does not deliver recoverable interrupt-class provider prose after an open tool", async () => {
+    const active = createQueuedRuntimeUserMessage({ prompt: "inspect env", source, _agentId: AGENT_ID });
+    const successor = createQueuedRuntimeUserMessage({
+      prompt: "follow-up inbound",
+      source,
+      _agentId: AGENT_ID,
+    });
+    const streaming = makeStreamingSession({
+      agentMode: "active",
+      currentReplyTarget: source,
+      pendingMessages: [active, successor],
+      currentTurnPendingIds: active.pendingId ? [active.pendingId] : [],
+    });
+    seedAdapterTrace(streaming, "turn-interrupt-open-tool");
+    const responses: Array<{ response?: string }> = [];
+    const stashedMessages = new Map<string, RuntimeUserMessage[]>();
+    const restartRequests: Array<{ sessionName: string; reason: string }> = [];
+    natsEmitSpy?.mockImplementation(async (topic: string, data: unknown) => {
+      if (topic === `ravi.session.${SESSION_NAME}.response` && data && typeof data === "object") {
+        responses.push(data as { response?: string });
+      }
+    });
+    const providerError = "Codex turn failed: item.started without item.completed";
+
+    await runTraceLoop(
+      streaming,
+      {
+        ...makeRuntimeSession([]),
+        events: (async function* () {
+          yield { type: "assistant.message" as const, text: "Vou inspecionar o ambiente." };
+          yield {
+            type: "tool.started" as const,
+            toolUse: { id: "call_bash", name: "Bash", input: { command: "uname" } },
+          };
+          streaming.interrupted = true;
+          yield {
+            type: "turn.failed" as const,
+            error: providerError,
+            recoverable: true,
+          };
+        })(),
+      },
+      {
+        stashedMessages,
+        restartStashedSession: async (input) => {
+          restartRequests.push(input);
+        },
+      },
+    );
+
+    const terminal = listSessionEvents(SESSION_KEY).find((event) => event.eventType === "turn.interrupted");
+    expect(terminal?.status).toBe("interrupted");
+    expect(terminal?.payloadJson).toMatchObject({
+      recoverable: true,
+      suppressedRecoverable: true,
+      abort_reason: "recoverable_interrupt_failure",
+    });
+    expect(listSessionEvents(SESSION_KEY).some((event) => event.eventType === "turn.complete")).toBe(false);
+    expect(responses.some((entry) => entry.response === "Vou inspecionar o ambiente.")).toBe(true);
+    expect(responses.some((entry) => (entry.response ?? "").includes(providerError))).toBe(false);
+    expect(responses.some((entry) => (entry.response ?? "").startsWith("Error:"))).toBe(false);
+    expect(stashedMessages.get(SESSION_NAME)?.map((message) => message.message.content)).toEqual(["follow-up inbound"]);
+    expect(restartRequests).toEqual([{ sessionName: SESSION_NAME, reason: "recoverable_interrupt_failure" }]);
+    expect(streaming.done).toBe(true);
   });
 
   it("refuses Grok turn.complete after tools with zero post-tool assistant text", async () => {
@@ -4342,6 +4954,180 @@ describe("runtime session trace instrumentation", () => {
       abort_reason: "runtime_event_loop_closed",
       autoRecovered: false,
     });
+  });
+
+  it("terminalizes a SIGKILL/exit 137 tool failure and drains after_tool without a daemon restart", async () => {
+    const active = createQueuedRuntimeUserMessage({
+      prompt: "run the heavy bash job",
+      deliveryBarrier: "after_tool",
+      source,
+      _agentId: AGENT_ID,
+    });
+    const firstQueued = createQueuedRuntimeUserMessage({
+      prompt: "first follow-up",
+      deliveryBarrier: "after_tool",
+      source,
+      _agentId: AGENT_ID,
+    });
+    const secondQueued = createQueuedRuntimeUserMessage({
+      prompt: "second follow-up",
+      deliveryBarrier: "after_tool",
+      source,
+      _agentId: AGENT_ID,
+    });
+    const streaming = makeStreamingSession({
+      pendingMessages: [active],
+      turnActive: false,
+    });
+    const generator = createRuntimeMessageGenerator({
+      sessionName: SESSION_NAME,
+      session: streaming,
+      stashedMessages: new Map(),
+    });
+    const firstYield = await generator.next();
+    expect(firstYield.value).toMatchObject({ message: { content: "run the heavy bash job" } });
+    expect(streaming.turnActive).toBe(true);
+    expect(streaming.onTurnComplete).not.toBeNull();
+
+    streaming.pendingMessages.push(firstQueued, secondQueued);
+    seedAdapterTrace(streaming, "turn-fatal-tool-sigkill");
+
+    let generatorWoken = false;
+    const previousOnTurnComplete = streaming.onTurnComplete;
+    streaming.onTurnComplete = () => {
+      generatorWoken = true;
+      previousOnTurnComplete?.();
+    };
+
+    const stashedMessages = new Map<string, RuntimeUserMessage[]>();
+    const restartRequests: Array<{ sessionName: string; reason: string }> = [];
+    const emitted: Array<{ topic: string; data: Record<string, unknown> }> = [];
+    const barrierRelease: Array<{ toolRunning: boolean; afterToolReleasable: boolean }> = [];
+    const providerLifecycle: string[] = [];
+
+    const loop = runTraceLoop(
+      streaming,
+      makeRuntimeSessionThenHang(
+        [
+          {
+            type: "tool.started",
+            toolUse: { id: "bash-oom", name: "Bash", input: { command: "heavy" } },
+          },
+          {
+            type: "tool.completed",
+            toolUseId: "bash-oom",
+            toolName: "Bash",
+            content: "Command failed with exit code 137\nKilled",
+            isError: true,
+          },
+        ],
+        providerLifecycle,
+      ),
+      {
+        onToolBarrierReleased: () => {
+          barrierRelease.push({
+            toolRunning: streaming.toolRunning,
+            afterToolReleasable: canReleaseRuntimeDeliveryBarrier(SESSION_NAME, streaming, "after_tool"),
+          });
+        },
+        stashedMessages,
+        restartStashedSession: async (input) => {
+          restartRequests.push(input);
+        },
+        safeEmit: async (topic, data) => {
+          emitted.push({ topic, data });
+        },
+      },
+    );
+
+    const outcome = await Promise.race([
+      loop.then(() => "completed" as const),
+      new Promise<"hung">((resolve) => {
+        setTimeout(() => resolve("hung"), 2_500);
+      }),
+    ]);
+    if (outcome === "hung") {
+      streaming.abortController.abort();
+      await loop;
+    }
+
+    expect(outcome).toBe("completed");
+    expect(generatorWoken).toBe(true);
+    expect(streaming.toolRunning).toBe(false);
+    expect(streaming.turnActive).toBe(false);
+    expect(canReleaseRuntimeDeliveryBarrier(SESSION_NAME, streaming, "after_tool")).toBe(true);
+    expect(barrierRelease).toEqual([{ toolRunning: false, afterToolReleasable: true }]);
+    expect(stashedMessages.get(SESSION_NAME)?.map((message) => message.message.content)).toEqual([
+      "first follow-up",
+      "second follow-up",
+    ]);
+    expect(restartRequests).toEqual([{ sessionName: SESSION_NAME, reason: "fatal_tool_failure" }]);
+    expect(emitted.some((event) => event.data.type === "tool.fatal")).toBe(true);
+    expect(emitted.some((event) => event.data.type === "turn.failed")).toBe(true);
+    expect(providerLifecycle).toContain("close");
+
+    const events = listSessionEvents(SESSION_KEY);
+    expect(events.some((event) => event.eventType === "session.fatal_tool")).toBe(true);
+    const terminal = events.find((event) => event.eventType === "turn.failed");
+    expect(terminal?.status).toBe("failed");
+    expect(terminal?.payloadJson).toMatchObject({
+      abort_reason: "fatal_tool_failure",
+      autoRecovered: true,
+    });
+    expect(getSessionTurn("turn-fatal-tool-sigkill")?.status).toBe("failed");
+
+    streaming.done = true;
+    streaming.onTurnComplete?.();
+    await generator.return(undefined);
+  });
+
+  it("does not close the turn for an ordinary tool error while the provider stream is still open", async () => {
+    const queued = createQueuedRuntimeUserMessage({
+      prompt: "retry the listing",
+      deliveryBarrier: "after_tool",
+      source,
+      _agentId: AGENT_ID,
+    });
+    const streaming = makeStreamingSession({
+      pendingMessages: [queued],
+      currentTurnPendingIds: queued.pendingId ? [queued.pendingId] : [],
+    });
+    seedAdapterTrace(streaming, "turn-ordinary-tool-error");
+    const restartRequests: Array<{ sessionName: string; reason: string }> = [];
+    const loop = runTraceLoop(
+      streaming,
+      makeRuntimeSessionThenHang([
+        {
+          type: "tool.started",
+          toolUse: { id: "bash-ls", name: "Bash", input: { command: "ls missing" } },
+        },
+        {
+          type: "tool.completed",
+          toolUseId: "bash-ls",
+          toolName: "Bash",
+          content: "ls: missing: No such file or directory\nExit code 1",
+          isError: true,
+        },
+      ]),
+      {
+        restartStashedSession: async (input) => {
+          restartRequests.push(input);
+        },
+      },
+    );
+
+    const outcome = await Promise.race([
+      loop.then(() => "completed" as const),
+      new Promise<"open">((resolve) => {
+        setTimeout(() => resolve("open"), 400);
+      }),
+    ]);
+    streaming.abortController.abort();
+    await loop;
+
+    expect(outcome).toBe("open");
+    expect(restartRequests).toEqual([]);
+    expect(listSessionEvents(SESSION_KEY).some((event) => event.eventType === "session.fatal_tool")).toBe(false);
   });
 
   it("records failed turns with error details", async () => {

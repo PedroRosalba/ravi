@@ -41,6 +41,7 @@ class RaviClient {
   InboxNamespace get inbox => InboxNamespace(_transport);
   InsightsNamespace get insights => InsightsNamespace(_transport);
   InstancesNamespace get instances => InstancesNamespace(_transport);
+  JobsNamespace get jobs => JobsNamespace(_transport);
   MailNamespace get mail => MailNamespace(_transport);
   MediaNamespace get media => MediaNamespace(_transport);
   MeetingsNamespace get meetings => MeetingsNamespace(_transport);
@@ -230,11 +231,12 @@ class AgentsNamespace {
     );
   }
 
-  Future<AgentsSetReturn> set_(String id, String key, String value) async {
+  Future<AgentsSetReturn> set_(String id, String key, String value, [AgentsSetOptions options = const AgentsSetOptions()]) async {
     final requestBody = <String, RaviJson>{};
     requestBody["id"] = RaviJson.from(id);
     requestBody["key"] = RaviJson.from(key);
     requestBody["value"] = RaviJson.from(value);
+    options.encodeBody(requestBody);
     return _transport.callJson(
       groupSegments: const ["agents"],
       command: "set",
@@ -698,6 +700,18 @@ class BugNamespace {
   const BugNamespace(this._transport);
 
   final RaviTransport _transport;
+
+  Future<BugCommentReturn> comment(String id, [BugCommentOptions options = const BugCommentOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["id"] = RaviJson.from(id);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["bug"],
+      command: "comment",
+      body: requestBody,
+      decode: bugCommentReturnFromJson,
+    );
+  }
 
   Future<BugListReturn> list([BugListOptions options = const BugListOptions()]) async {
     final requestBody = <String, RaviJson>{};
@@ -1838,8 +1852,9 @@ class ContextNamespace {
     );
   }
 
-  Future<ContextCodexBashHookReturn> codexBashHook() async {
+  Future<ContextCodexBashHookReturn> codexBashHook([ContextCodexBashHookOptions options = const ContextCodexBashHookOptions()]) async {
     final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
     return _transport.callJson(
       groupSegments: const ["context"],
       command: "codex-bash-hook",
@@ -3836,6 +3851,81 @@ class InstancesRoutesNamespace {
       command: "show",
       body: requestBody,
       decode: instancesRoutesShowReturnFromJson,
+    );
+  }
+}
+
+class JobsNamespace {
+  const JobsNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  Future<JobsKillReturn> kill(String id) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["id"] = RaviJson.from(id);
+    return _transport.callJson(
+      groupSegments: const ["jobs"],
+      command: "kill",
+      body: requestBody,
+      decode: jobsKillReturnFromJson,
+    );
+  }
+
+  Future<JobsListReturn> list([JobsListOptions options = const JobsListOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["jobs"],
+      command: "list",
+      body: requestBody,
+      decode: jobsListReturnFromJson,
+    );
+  }
+
+  Future<JobsRunReturn> run(List<String> command, [JobsRunOptions options = const JobsRunOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["command"] = RaviJson.from(command);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["jobs"],
+      command: "run",
+      body: requestBody,
+      decode: jobsRunReturnFromJson,
+    );
+  }
+
+  Future<JobsShowReturn> show(String id) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["id"] = RaviJson.from(id);
+    return _transport.callJson(
+      groupSegments: const ["jobs"],
+      command: "show",
+      body: requestBody,
+      decode: jobsShowReturnFromJson,
+    );
+  }
+
+  Future<JobsTailReturn> tail(String id, [JobsTailOptions options = const JobsTailOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["id"] = RaviJson.from(id);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["jobs"],
+      command: "tail",
+      body: requestBody,
+      decode: jobsTailReturnFromJson,
+    );
+  }
+
+  Future<JobsWaitReturn> wait(String id, [JobsWaitOptions options = const JobsWaitOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["id"] = RaviJson.from(id);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["jobs"],
+      command: "wait",
+      body: requestBody,
+      decode: jobsWaitReturnFromJson,
     );
   }
 }
@@ -6461,10 +6551,11 @@ class SessionsNamespace {
     );
   }
 
-  Future<SessionsSetModelReturn> setModel(String nameOrKey, String model) async {
+  Future<SessionsSetModelReturn> setModel(String nameOrKey, String model, [SessionsSetModelOptions options = const SessionsSetModelOptions()]) async {
     final requestBody = <String, RaviJson>{};
     requestBody["nameOrKey"] = RaviJson.from(nameOrKey);
     requestBody["model"] = RaviJson.from(model);
+    options.encodeBody(requestBody);
     return _transport.callJson(
       groupSegments: const ["sessions"],
       command: "set-model",
@@ -6473,10 +6564,11 @@ class SessionsNamespace {
     );
   }
 
-  Future<SessionsSetProviderReturn> setProvider(String nameOrKey, String provider) async {
+  Future<SessionsSetProviderReturn> setProvider(String nameOrKey, String provider, [SessionsSetProviderOptions options = const SessionsSetProviderOptions()]) async {
     final requestBody = <String, RaviJson>{};
     requestBody["nameOrKey"] = RaviJson.from(nameOrKey);
     requestBody["provider"] = RaviJson.from(provider);
+    options.encodeBody(requestBody);
     return _transport.callJson(
       groupSegments: const ["sessions"],
       command: "set-provider",

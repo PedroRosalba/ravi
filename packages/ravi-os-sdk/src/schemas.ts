@@ -2118,7 +2118,7 @@ export const AgentsPermissionsInputSchema = {
       "type": "string"
     },
     "profile": {
-      "description": "Profile: bootstrap, full-access (Bash execute ceiling + admin), none",
+      "description": "Profile: bootstrap, chat-only (conversation only), full-access (Bash execute ceiling + admin), none (reset to bootstrap minimum)",
       "type": "string"
     }
   },
@@ -2209,6 +2209,7 @@ export const AgentsPermissionsReturnSchema = {
             "profile": {
               "enum": [
                 "bootstrap",
+                "chat-only",
                 "full-access"
               ],
               "type": "string"
@@ -2538,6 +2539,9 @@ export const AgentsPermissionsReturnSchema = {
     "agentId": {
       "type": "string"
     },
+    "authorityLayer": {
+      "type": "string"
+    },
     "before": {
       "anyOf": [
         {
@@ -2574,6 +2578,7 @@ export const AgentsPermissionsReturnSchema = {
             "profile": {
               "enum": [
                 "bootstrap",
+                "chat-only",
                 "full-access"
               ],
               "type": "string"
@@ -2586,8 +2591,14 @@ export const AgentsPermissionsReturnSchema = {
         }
       ]
     },
+    "breakGlassCommand": {
+      "type": "string"
+    },
     "changed": {
       "type": "boolean"
+    },
+    "chatOnlyCommand": {
+      "type": "string"
     },
     "command": {
       "type": "string"
@@ -2608,7 +2619,22 @@ export const AgentsPermissionsReturnSchema = {
         }
       ]
     },
+    "effectiveOn": {
+      "type": "string"
+    },
+    "inspectCommand": {
+      "type": "string"
+    },
+    "leastPrivilegeExample": {
+      "type": "string"
+    },
     "profile": {
+      "type": "string"
+    },
+    "recurringAccessCommand": {
+      "type": "string"
+    },
+    "resetToBootstrapCommand": {
       "type": "string"
     },
     "runtimePermissions": {
@@ -2647,6 +2673,7 @@ export const AgentsPermissionsReturnSchema = {
             "profile": {
               "enum": [
                 "bootstrap",
+                "chat-only",
                 "full-access"
               ],
               "type": "string"
@@ -2791,6 +2818,10 @@ export const AgentsSessionReturnSchema = {
 export const AgentsSetInputSchema = {
   "additionalProperties": false,
   "properties": {
+    "force": {
+      "description": "Clear session provider/model overrides so those sessions adopt the agent config",
+      "type": "boolean"
+    },
     "id": {
       "description": "Agent ID",
       "type": "string"
@@ -2831,8 +2862,116 @@ export const AgentsSetReturnSchema = {
     "changed": {
       "type": "boolean"
     },
+    "forcedClearedOverrides": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "effort": {
+            "enum": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ],
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "enum": [
+                "provider_override",
+                "model_override",
+                "effort_override",
+                "thinking_override"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sessionName": {
+            "type": "string"
+          },
+          "thinking": {
+            "enum": [
+              "off",
+              "normal",
+              "verbose"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionName",
+          "reasons"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "key": {
       "type": "string"
+    },
+    "rematerializedSessions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "clearedProviderSession": {
+            "type": "boolean"
+          },
+          "previousRuntimeProvider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reasons": {
+            "items": {
+              "const": "stale_runtime_provider",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "runtimeProvider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessionKey": {
+            "type": "string"
+          },
+          "sessionName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionName",
+          "sessionKey",
+          "reasons",
+          "previousRuntimeProvider",
+          "runtimeProvider",
+          "clearedProviderSession"
+        ],
+        "type": "object"
+      },
+      "type": "array"
     },
     "sessionOverrides": {
       "items": {
@@ -2854,6 +2993,21 @@ export const AgentsSetReturnSchema = {
           "model": {
             "type": "string"
           },
+          "provider": {
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "enum": [
+                "provider_override",
+                "model_override",
+                "effort_override",
+                "thinking_override"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
           "sessionName": {
             "type": "string"
           },
@@ -2867,7 +3021,8 @@ export const AgentsSetReturnSchema = {
           }
         },
         "required": [
-          "sessionName"
+          "sessionName",
+          "reasons"
         ],
         "type": "object"
       },
@@ -2881,7 +3036,9 @@ export const AgentsSetReturnSchema = {
     "agentId",
     "key",
     "value",
-    "sessionOverrides"
+    "sessionOverrides",
+    "rematerializedSessions",
+    "forcedClearedOverrides"
   ],
   "type": "object"
 } as const satisfies SdkJsonSchema;
@@ -3295,6 +3452,7 @@ export const AgentsShowReturnSchema = {
             "profile": {
               "enum": [
                 "bootstrap",
+                "chat-only",
                 "full-access"
               ],
               "type": "string"
@@ -9109,6 +9267,145 @@ export const BridgesRevokeReturnSchema = {
     "consoleUrl",
     "revoked",
     "bridgeId"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `bug.comment`. */
+export const BugCommentInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "dossierFile": {
+      "description": "Path to a comment dossier JSON file",
+      "type": "string"
+    },
+    "dossierJson": {
+      "description": "Full ravi.bug_comment/v1 JSON object",
+      "type": "string"
+    },
+    "evidenceFile": {
+      "description": "Path to sanitized evidence (plain text, evidence JSON, or a comment dossier)",
+      "type": "string"
+    },
+    "execute": {
+      "description": "Actually POST the follow-up to Ravi Console; default is a dry-run that prints the collection prompt (exit 3)",
+      "type": "boolean"
+    },
+    "id": {
+      "description": "Existing bug report id",
+      "type": "string"
+    },
+    "idempotencyKey": {
+      "description": "Retry key; default is sha256 of this bug id plus the sanitized payload",
+      "type": "string"
+    },
+    "text": {
+      "description": "Sanitized follow-up comment",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `bug.comment`. */
+export const BugCommentReturnSchema = {
+  "$defs": {
+    "__schema0": {
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/__schema0"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/__schema0"
+          },
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "bug": {
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema0"
+      },
+      "propertyNames": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "bugId": {
+      "type": "string"
+    },
+    "comment": {
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema0"
+      },
+      "propertyNames": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "consoleUrl": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "idempotencyKey": {
+      "type": "string"
+    },
+    "reused": {
+      "type": "boolean"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    },
+    "url": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "success",
+    "consoleUrl",
+    "bug",
+    "comment",
+    "id",
+    "bugId",
+    "url",
+    "reused",
+    "idempotencyKey"
   ],
   "type": "object"
 } as const satisfies SdkJsonSchema;
@@ -22756,8 +23053,16 @@ export const ContactsAddInputSchema = {
       "description": "Restrict to agent(s), comma-separated",
       "type": "string"
     },
+    "channel": {
+      "description": "Channel for a platform identity: slack, telegram, phone, whatsapp, email",
+      "type": "string"
+    },
     "identity": {
-      "description": "Phone number or WhatsApp identity",
+      "description": "Phone, WhatsApp, or platform user id (use --channel/--instance for Slack)",
+      "type": "string"
+    },
+    "instance": {
+      "description": "Channel instance name or id (required for slack/telegram/discord)",
       "type": "string"
     },
     "kind": {
@@ -23018,7 +23323,7 @@ export const ContactsLinkInputSchema = {
   "additionalProperties": false,
   "properties": {
     "channel": {
-      "description": "Channel, e.g. phone, whatsapp, telegram, email",
+      "description": "Channel, e.g. phone, whatsapp, telegram, slack, email",
       "type": "string"
     },
     "contact": {
@@ -24408,10 +24713,16 @@ export const ContextCleanupAgentRuntimeReturnSchema = {
                       "accountId": {
                         "type": "string"
                       },
+                      "canonicalChatId": {
+                        "type": "string"
+                      },
                       "channel": {
                         "type": "string"
                       },
                       "chatId": {
+                        "type": "string"
+                      },
+                      "instanceId": {
                         "type": "string"
                       },
                       "threadId": {
@@ -24531,7 +24842,12 @@ export const ContextCleanupAgentRuntimeReturnSchema = {
 /** JSON Schema for the input body of `context.codex-bash-hook`. */
 export const ContextCodexBashHookInputSchema = {
   "additionalProperties": false,
-  "properties": {},
+  "properties": {
+    "payload": {
+      "description": "Gateway hook input; process hooks normally read JSON from stdin",
+      "type": "string"
+    }
+  },
   "type": "object"
 } as const satisfies SdkJsonSchema;
 
@@ -25237,10 +25553,16 @@ export const ContextInfoReturnSchema = {
             "accountId": {
               "type": "string"
             },
+            "canonicalChatId": {
+              "type": "string"
+            },
             "channel": {
               "type": "string"
             },
             "chatId": {
+              "type": "string"
+            },
+            "instanceId": {
               "type": "string"
             },
             "threadId": {
@@ -25491,10 +25813,16 @@ export const ContextIssueReturnSchema = {
             "accountId": {
               "type": "string"
             },
+            "canonicalChatId": {
+              "type": "string"
+            },
             "channel": {
               "type": "string"
             },
             "chatId": {
+              "type": "string"
+            },
+            "instanceId": {
               "type": "string"
             },
             "threadId": {
@@ -25954,10 +26282,16 @@ export const ContextLineageReturnSchema = {
                 "accountId": {
                   "type": "string"
                 },
+                "canonicalChatId": {
+                  "type": "string"
+                },
                 "channel": {
                   "type": "string"
                 },
                 "chatId": {
+                  "type": "string"
+                },
+                "instanceId": {
                   "type": "string"
                 },
                 "threadId": {
@@ -27011,10 +27345,16 @@ export const ContextRevokeReturnSchema = {
                 "accountId": {
                   "type": "string"
                 },
+                "canonicalChatId": {
+                  "type": "string"
+                },
                 "channel": {
                   "type": "string"
                 },
                 "chatId": {
+                  "type": "string"
+                },
+                "instanceId": {
                   "type": "string"
                 },
                 "threadId": {
@@ -27171,10 +27511,25 @@ export const ContextVisibilityReturnSchema = {
                 "detail": {
                   "type": "string"
                 },
+                "eventId": {
+                  "type": "string"
+                },
+                "eventType": {
+                  "type": "string"
+                },
                 "itemId": {
                   "type": "string"
                 },
                 "kind": {
+                  "type": "string"
+                },
+                "observedAt": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "turnId": {
                   "type": "string"
                 }
               },
@@ -27551,10 +27906,16 @@ export const ContextWhoamiReturnSchema = {
             "accountId": {
               "type": "string"
             },
+            "canonicalChatId": {
+              "type": "string"
+            },
             "channel": {
               "type": "string"
             },
             "chatId": {
+              "type": "string"
+            },
+            "instanceId": {
               "type": "string"
             },
             "threadId": {
@@ -38970,6 +39331,577 @@ export const InstancesTargetReturnSchema = {
   "type": "object"
 } as const satisfies SdkJsonSchema;
 
+/** JSON Schema for the input body of `jobs.kill`. */
+export const JobsKillInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "Job id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `jobs.kill`. */
+export const JobsKillReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "killed": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "status",
+    "killed"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `jobs.list`. */
+export const JobsListInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "all": {
+      "description": "All sessions",
+      "type": "boolean"
+    },
+    "limit": {
+      "description": "Maximum jobs to return (default: 50)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Number of jobs to skip (default: 0)",
+      "type": "string"
+    },
+    "session": {
+      "description": "Filter by session",
+      "type": "string"
+    }
+  },
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `jobs.list`. */
+export const JobsListReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "agentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "command": {
+            "type": "string"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "exitCode": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finishedAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "logPath": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessionName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "signal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "startedAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sessionName",
+          "agentId",
+          "command",
+          "cwd",
+          "status",
+          "pid",
+          "exitCode",
+          "signal",
+          "logPath",
+          "origin",
+          "startedAt",
+          "finishedAt"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total",
+        "hasMore",
+        "nextOffset",
+        "nextCommand"
+      ],
+      "type": "object"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "total",
+    "pagination",
+    "items"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `jobs.run`. */
+export const JobsRunInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "description": "Agent that owns the job",
+      "type": "string"
+    },
+    "command": {
+      "description": "Command to run (after --)",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "cwd": {
+      "description": "Working directory",
+      "type": "string"
+    },
+    "session": {
+      "description": "Session to notify when the job finishes",
+      "type": "string"
+    },
+    "wait": {
+      "description": "Block until the job finishes, then print the tail",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "command"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `jobs.run`. */
+export const JobsRunReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "command": {
+      "type": "string"
+    },
+    "hint": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "logPath": {
+      "type": "string"
+    },
+    "sessionName": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "status",
+    "command",
+    "logPath",
+    "sessionName",
+    "hint"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `jobs.show`. */
+export const JobsShowInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "Job id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `jobs.show`. */
+export const JobsShowReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "job": {
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "command": {
+          "type": "string"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exitCode": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "logPath": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "pid": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sessionName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sessionName",
+        "agentId",
+        "command",
+        "cwd",
+        "status",
+        "pid",
+        "exitCode",
+        "signal",
+        "logPath",
+        "origin",
+        "startedAt",
+        "finishedAt"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "job"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `jobs.tail`. */
+export const JobsTailInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "Job id",
+      "type": "string"
+    },
+    "lines": {
+      "description": "How many characters to keep (default 4000)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `jobs.tail`. */
+export const JobsTailReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "logPath": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "tail": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "status",
+    "logPath",
+    "tail"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `jobs.wait`. */
+export const JobsWaitInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "Job id",
+      "type": "string"
+    },
+    "timeout": {
+      "description": "Give up after this many ms (default: no limit)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `jobs.wait`. */
+export const JobsWaitReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "exitCode": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "id": {
+      "type": "string"
+    },
+    "logPath": {
+      "type": "string"
+    },
+    "signal": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "status",
+    "exitCode",
+    "signal",
+    "logPath"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
 /** JSON Schema for the input body of `mail.accounts.create`. */
 export const MailAccountsCreateInputSchema = {
   "additionalProperties": false,
@@ -48845,7 +49777,7 @@ export const PagesCreateInputSchema = {
       "type": "boolean"
     },
     "execute": {
-      "description": "Unused compatibility no-op; pages create always writes the host record",
+      "description": "Write the host record. Without it, pages create only returns the planned host",
       "type": "boolean"
     },
     "project": {
@@ -49635,7 +50567,7 @@ export const PagesPublishInputSchema = {
       "type": "string"
     },
     "execute": {
-      "description": "Unused compatibility no-op; pages publish always uploads and publishes",
+      "description": "Upload and publish. Without it, pages publish only returns the planned publish",
       "type": "boolean"
     },
     "idempotencyKey": {
@@ -50101,7 +51033,7 @@ export const PagesShipInputSchema = {
       "type": "string"
     },
     "execute": {
-      "description": "Unused compatibility no-op; pages ship always ensures the host and publishes",
+      "description": "Perform the ship. Without it, pages ship only returns the planned publish",
       "type": "boolean"
     },
     "html": {
@@ -50302,11 +51234,36 @@ export const PagesUpdateReturnSchema = {
     "consoleUrl": {
       "type": "string"
     },
+    "defaultVisibility": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "edgeManifestRepair": {
       "$ref": "#/$defs/__schema0"
     },
+    "effectiveVisibility": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
     "projectRef": {
       "type": "string"
+    },
+    "route": {
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema0"
+      },
+      "propertyNames": {
+        "type": "string"
+      },
+      "type": "object"
     },
     "site": {
       "additionalProperties": {
@@ -50323,6 +51280,13 @@ export const PagesUpdateReturnSchema = {
     "success": {
       "const": true,
       "type": "boolean"
+    },
+    "target": {
+      "enum": [
+        "site",
+        "route"
+      ],
+      "type": "string"
     },
     "url": {
       "anyOf": [
@@ -50363,11 +51327,15 @@ export const PagesVisibilityInputSchema = {
       "type": "string"
     },
     "execute": {
-      "description": "Required to switch a site to public visibility; other visibilities apply immediately",
+      "description": "Required to switch visibility to public; other visibilities apply immediately",
       "type": "boolean"
     },
     "project": {
       "description": "Console project id or slug; overrides saved Console scope",
+      "type": "string"
+    },
+    "route": {
+      "description": "Change this route's visibility only, without uploading content. Omit to set site defaultVisibility",
       "type": "string"
     }
   },
@@ -50421,11 +51389,36 @@ export const PagesVisibilityReturnSchema = {
     "consoleUrl": {
       "type": "string"
     },
+    "defaultVisibility": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "edgeManifestRepair": {
       "$ref": "#/$defs/__schema0"
     },
+    "effectiveVisibility": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
     "projectRef": {
       "type": "string"
+    },
+    "route": {
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema0"
+      },
+      "propertyNames": {
+        "type": "string"
+      },
+      "type": "object"
     },
     "site": {
       "additionalProperties": {
@@ -50442,6 +51435,13 @@ export const PagesVisibilityReturnSchema = {
     "success": {
       "const": true,
       "type": "boolean"
+    },
+    "target": {
+      "enum": [
+        "site",
+        "route"
+      ],
+      "type": "string"
     },
     "url": {
       "anyOf": [
@@ -50759,11 +51759,20 @@ export const PermissionsCheckReturnSchema = {
       ],
       "type": "object"
     },
+    "diagnosticNote": {
+      "type": "string"
+    },
     "guidance": {
       "additionalProperties": false,
       "properties": {
         "breakGlass": {
           "type": "string"
+        },
+        "candidateCapabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "canonicalCapability": {
           "type": "string"
@@ -50783,6 +51792,9 @@ export const PermissionsCheckReturnSchema = {
         "preferredPath": {
           "additionalProperties": false,
           "properties": {
+            "allowCommand": {
+              "type": "string"
+            },
             "kind": {
               "type": "string"
             },
@@ -50932,6 +51944,9 @@ export const PermissionsMaterializeReturnSchema = {
         "breakGlass": {
           "type": "string"
         },
+        "chatOnly": {
+          "type": "string"
+        },
         "recurringAccess": {
           "type": "string"
         }
@@ -50941,6 +51956,9 @@ export const PermissionsMaterializeReturnSchema = {
         "breakGlass"
       ],
       "type": "object"
+    },
+    "profile": {
+      "type": "string"
     },
     "subject": {
       "additionalProperties": false,
@@ -51095,6 +52113,12 @@ export const PermissionsResolveReturnSchema = {
         "breakGlass": {
           "type": "string"
         },
+        "candidateCapabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "canonicalCapability": {
           "type": "string"
         },
@@ -51113,6 +52137,9 @@ export const PermissionsResolveReturnSchema = {
         "preferredPath": {
           "additionalProperties": false,
           "properties": {
+            "allowCommand": {
+              "type": "string"
+            },
             "kind": {
               "type": "string"
             },
@@ -62315,6 +63342,10 @@ export const SessionsSetModelInputSchema = {
     "nameOrKey": {
       "description": "Session name or key",
       "type": "string"
+    },
+    "propagate": {
+      "description": "Also set the agent default model and rematerialize sibling sessions without overrides",
+      "type": "boolean"
     }
   },
   "required": [
@@ -62326,8 +63357,644 @@ export const SessionsSetModelInputSchema = {
 
 /** JSON Schema for the return shape of `sessions.set-model`. */
 export const SessionsSetModelReturnSchema = {
-  "additionalProperties": {},
-  "properties": {},
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "const": "set-model",
+      "type": "string"
+    },
+    "after": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "agentId": {
+              "type": "string"
+            },
+            "effectiveModel": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "effectiveProvider": {
+              "type": "string"
+            },
+            "effortOverride": {
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ],
+              "type": "string"
+            },
+            "ephemeral": {
+              "type": "boolean"
+            },
+            "expiresAt": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "modelError": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "modelOverride": {
+              "type": "string"
+            },
+            "modelPresetId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "modelPresetVersion": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "modelSource": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "providerSource": {
+              "type": "string"
+            },
+            "runtimeOptions": {
+              "additionalProperties": false,
+              "properties": {
+                "effort": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "enum": [
+                        "session_override",
+                        "agent_default",
+                        "global_default",
+                        "runtime_default"
+                      ],
+                      "type": "string"
+                    },
+                    "value": {
+                      "enum": [
+                        "none",
+                        "minimal",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max",
+                        "ultra"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "source"
+                  ],
+                  "type": "object"
+                },
+                "model": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "source"
+                  ],
+                  "type": "object"
+                },
+                "provider": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "source"
+                  ],
+                  "type": "object"
+                },
+                "thinking": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "source"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "provider",
+                "model",
+                "effort",
+                "thinking"
+              ],
+              "type": "object"
+            },
+            "sessionKey": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sessionKey",
+            "label",
+            "agentId",
+            "effectiveProvider",
+            "providerSource",
+            "effectiveModel",
+            "modelSource",
+            "modelPresetId",
+            "modelPresetVersion",
+            "modelError",
+            "ephemeral",
+            "expiresAt",
+            "runtimeOptions"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agentDefaultDiffers": {
+      "type": "boolean"
+    },
+    "agentDefaultModel": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agentDefaultProvider": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "before": {
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "effectiveModel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effectiveProvider": {
+          "type": "string"
+        },
+        "effortOverride": {
+          "enum": [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ],
+          "type": "string"
+        },
+        "ephemeral": {
+          "type": "boolean"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "modelError": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modelOverride": {
+          "type": "string"
+        },
+        "modelPresetId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modelPresetVersion": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modelSource": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "providerSource": {
+          "type": "string"
+        },
+        "runtimeOptions": {
+          "additionalProperties": false,
+          "properties": {
+            "effort": {
+              "additionalProperties": false,
+              "properties": {
+                "source": {
+                  "enum": [
+                    "session_override",
+                    "agent_default",
+                    "global_default",
+                    "runtime_default"
+                  ],
+                  "type": "string"
+                },
+                "value": {
+                  "enum": [
+                    "none",
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value",
+                "source"
+              ],
+              "type": "object"
+            },
+            "model": {
+              "additionalProperties": false,
+              "properties": {
+                "source": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "value": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "value",
+                "source"
+              ],
+              "type": "object"
+            },
+            "provider": {
+              "additionalProperties": false,
+              "properties": {
+                "source": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value",
+                "source"
+              ],
+              "type": "object"
+            },
+            "thinking": {
+              "additionalProperties": false,
+              "properties": {
+                "source": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "value": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "value",
+                "source"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "provider",
+            "model",
+            "effort",
+            "thinking"
+          ],
+          "type": "object"
+        },
+        "sessionKey": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionKey",
+        "label",
+        "agentId",
+        "effectiveProvider",
+        "providerSource",
+        "effectiveModel",
+        "modelSource",
+        "modelPresetId",
+        "modelPresetVersion",
+        "modelError",
+        "ephemeral",
+        "expiresAt",
+        "runtimeOptions"
+      ],
+      "type": "object"
+    },
+    "changed": {
+      "type": "boolean"
+    },
+    "effectiveModel": {
+      "type": "string"
+    },
+    "event": {
+      "additionalProperties": {},
+      "properties": {},
+      "type": "object"
+    },
+    "hint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "modelOverride": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "notification": {
+      "additionalProperties": {},
+      "properties": {},
+      "type": "object"
+    },
+    "propagateCommand": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "propagated": {
+      "type": "boolean"
+    },
+    "rematerializedSessions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "clearedProviderSession": {
+            "type": "boolean"
+          },
+          "previousRuntimeProvider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reasons": {
+            "items": {
+              "const": "stale_runtime_provider",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "runtimeProvider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessionKey": {
+            "type": "string"
+          },
+          "sessionName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionName",
+          "sessionKey",
+          "reasons",
+          "previousRuntimeProvider",
+          "runtimeProvider",
+          "clearedProviderSession"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "sessionKey": {
+      "type": "string"
+    },
+    "sessionName": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "action",
+    "changed",
+    "sessionKey",
+    "sessionName",
+    "before",
+    "after",
+    "modelOverride",
+    "effectiveModel"
+  ],
   "type": "object"
 } as const satisfies SdkJsonSchema;
 
@@ -62338,6 +64005,10 @@ export const SessionsSetProviderInputSchema = {
     "nameOrKey": {
       "description": "Session name or key",
       "type": "string"
+    },
+    "propagate": {
+      "description": "Also set the agent default provider and rematerialize sibling sessions without overrides",
+      "type": "boolean"
     },
     "provider": {
       "description": "Runtime provider id (codex, claude, pi, grok) or 'clear' to remove override",
@@ -62604,6 +64275,29 @@ export const SessionsSetProviderReturnSchema = {
         }
       ]
     },
+    "agentDefaultDiffers": {
+      "type": "boolean"
+    },
+    "agentDefaultModel": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agentDefaultProvider": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "appliesOn": {
       "const": "next-turn-runtime-restart",
       "type": "string"
@@ -62852,8 +64546,84 @@ export const SessionsSetProviderReturnSchema = {
     "effectiveProvider": {
       "type": "string"
     },
+    "hint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "propagateCommand": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "propagated": {
+      "type": "boolean"
+    },
     "providerSource": {
       "type": "string"
+    },
+    "rematerializedSessions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "clearedProviderSession": {
+            "type": "boolean"
+          },
+          "previousRuntimeProvider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reasons": {
+            "items": {
+              "const": "stale_runtime_provider",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "runtimeProvider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessionKey": {
+            "type": "string"
+          },
+          "sessionName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionName",
+          "sessionKey",
+          "reasons",
+          "previousRuntimeProvider",
+          "runtimeProvider",
+          "clearedProviderSession"
+        ],
+        "type": "object"
+      },
+      "type": "array"
     },
     "runtimeProviderOverride": {
       "anyOf": [

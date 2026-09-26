@@ -4,6 +4,7 @@ afterAll(() => mock.restore());
 
 const actualRuntimeContextRegistryModule = await import("../../runtime/context-registry.js");
 const actualRouterDbModule = await import("../../router/router-db.js");
+const { identityDelegationRequiresAdminError } = await import("../../runtime/context-errors.js");
 const actualNatsModule = await import("../../nats.js");
 const actualCliContextModule = await import("../context.js");
 const actualRouterSessionsModule = await import("../../router/sessions.js");
@@ -19,7 +20,14 @@ let resolvedContext:
       agentId?: string;
       sessionKey?: string;
       sessionName?: string;
-      source?: { channel: string; accountId: string; chatId: string };
+      source?: {
+        channel: string;
+        accountId: string;
+        chatId: string;
+        threadId?: string;
+        instanceId?: string;
+        canonicalChatId?: string;
+      };
       capabilities: Array<{ permission: string; objectType: string; objectId: string }>;
       metadata?: Record<string, unknown>;
       createdAt: number;
@@ -36,7 +44,14 @@ let inlineContext:
       agentId?: string;
       sessionKey?: string;
       sessionName?: string;
-      source?: { channel: string; accountId: string; chatId: string };
+      source?: {
+        channel: string;
+        accountId: string;
+        chatId: string;
+        threadId?: string;
+        instanceId?: string;
+        canonicalChatId?: string;
+      };
       capabilities: Array<{ permission: string; objectType: string; objectId: string }>;
       metadata?: Record<string, unknown>;
       createdAt: number;
@@ -66,7 +81,14 @@ let issuedContext:
       agentId?: string;
       sessionKey?: string;
       sessionName?: string;
-      source?: { channel: string; accountId: string; chatId: string };
+      source?: {
+        channel: string;
+        accountId: string;
+        chatId: string;
+        threadId?: string;
+        instanceId?: string;
+        canonicalChatId?: string;
+      };
       capabilities: Array<{ permission: string; objectType: string; objectId: string }>;
       metadata?: Record<string, unknown>;
       createdAt: number;
@@ -80,7 +102,14 @@ let listedContexts: Array<{
   agentId?: string;
   sessionKey?: string;
   sessionName?: string;
-  source?: { channel: string; accountId: string; chatId: string };
+  source?: {
+    channel: string;
+    accountId: string;
+    chatId: string;
+    threadId?: string;
+    instanceId?: string;
+    canonicalChatId?: string;
+  };
   capabilities: Array<{ permission: string; objectType: string; objectId: string }>;
   metadata?: Record<string, unknown>;
   createdAt: number;
@@ -96,7 +125,14 @@ let fetchedContext:
       agentId?: string;
       sessionKey?: string;
       sessionName?: string;
-      source?: { channel: string; accountId: string; chatId: string };
+      source?: {
+        channel: string;
+        accountId: string;
+        chatId: string;
+        threadId?: string;
+        instanceId?: string;
+        canonicalChatId?: string;
+      };
       capabilities: Array<{ permission: string; objectType: string; objectId: string }>;
       metadata?: Record<string, unknown>;
       createdAt: number;
@@ -113,7 +149,14 @@ let revokedContext:
       agentId?: string;
       sessionKey?: string;
       sessionName?: string;
-      source?: { channel: string; accountId: string; chatId: string };
+      source?: {
+        channel: string;
+        accountId: string;
+        chatId: string;
+        threadId?: string;
+        instanceId?: string;
+        canonicalChatId?: string;
+      };
       capabilities: Array<{ permission: string; objectType: string; objectId: string }>;
       metadata?: Record<string, unknown>;
       createdAt: number;
@@ -124,7 +167,23 @@ let revokedContext:
   | undefined;
 let resolvedContextOptions: { touch?: boolean; readOnly?: boolean } | undefined;
 let revokedCalls: Array<{ contextId: string; options?: unknown }> = [];
+let listedAgents: Array<{ id: string; name?: string; cwd: string }> = [];
 let listedSessions: Array<{ sessionKey: string }> = [];
+let resolvedSession:
+  | {
+      sessionKey: string;
+      name?: string;
+      agentId: string;
+      agentCwd: string;
+      createdAt: number;
+      updatedAt: number;
+      runtimeProvider?: string;
+      runtimeSessionParams?: Record<string, unknown>;
+      compactionCount?: number;
+      contextTokens?: number;
+      totalTokens?: number;
+    }
+  | undefined;
 let commandSkillGateDecision:
   | {
       allowed: boolean;
@@ -168,23 +227,47 @@ mock.module("../../runtime/context-registry.js", () => ({
     }
     return resolvedContext;
   },
-  issueRuntimeContext: (_input: unknown) =>
-    issuedContext ?? {
-      contextId: "ctx_child_123",
-      contextKey: "rctx_child_123",
-      kind: "cli-runtime",
-      agentId: resolvedContext?.agentId,
-      sessionKey: resolvedContext?.sessionKey,
-      sessionName: resolvedContext?.sessionName,
-      source: resolvedContext?.source,
-      capabilities: [{ permission: "execute", objectType: "group", objectId: "daemon" }],
-      metadata: {
-        parentContextId: resolvedContext?.contextId ?? "ctx_123",
-        issuedFor: "sync-cli",
-      },
-      createdAt: 3000,
-      expiresAt: 4000,
-    },
+  issueRuntimeContext: (input: {
+    parent?: { capabilities?: Array<{ permission: string; objectType: string; objectId: string }> };
+    identity?: { agentId?: string; sessionKey?: string; sessionName?: string };
+    cliName?: string;
+  }) => {
+    if (input.identity) {
+      const hasAdmin = (input.parent?.capabilities ?? []).some(
+        (capability) =>
+          capability.permission === "admin" && capability.objectType === "system" && capability.objectId === "*",
+      );
+      if (!hasAdmin) throw identityDelegationRequiresAdminError();
+    }
+    const identity = input.identity;
+    return (
+      issuedContext ?? {
+        contextId: "ctx_child_123",
+        contextKey: "rctx_child_123",
+        kind: "cli-runtime",
+        agentId: identity?.agentId ?? resolvedContext?.agentId,
+        sessionKey: identity?.sessionKey ?? resolvedContext?.sessionKey,
+        sessionName: identity?.sessionName ?? resolvedContext?.sessionName,
+        source: identity ? undefined : resolvedContext?.source,
+        capabilities: [{ permission: "execute", objectType: "group", objectId: "daemon" }],
+        metadata: {
+          parentContextId: resolvedContext?.contextId ?? "ctx_123",
+          issuedFor: input.cliName ?? "sync-cli",
+          ...(identity
+            ? {
+                identityDelegation: {
+                  agentId: identity.agentId,
+                  sessionKey: identity.sessionKey ?? null,
+                  sessionName: identity.sessionName ?? null,
+                },
+              }
+            : {}),
+        },
+        createdAt: 3000,
+        expiresAt: 4000,
+      }
+    );
+  },
   revokeRuntimeContext: (_contextId: string, _options?: unknown) => {
     revokedCalls.push({ contextId: _contextId, options: _options });
     const matchingContext = listedContexts.find((context) => context.contextId === _contextId);
@@ -214,11 +297,17 @@ mock.module("../../router/router-db.js", () => ({
     return listedContexts.find((context) => context.contextId === contextId) ?? null;
   },
   dbListContexts: () => listedContexts,
+  dbGetAgent: (id: string) => listedAgents.find((agent) => agent.id === id) ?? null,
+  dbListAgents: () => listedAgents,
 }));
 
 mock.module("../../router/sessions.js", () => ({
   ...actualRouterSessionsModule,
   listSessions: () => listedSessions,
+  resolveSession: (nameOrKey: string) =>
+    resolvedSession && (resolvedSession.sessionKey === nameOrKey || resolvedSession.name === nameOrKey)
+      ? resolvedSession
+      : actualRouterSessionsModule.resolveSession(nameOrKey),
 }));
 
 mock.module("../../approval/service.js", () => ({
@@ -266,10 +355,13 @@ mock.module("../../runtime/credentials-store.js", () => ({
 
 const { ContextCommands, ContextCredentialsCommands } = await import("./context.js");
 const { ContractError } = await import("../agent-contract.js");
+const { IDENTITY_DELEGATION_REQUIRES_ADMIN, IDENTITY_DELEGATION_REQUIRES_ADMIN_ACTION } = await import(
+  "../../runtime/context-errors.js"
+);
 const { setPermissionAuditPublisherForTest } = await import("../../permissions/denials.js");
 
-function callCodexBashHook(payload: Record<string, unknown>): Record<string, unknown> {
-  return (new ContextCommands() as any).handleCodexBashHook(payload);
+async function callCodexBashHook(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return await (new ContextCommands() as any).handleCodexBashHook(payload);
 }
 
 describe("ContextCommands", () => {
@@ -304,7 +396,9 @@ describe("ContextCommands", () => {
     revokedContext = undefined;
     resolvedContextOptions = undefined;
     revokedCalls = [];
+    listedAgents = [];
     listedSessions = [{ sessionKey: "agent:dev:main" }];
+    resolvedSession = undefined;
     publishedAuditEvents = [];
     commandSkillGateDecision = undefined;
     commandSkillGateCalls = [];
@@ -331,7 +425,9 @@ describe("ContextCommands", () => {
     revokedContext = undefined;
     resolvedContextOptions = undefined;
     revokedCalls = [];
+    listedAgents = [];
     listedSessions = [];
+    resolvedSession = undefined;
     publishedAuditEvents = [];
     commandSkillGateDecision = undefined;
     commandSkillGateCalls = [];
@@ -754,6 +850,155 @@ describe("ContextCommands", () => {
     expect(output).toContain("RAVI_CONTEXT_KEY=rctx_child_123");
   });
 
+  it("returns PERMISSION_DENIED with admin:system:* when a non-admin parent delegates identity", () => {
+    listedAgents = [{ id: "main", cwd: "/tmp/ravi-main" }];
+    const command = new ContextCommands();
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (value?: unknown) => {
+      lines.push(String(value));
+    };
+    let caught: unknown;
+    try {
+      command.issue("hub-client-issuer", "access:session:main", undefined, false, true, "main");
+    } catch (error) {
+      caught = error;
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(caught).toBeInstanceOf(ContractError);
+    expect(caught).toMatchObject({
+      code: "PERMISSION_DENIED",
+      exitCode: 1,
+      message: IDENTITY_DELEGATION_REQUIRES_ADMIN,
+    });
+    const envelope = (caught as InstanceType<typeof ContractError>).envelope();
+    expect(envelope.error.suggestedAction).toBe(IDENTITY_DELEGATION_REQUIRES_ADMIN_ACTION);
+    expect(envelope.error.requiredCapability).toBe("admin:system:*");
+    expect(JSON.stringify(envelope)).not.toMatch(/rctx_[A-Za-z0-9]{8,}/);
+    const printed = JSON.parse(lines[0] ?? "{}");
+    expect(printed).toMatchObject({
+      success: false,
+      op: "context issue",
+      error: {
+        code: "PERMISSION_DENIED",
+        message: IDENTITY_DELEGATION_REQUIRES_ADMIN,
+        suggestedAction: IDENTITY_DELEGATION_REQUIRES_ADMIN_ACTION,
+        requiredCapability: "admin:system:*",
+      },
+    });
+  });
+
+  it("returns USAGE_ERROR when --as-session-* flags are not paired", () => {
+    listedAgents = [{ id: "main", cwd: "/tmp/ravi-main" }];
+    const command = new ContextCommands();
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (value?: unknown) => {
+      lines.push(String(value));
+    };
+    let caught: unknown;
+    try {
+      command.issue("hub-client-issuer", undefined, undefined, false, true, "main", "agent:main:main");
+    } catch (error) {
+      caught = error;
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(caught).toBeInstanceOf(ContractError);
+    expect(caught).toMatchObject({
+      code: "USAGE_ERROR",
+      exitCode: 2,
+      message: "--as-session-key and --as-session-name must be provided together",
+    });
+    const envelope = (caught as InstanceType<typeof ContractError>).envelope();
+    expect(envelope.error.suggestedAction).toContain("both session binding flags");
+    const printed = JSON.parse(lines[0] ?? "{}");
+    expect(printed.error.code).toBe("USAGE_ERROR");
+    expect(printed.error.message).toContain("must be provided together");
+  });
+
+  it("returns USAGE_ERROR when the delegated session does not belong to --as-agent", () => {
+    listedAgents = [{ id: "main", cwd: "/tmp/ravi-main" }];
+    const command = new ContextCommands();
+    const originalLog = console.log;
+    console.log = () => {};
+    let caught: unknown;
+    try {
+      command.issue("hub-client-issuer", undefined, undefined, false, true, "main", "agent:other:main", "other-main");
+    } catch (error) {
+      caught = error;
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(caught).toBeInstanceOf(ContractError);
+    expect(caught).toMatchObject({
+      code: "USAGE_ERROR",
+      exitCode: 2,
+      message: "Delegated session key must belong to agent main",
+    });
+    expect((caught as InstanceType<typeof ContractError>).details.suggestedAction).toContain("agent:main:");
+  });
+
+  it("issues a delegated child context when the parent has admin:system:*", () => {
+    listedAgents = [{ id: "main", cwd: "/tmp/ravi-main" }];
+    resolvedSession = {
+      sessionKey: "agent:main:main",
+      name: "main",
+      agentId: "main",
+      agentCwd: "/tmp/ravi-main",
+      createdAt: 1000,
+      updatedAt: 2000,
+    };
+    resolvedContext = {
+      ...resolvedContext!,
+      capabilities: [
+        { permission: "admin", objectType: "system", objectId: "*" },
+        { permission: "access", objectType: "session", objectId: "main" },
+      ],
+    };
+    const command = new ContextCommands();
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (value?: unknown) => {
+      lines.push(String(value));
+    };
+
+    let payload: Record<string, unknown>;
+    try {
+      payload = command.issue(
+        "hub-client-issuer",
+        "access:session:main",
+        undefined,
+        false,
+        true,
+        "main",
+        "agent:main:main",
+        "main",
+      ) as unknown as Record<string, unknown>;
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(payload).toMatchObject({
+      contextId: "ctx_child_123",
+      kind: "cli-runtime",
+      cliName: "hub-client-issuer",
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionName: "main",
+      parentContextId: "ctx_123",
+    });
+    expect(payload.contextKey).toBe("rctx_child_123");
+    expect(payload.env).toEqual({ RAVI_CONTEXT_KEY: "rctx_child_123" });
+    const printed = JSON.parse(lines[0] ?? "{}");
+    expect(printed.agentId).toBe("main");
+    expect(printed.sessionKey).toBe("agent:main:main");
+  });
+
   it("revokes a context and prints the updated state in --json mode", () => {
     revokedContext = {
       ...(fetchedContext ?? resolvedContext!),
@@ -859,8 +1104,8 @@ describe("ContextCommands", () => {
       listedContexts = [resolvedContext];
     });
 
-    it("resolves context without rewriting the shell command from the Bash hook path", () => {
-      const result = callCodexBashHook({
+    it("resolves context without rewriting the shell command from the Bash hook path", async () => {
+      const result = await callCodexBashHook({
         tool_input: {
           command: "ravi context whoami",
         },
@@ -870,7 +1115,7 @@ describe("ContextCommands", () => {
       expect(resolvedContextOptions).toEqual({ touch: false, readOnly: true });
     });
 
-    it("runs runtime skill gates from the Codex Bash hook path", () => {
+    it("runs runtime skill gates with the transported Codex hook payload", async () => {
       commandSkillGateDecision = {
         allowed: false,
         code: "RAVI_SKILL_REQUIRED",
@@ -878,11 +1123,10 @@ describe("ContextCommands", () => {
         reason: "RAVI_SKILL_REQUIRED: Bash requires skill ravi-system-skill-gates.",
       };
 
-      const result = callCodexBashHook({
-        tool_input: {
-          command: "ravi skill-gates list",
-        },
-      });
+      const result = await new ContextCommands().codexBashHook(
+        false,
+        JSON.stringify({ tool_input: { command: "ravi skill-gates list" } }),
+      );
 
       expect(result).toMatchObject({
         hookSpecificOutput: {
@@ -900,7 +1144,7 @@ describe("ContextCommands", () => {
       ]);
     });
 
-    it("skips runtime skill gates for raw CLI contexts without a bound session", () => {
+    it("skips runtime skill gates for raw CLI contexts without a bound session", async () => {
       resolvedContext = {
         ...resolvedContext!,
         sessionKey: undefined,
@@ -914,7 +1158,7 @@ describe("ContextCommands", () => {
           "RAVI_SKILL_GATE_CONFIG_ERROR: Bash requires skill ravi-system-sessions, but no runtime session is bound to this context.",
       };
 
-      const result = callCodexBashHook({
+      const result = await callCodexBashHook({
         tool_input: {
           command: "ravi sessions list",
         },
@@ -924,8 +1168,8 @@ describe("ContextCommands", () => {
       expect(commandSkillGateCalls).toEqual([]);
     });
 
-    it("publishes executable deny audit events for non-bootstrap executables", () => {
-      const result = callCodexBashHook({
+    it("publishes executable deny audit events for non-bootstrap executables", async () => {
+      const result = await callCodexBashHook({
         tool_input: {
           command: "node -v",
         },
@@ -963,8 +1207,8 @@ describe("ContextCommands", () => {
       expect(JSON.stringify(publishedAuditEvents[0].data)).not.toContain("node -v");
     });
 
-    it("publishes env spoofing audit events", () => {
-      const result = callCodexBashHook({
+    it("publishes env spoofing audit events", async () => {
+      const result = await callCodexBashHook({
         tool_input: {
           command: "RAVI_AGENT_ID=main ravi sessions list",
         },
@@ -1000,8 +1244,8 @@ describe("ContextCommands", () => {
       expect(JSON.stringify(publishedAuditEvents[0].data)).not.toContain("RAVI_AGENT_ID=main");
     });
 
-    it("publishes session scope audit events", () => {
-      const result = callCodexBashHook({
+    it("publishes session scope audit events", async () => {
+      const result = await callCodexBashHook({
         tool_input: {
           command: "ravi sessions send main 'hello'",
         },
@@ -1041,14 +1285,14 @@ describe("ContextCommands", () => {
   describe("return schema conformance", () => {
     it("codex-bash-hook allow payload conforms to contextCodexBashHookReturnSchema", async () => {
       const { contextCodexBashHookReturnSchema } = await import("./operational-return-schemas.js");
-      const result = callCodexBashHook({ tool_input: { command: "ravi context whoami" } });
+      const result = await callCodexBashHook({ tool_input: { command: "ravi context whoami" } });
       const parsed = contextCodexBashHookReturnSchema.safeParse(result);
       expect(parsed.success).toBe(true);
     });
 
     it("codex-bash-hook deny payload conforms to contextCodexBashHookReturnSchema", async () => {
       const { contextCodexBashHookReturnSchema } = await import("./operational-return-schemas.js");
-      const result = callCodexBashHook({ tool_input: { command: "node -v" } });
+      const result = await callCodexBashHook({ tool_input: { command: "node -v" } });
       const parsed = contextCodexBashHookReturnSchema.safeParse(result);
       expect(parsed.success).toBe(true);
     });
@@ -1090,6 +1334,44 @@ describe("ContextCommands", () => {
       expect(parsed.success).toBe(true);
     });
 
+    it("whoami --json accepts a WhatsApp DM source with instanceId and canonicalChatId", async () => {
+      const { contextWhoamiReturnSchema } = await import("./operational-return-schemas.js");
+      resolvedContext = {
+        ...resolvedContext!,
+        source: {
+          channel: "whatsapp",
+          accountId: "main",
+          chatId: "5511999999999",
+          instanceId: "whatsapp-baileys-main",
+          canonicalChatId: "chat_whatsapp_5511999999999",
+        },
+      };
+      const command = new ContextCommands();
+      const lines: string[] = [];
+      const originalLog = console.log;
+      console.log = (value?: unknown) => {
+        lines.push(String(value));
+      };
+      try {
+        command.whoami(true);
+      } finally {
+        console.log = originalLog;
+      }
+      const payload = JSON.parse(lines[0] ?? "{}");
+      const parsed = contextWhoamiReturnSchema.safeParse(payload);
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) {
+        throw new Error(parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("\n"));
+      }
+      expect(parsed.data.source).toEqual({
+        channel: "whatsapp",
+        accountId: "main",
+        chatId: "5511999999999",
+        instanceId: "whatsapp-baileys-main",
+        canonicalChatId: "chat_whatsapp_5511999999999",
+      });
+    });
+
     it("issue payload conforms to contextIssueReturnSchema", async () => {
       const { contextIssueReturnSchema } = await import("./operational-return-schemas.js");
       const command = new ContextCommands();
@@ -1106,6 +1388,100 @@ describe("ContextCommands", () => {
       const payload = JSON.parse(lines[0] ?? "{}");
       const parsed = contextIssueReturnSchema.safeParse(payload);
       expect(parsed.success).toBe(true);
+    });
+
+    it("visibility --json accepts runtime skill evidence fields", async () => {
+      const { contextVisibilityReturnSchema } = await import("./operational-return-schemas.js");
+      const { markLoadedFromRaviSkillToolCall, markLoadedFromSkillGate, buildSkillVisibilitySnapshot } = await import(
+        "../../runtime/skill-visibility.js"
+      );
+
+      const catalog = buildSkillVisibilitySnapshot(
+        [
+          {
+            id: "pages",
+            provider: "claude",
+            state: "advertised",
+            confidence: "declared",
+            source: "plugin:ravi-system/pages",
+            lastSeenAt: 1,
+          },
+        ],
+        1,
+      );
+      const afterGate = markLoadedFromSkillGate(catalog, {
+        provider: "claude",
+        skill: "pages",
+        source: "catalog:ravi-system/pages",
+        path: "/plugins/ravi-system/skills/pages/SKILL.md",
+        toolName: "Bash",
+        now: 2,
+      });
+      const afterShow = markLoadedFromRaviSkillToolCall(afterGate, {
+        provider: "claude",
+        toolName: "exec_command",
+        toolInput: { command: "ravi skills show pages --json" },
+        output: { skill: { name: "pages", pluginName: "ravi-system" } },
+        metadata: { turn: { id: "turn_vis_1" }, item: { id: "item_vis_1" } },
+        now: 3,
+      });
+      const persisted = {
+        ...afterShow,
+        skills: afterShow.skills.map((skill) => ({
+          ...skill,
+          evidence: [
+            ...(skill.evidence ?? []),
+            {
+              kind: "provider-event" as const,
+              observedAt: 4,
+              eventType: "skill.visibility.loaded",
+              eventId: "evt_vis_1",
+              turnId: "turn_vis_1",
+              path: "/plugins/ravi-system/skills/pages/SKILL.md",
+              detail: "provider loaded confirmation",
+            },
+          ],
+        })),
+      };
+
+      resolvedSession = {
+        sessionKey: "agent:dev:main",
+        name: "dev-main",
+        agentId: "dev",
+        agentCwd: "/tmp/ravi-dev",
+        createdAt: 1000,
+        updatedAt: 2000,
+        runtimeProvider: "claude",
+        runtimeSessionParams: { skillVisibility: persisted },
+      };
+
+      const command = new ContextCommands();
+      const lines: string[] = [];
+      const originalLog = console.log;
+      console.log = (value?: unknown) => {
+        lines.push(String(value));
+      };
+      let result: unknown;
+      try {
+        result = command.visibility(true);
+      } finally {
+        console.log = originalLog;
+      }
+
+      const payload = JSON.parse(lines[0] ?? "{}");
+      expect(payload.sessionKey).toBe("agent:dev:main");
+      expect(payload.loadedSkills).toContain("pages");
+      const evidence = payload.skills?.[0]?.evidence?.[0];
+      expect(evidence).toEqual(
+        expect.objectContaining({
+          observedAt: expect.any(Number),
+          path: expect.any(String),
+          eventType: expect.any(String),
+        }),
+      );
+      const parsed = contextVisibilityReturnSchema.safeParse(payload);
+      expect(parsed.success).toBe(true);
+      expect(result).toEqual(payload);
     });
   });
 

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { cloudErrorToContractError } from "../cli/cloud-error-contract.js";
-import { CloudAuthError, classifyConsoleNetworkError, cloudAuthErrorFromUnknown } from "./errors.js";
+import {
+  CloudAuthError,
+  classifyConsoleNetworkError,
+  cloudAuthErrorFromUnknown,
+  normalizeCloudAuthErrorCode,
+} from "./errors.js";
 
 describe("cloudAuthErrorFromUnknown", () => {
   it("preserves an already classified cloud error", () => {
@@ -19,6 +24,16 @@ describe("cloudAuthErrorFromUnknown", () => {
       cause,
     });
     expect(JSON.stringify(normalized.toJSON())).not.toContain("private-provider-secret");
+  });
+});
+
+describe("normalizeCloudAuthErrorCode", () => {
+  it("maps Console /api/cli/link codes onto existing CLI codes", () => {
+    expect(normalizeCloudAuthErrorCode("CONFLICT", "PAYLOAD_INVALID")).toBe("ACTOR_BINDING_CONFLICT");
+    expect(normalizeCloudAuthErrorCode("NOT_MEMBER", "PAYLOAD_INVALID")).toBe("ORG_ACCESS_DENIED");
+    expect(normalizeCloudAuthErrorCode("INSTALLATION_ORG_MISMATCH", "PAYLOAD_INVALID")).toBe("ORG_ACCESS_DENIED");
+    expect(normalizeCloudAuthErrorCode("CONTACT_REQUIRED", "PAYLOAD_INVALID")).toBe("CONTACT_REQUIRED");
+    expect(normalizeCloudAuthErrorCode("AUTH_REQUIRED", "PAYLOAD_INVALID")).toBe("AUTH_REQUIRED");
   });
 });
 
@@ -63,6 +78,8 @@ describe("cloudErrorToContractError", () => {
     ["HOST_UNREACHABLE", "Console is unreachable from this provider sandbox. The host CLI can reach Console.", false],
     ["CREDENTIALS_INVALID", "Console credentials are invalid.", false],
     ["CLOUD_PUBLISH_NOT_IMPLEMENTED", "Console publishing is unavailable for this command.", false],
+    ["CONTACT_REQUIRED", "A resolved contact is required in the current turn or session.", false],
+    ["ACTOR_BINDING_CONFLICT", "This contact is already linked to a different Console user.", false],
   ] as const)("maps %s to a stable public message", (code, publicMessage, retryable) => {
     const source = new CloudAuthError(code, `PRIVATE_PROVIDER_BODY_8K2R:${code}`, { status: 429 });
     const contract = cloudErrorToContractError("cloud fixture fail", source);
@@ -77,6 +94,50 @@ describe("cloudErrorToContractError", () => {
       },
     });
     expect(contract.details.suggestedAction).toBeString();
+    expect(JSON.stringify(contract.envelope())).not.toContain("PRIVATE_PROVIDER_BODY_8K2R");
+  });
+
+  it("preserves sanitized local PAYLOAD_INVALID reasons as the public message and issues", () => {
+    const source = new CloudAuthError("PAYLOAD_INVALID", "--html file was not found: ./index.html");
+    const contract = cloudErrorToContractError("pages ship", source);
+
+    expect(contract).toMatchObject({
+      code: "PAYLOAD_INVALID",
+      message: "--html file was not found: ./index.html",
+      exitCode: 2,
+      details: {
+        issues: [{ path: ["html"], code: "invalid", message: "--html file was not found: ./index.html" }],
+      },
+    });
+    expect(JSON.stringify(contract.envelope())).toContain("--html file was not found: ./index.html");
+  });
+
+  it("redacts absolute paths inside local PAYLOAD_INVALID reasons", () => {
+    const source = new CloudAuthError("PAYLOAD_INVALID", "--html file was not found: /home/user/secret/index.html");
+    const contract = cloudErrorToContractError("pages ship", source);
+
+    expect(contract.message).toBe("--html file was not found: [REDACTED:path]");
+    expect(JSON.stringify(contract.envelope())).not.toContain("/home/user/secret");
+  });
+
+  it("projects Console validation issues into the public contract", () => {
+    const source = new CloudAuthError("PAYLOAD_INVALID", "PRIVATE_PROVIDER_BODY_8K2R:PAYLOAD_INVALID", {
+      status: 422,
+      issues: [{ path: ["name"], code: "too_small", message: "Required" }],
+    });
+    const contract = cloudErrorToContractError("credentials create", source);
+
+    expect(contract).toMatchObject({
+      code: "PAYLOAD_INVALID",
+      message: "Console request input was invalid.",
+      exitCode: 2,
+      details: {
+        retryable: false,
+        status: 422,
+        issues: [{ path: ["name"], code: "too_small", message: "Required" }],
+      },
+    });
+    expect(JSON.stringify(contract.envelope())).toContain("Required");
     expect(JSON.stringify(contract.envelope())).not.toContain("PRIVATE_PROVIDER_BODY_8K2R");
   });
 

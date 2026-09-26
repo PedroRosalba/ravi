@@ -59,6 +59,12 @@ import { getRuntimeModelPreset } from "../../runtime/model-preset-store.js";
 import { resolveEffectiveAgentModel } from "../../runtime/model-preset-resolver.js";
 import { resolveRuntimeDefaults } from "../../runtime/runtime-defaults.js";
 import { resolveRequestedRuntimeProvider } from "../../runtime/runtime-selection.js";
+import {
+  type AgentSessionOverrideReport,
+  type AgentSessionRematerializeReport,
+  type AgentSessionRuntimeSyncResult,
+  syncAgentSessionsToAgentRuntime,
+} from "../../runtime/agent-session-runtime-sync.js";
 import { formatRuntimeEffortLevels, parseRuntimeEffort } from "../../runtime/effort.js";
 import { locateRuntimeTranscript } from "../../transcripts.js";
 import {
@@ -67,13 +73,14 @@ import {
   type AgentInstructionState,
 } from "../../runtime/agent-instructions.js";
 import { formatCliRuntimeTarget, getCliRuntimeMismatchMessage, inspectCliRuntimeTarget } from "../runtime-target.js";
-import type { AgentConfig, AgentUpdateInput, SessionEntry } from "../../router/types.js";
+import type { AgentConfig, AgentUpdateInput } from "../../router/types.js";
 import { filterItemsByCanonicalTag } from "../../tags/helpers.js";
 import { searchTagBindingsForSelector } from "../../tags/service.js";
 import type { TagBinding } from "../../tags/types.js";
 import {
   buildAgentRuntimePermissionsDefaults,
   ensureAgentCanViewAgent,
+  formatAgentRuntimePermissionProfileChoices,
   getAgentRuntimePermissionsConfigFromDefaults,
   normalizeAgentRuntimePermissionProfile,
   type AgentRuntimePermissionsConfig,
@@ -102,7 +109,9 @@ function assertAgentMutationRuntime(allowRuntimeMismatch?: boolean): void {
   const summary = inspectCliRuntimeTarget();
   const mismatch = getCliRuntimeMismatchMessage(summary);
   if (mismatch && !allowRuntimeMismatch) {
-    fail(`${mismatch}\nRe-run with the repo CLI/runtime or pass --allow-runtime-mismatch if you really mean it.`);
+    const suggestedAction =
+      "Re-run with the repo CLI/runtime or pass --allow-runtime-mismatch if you really mean it.";
+    fail(`${mismatch}\n${suggestedAction}`, suggestedAction);
   }
 }
 
@@ -147,13 +156,6 @@ interface AgentInstructionSyncSummary {
   changed: boolean;
 }
 
-interface AgentSessionOverrideSummary {
-  sessionName: string;
-  model?: string;
-  effort?: NonNullable<SessionEntry["effortOverride"]>;
-  thinking?: NonNullable<SessionEntry["thinkingLevel"]>;
-}
-
 interface AgentSetMutationPayload {
   action: "set";
   changed: boolean;
@@ -161,7 +163,9 @@ interface AgentSetMutationPayload {
   key: string;
   value: unknown;
   agent?: AgentConfig;
-  sessionOverrides: AgentSessionOverrideSummary[];
+  sessionOverrides: AgentSessionOverrideReport[];
+  rematerializedSessions: AgentSessionRematerializeReport[];
+  forcedClearedOverrides: AgentSessionOverrideReport[];
 }
 
 type AgentJsonSummary = Omit<AgentConfig, "modelPresetId"> & {
@@ -180,28 +184,26 @@ function printJson(payload: unknown): void {
   console.log(JSON.stringify(payload, null, 2));
 }
 
-function listActiveAgentSessionOverrides(agentId: string): AgentSessionOverrideSummary[] {
-  return getSessionsByAgent(agentId)
-    .flatMap((session) => {
-      const summary: AgentSessionOverrideSummary = {
-        sessionName: session.name?.trim() || "(canonical name unavailable)",
-      };
+const AGENT_RUNTIME_SYNC_KEYS = new Set(["provider", "model", "modelPreset"]);
 
-      if (typeof session.modelOverride === "string" && session.modelOverride.length > 0) {
-        summary.model = session.modelOverride;
-      }
-      if (session.effortOverride !== null && session.effortOverride !== undefined) {
-        summary.effort = session.effortOverride;
-      }
-      if (session.thinkingLevel !== null && session.thinkingLevel !== undefined) {
-        summary.thinking = session.thinkingLevel;
-      }
+function isAgentRuntimeSyncKey(key: string): boolean {
+  return AGENT_RUNTIME_SYNC_KEYS.has(key);
+}
 
-      return summary.model !== undefined || summary.effort !== undefined || summary.thinking !== undefined
-        ? [summary]
-        : [];
-    })
-    .sort((left, right) => left.sessionName.localeCompare(right.sessionName));
+function syncAgentSetSessions(input: {
+  agent: AgentConfig;
+  key: string;
+  force?: boolean;
+}): AgentSessionRuntimeSyncResult {
+  const rematerialize = isAgentRuntimeSyncKey(input.key);
+  const force = rematerialize && input.force === true;
+  return syncAgentSessionsToAgentRuntime({
+    agent: input.agent,
+    rematerialize,
+    force: force && input.key === "modelPreset",
+    clearProviderOverrides: force && (input.key === "provider" || input.key === "modelPreset"),
+    clearModelOverrides: force && (input.key === "model" || input.key === "modelPreset"),
+  });
 }
 
 function buildAgentSetMutationPayload(input: {
@@ -209,8 +211,14 @@ function buildAgentSetMutationPayload(input: {
   agentId: string;
   key: string;
   value: unknown;
+  force?: boolean;
 }): AgentSetMutationPayload {
-  const updatedAgent = getAgent(input.agentId) ?? undefined;
+  const updatedAgent = getAgent(input.agentId) ?? input.before;
+  const sync = syncAgentSetSessions({
+    agent: updatedAgent,
+    key: input.key,
+    force: input.force,
+  });
   return {
     action: "set",
     changed: !isDeepStrictEqual(input.before, updatedAgent),
@@ -218,23 +226,56 @@ function buildAgentSetMutationPayload(input: {
     key: input.key,
     value: input.value ?? null,
     agent: updatedAgent,
-    sessionOverrides: listActiveAgentSessionOverrides(input.agentId),
+    sessionOverrides: sync.sessionOverrides,
+    rematerializedSessions: sync.rematerializedSessions,
+    forcedClearedOverrides: sync.forcedClearedOverrides,
   };
 }
 
-function printAgentSessionOverrideSummary(sessionOverrides: AgentSessionOverrideSummary[]): void {
-  if (sessionOverrides.length === 0) {
+function formatSessionOverrideFields(session: AgentSessionOverrideReport): string {
+  return (["provider", "model", "effort", "thinking"] as const)
+    .flatMap((field) => (session[field] === undefined ? [] : [`${field}=${session[field]}`]))
+    .join(", ");
+}
+
+function printAgentSessionRuntimeSync(
+  payload: Pick<
+    AgentSetMutationPayload,
+    "sessionOverrides" | "rematerializedSessions" | "forcedClearedOverrides" | "key"
+  >,
+): void {
+  if (payload.rematerializedSessions.length > 0) {
+    const subject = payload.rematerializedSessions.length === 1 ? "session" : "sessions";
+    console.log(`Rematerialized ${payload.rematerializedSessions.length} ${subject} to follow the agent:`);
+    for (const session of payload.rematerializedSessions) {
+      console.log(
+        `  - ${session.sessionName}: runtime_provider=${session.previousRuntimeProvider} → ${session.runtimeProvider}`,
+      );
+    }
+  }
+
+  if (payload.forcedClearedOverrides.length > 0) {
+    const subject = payload.forcedClearedOverrides.length === 1 ? "session override" : "session overrides";
+    console.log(`Cleared ${payload.forcedClearedOverrides.length} ${subject} with --force:`);
+    for (const session of payload.forcedClearedOverrides) {
+      const fields = formatSessionOverrideFields(session);
+      console.log(`  - ${session.sessionName}: ${fields || session.reasons.join(", ")}`);
+    }
+  }
+
+  if (payload.sessionOverrides.length === 0) {
     console.log("  Session overrides: none");
     return;
   }
 
-  const subject = sessionOverrides.length === 1 ? "session has" : "sessions have";
-  console.log(`Warning: ${sessionOverrides.length} ${subject} runtime overrides:`);
-  for (const session of sessionOverrides) {
-    const fields = (["model", "effort", "thinking"] as const)
-      .flatMap((field) => (session[field] === undefined ? [] : [`${field}=${session[field]}`]))
-      .join(", ");
-    console.log(`  - ${session.sessionName}: ${fields}`);
+  const subject = payload.sessionOverrides.length === 1 ? "session has" : "sessions have";
+  console.log(`Warning: ${payload.sessionOverrides.length} ${subject} runtime overrides:`);
+  for (const session of payload.sessionOverrides) {
+    const fields = formatSessionOverrideFields(session);
+    console.log(`  - ${session.sessionName}: ${fields || session.reasons.join(", ")}`);
+  }
+  if (isAgentRuntimeSyncKey(payload.key)) {
+    console.log("  Re-run with --force to clear those overrides and adopt the agent config.");
   }
 }
 
@@ -352,6 +393,15 @@ function expandsRuntimePermissionAuthority(
   before: AgentRuntimePermissionsConfig | null,
   after: AgentRuntimePermissionsConfig | null,
 ): boolean {
+  // chat-only is a zero-authority ceiling. Setting it is containment; leaving
+  // it restores the bootstrap floor or a higher profile and needs --execute.
+  if (after?.profile === "chat-only") {
+    return false;
+  }
+  if (before?.profile === "chat-only") {
+    return true;
+  }
+
   // full-access already materializes admin system:*; any later profile or
   // explicit-capability edit can only preserve or reduce effective authority.
   if (before?.profile === "full-access") {
@@ -381,6 +431,26 @@ function describeRuntimePermissionConfig(config: AgentRuntimePermissionsConfig |
     parts.push(`${config.capabilities.length} explicit`);
   }
   return parts.join(" + ");
+}
+
+function buildAgentPermissionsInspectCommand(agentId: string): string {
+  return `ravi permissions materialize --subject-type agent --subject-id ${agentId} --json`;
+}
+
+function buildAgentPermissionsRecurringAccessCommand(agentId: string): string {
+  return `ravi permissions allow <profile> --to agent:${agentId} --capabilities <permission>:<objectType>:<objectId> --apply`;
+}
+
+function printAgentRuntimeDefaultsGuidance(agentId: string): void {
+  console.log(
+    "  This updates agent runtime defaults (materializer: agent-default-capabilities), not a live authorize grant.",
+  );
+  console.log("  Effective authorize uses the next issued runtime context snapshot that includes these defaults.");
+  console.log(`  Inspect materialized: ${buildAgentPermissionsInspectCommand(agentId)}`);
+  console.log(`  Recurring access:     ${buildAgentPermissionsRecurringAccessCommand(agentId)}`);
+  console.log(
+    "  Note: `ravi permissions check` without a runtime context still denies with no_permission_provider_configured.",
+  );
 }
 
 function buildDebugSessionSummary(session: {
@@ -777,6 +847,8 @@ export class AgentsCommands {
           configureCommand: `ravi agents permissions ${id}`,
           inspectCommand: `ravi permissions materialize --subject-type agent --subject-id ${id} --json`,
           leastPrivilegeExample: `ravi agents permissions ${id} bootstrap --capabilities <permission>:<objectType>:<objectId> --execute`,
+          chatOnlyCommand: `ravi agents permissions ${id} chat-only`,
+          resetToBootstrapCommand: `ravi agents permissions ${id} none`,
           breakGlassCommand: `ravi agents permissions ${id} full-access --execute`,
           visibility: {
             defaultAgent: config.defaultAgent,
@@ -804,6 +876,8 @@ export class AgentsCommands {
         console.log(
           `  Configure least privilege: ravi agents permissions ${id} bootstrap --capabilities <permission>:<objectType>:<objectId> --execute`,
         );
+        console.log(`  Reception only:    ravi agents permissions ${id} chat-only`);
+        console.log(`  Reset to bootstrap: ravi agents permissions ${id} none`);
         console.log(`  Break-glass only: ravi agents permissions ${id} full-access --execute`);
       }
       emitConfigChanged();
@@ -967,7 +1041,39 @@ export class AgentsCommands {
     return payload;
   }
 
-  @Command({ name: "set", description: "Set agent property and report active session runtime overrides" })
+  @Command({
+    name: "set",
+    description: "Set agent property; rematerialize no-override sessions when provider/model changes",
+    helpAfter: `
+USE
+  Change an agent property. For provider, model, or modelPreset, no-override
+  sessions rematerialize so the next turn follows the agent instead of a stale
+  last-used runtime_provider.
+
+DO NOT USE
+  Do not use this to pin one session. Use ravi sessions set-provider / set-model.
+
+RULES
+  Sessions with runtime_provider_override or model_override stay as-is and are
+  listed with reasons. --force clears those overrides and rematerializes them.
+  Last-used runtime_provider without an override is drift and is rematerialized.
+
+EXAMPLES
+  ravi agents set ravi-console provider pi --json
+  ravi agents set ravi-console model deepseek/deepseek-flash
+  ravi agents set ravi-console provider pi --force --json
+
+ON ERROR
+  Invalid key/value: correct the property and rerun.
+  Provider/preset mismatch: clear modelPreset first.
+
+SEE ALSO
+  ravi sessions set-provider <name> <provider|clear> [--propagate]
+  ravi sessions set-model <name> <model|clear> [--propagate]
+
+SOURCES
+  src/cli/commands/agents.ts; src/runtime/agent-session-runtime-sync.ts`,
+  })
   @CommandAccess({
     kind: "mutate",
     resource: "agents",
@@ -980,6 +1086,11 @@ export class AgentsCommands {
     @Arg("value", { description: "Property value" }) value: string,
     @Option({ flags: "--json", description: "Print raw JSON result" })
     asJson?: boolean,
+    @Option({
+      flags: "--force",
+      description: "Clear session provider/model overrides so those sessions adopt the agent config",
+    })
+    force?: boolean,
   ) {
     const agent = getAgent(id);
     if (!agent) {
@@ -1042,6 +1153,7 @@ export class AgentsCommands {
         agentId: id,
         key,
         value: cleared ? null : value,
+        force,
       });
       if (asJson) {
         printJson(presetPayload);
@@ -1055,7 +1167,7 @@ export class AgentsCommands {
               ? `\u2713 modelPreset already clear: ${id}`
               : `\u2713 modelPreset unchanged: ${id} -> ${value}`,
         );
-        printAgentSessionOverrideSummary(presetPayload.sessionOverrides);
+        printAgentSessionRuntimeSync(presetPayload);
       }
       emitConfigChanged();
       return presetPayload;
@@ -1074,6 +1186,7 @@ export class AgentsCommands {
           agentId: id,
           key,
           value: parsed === 0 ? null : parsed,
+          force,
         });
         if (asJson) {
           printJson(debouncePayload);
@@ -1087,7 +1200,7 @@ export class AgentsCommands {
                 ? `\u2713 groupDebounceMs already disabled: ${id}`
                 : `\u2713 groupDebounceMs unchanged: ${id} -> ${parsed}ms`,
           );
-          printAgentSessionOverrideSummary(debouncePayload.sessionOverrides);
+          printAgentSessionRuntimeSync(debouncePayload);
         }
         emitConfigChanged();
         return debouncePayload;
@@ -1217,6 +1330,7 @@ export class AgentsCommands {
         agentId: id,
         key,
         value: parsedValue,
+        force,
       });
       if (asJson) {
         printJson(payload);
@@ -1226,7 +1340,7 @@ export class AgentsCommands {
             typeof parsedValue === "string" ? parsedValue : JSON.stringify(parsedValue)
           }`,
         );
-        printAgentSessionOverrideSummary(payload.sessionOverrides);
+        printAgentSessionRuntimeSync(payload);
       }
       emitConfigChanged();
       return payload;
@@ -1250,7 +1364,8 @@ export class AgentsCommands {
     @Arg("id", { description: "Agent ID" }) id: string,
     @Arg("profile", {
       required: false,
-      description: "Profile: bootstrap, full-access (Bash execute ceiling + admin), none",
+      description:
+        "Profile: bootstrap, chat-only (conversation only), full-access (Bash execute ceiling + admin), none (reset to bootstrap minimum)",
     })
     profile?: string,
     @Option({
@@ -1291,20 +1406,25 @@ export class AgentsCommands {
         profile: before?.profile ?? "bootstrap",
         runtimePermissions: before,
         command: `ravi agents permissions ${id}`,
-        inspectCommand: `ravi permissions materialize --subject-type agent --subject-id ${id} --json`,
+        inspectCommand: buildAgentPermissionsInspectCommand(id),
+        recurringAccessCommand: buildAgentPermissionsRecurringAccessCommand(id),
         leastPrivilegeExample: `ravi agents permissions ${id} bootstrap --capabilities <permission>:<objectType>:<objectId> --execute`,
+        chatOnlyCommand: `ravi agents permissions ${id} chat-only`,
+        resetToBootstrapCommand: `ravi agents permissions ${id} none`,
         breakGlassCommand: `ravi agents permissions ${id} full-access --execute`,
         agent: buildAgentJson(agent, loadRouterConfig().defaultAgent),
       };
       if (asJson) {
         printJson(payload);
       } else {
-        console.log(`Runtime permissions for ${id}: ${describeRuntimePermissionConfig(before)}`);
-        console.log(`  Inspect effective: ravi permissions materialize --subject-type agent --subject-id ${id} --json`);
+        console.log(`Runtime defaults for ${id}: ${describeRuntimePermissionConfig(before)}`);
+        console.log(`  Inspect materialized: ${buildAgentPermissionsInspectCommand(id)}`);
+        console.log(`  Recurring access:     ${buildAgentPermissionsRecurringAccessCommand(id)}`);
         console.log(
-          `  Least privilege:   ravi agents permissions ${id} bootstrap --capabilities <permission>:<objectType>:<objectId> --execute`,
+          `  Defaults-only:       ravi agents permissions ${id} bootstrap --capabilities <permission>:<objectType>:<objectId> --execute`,
         );
-        console.log(`  Clear:             ravi agents permissions ${id} none`);
+        console.log(`  Reception only:    ravi agents permissions ${id} chat-only`);
+        console.log(`  Reset to bootstrap: ravi agents permissions ${id} none`);
         console.log(`  Break-glass only:  ravi agents permissions ${id} full-access --execute`);
       }
       return payload;
@@ -1312,16 +1432,20 @@ export class AgentsCommands {
 
     const normalizedProfile = profile === undefined ? before?.profile : normalizeAgentRuntimePermissionProfile(profile);
     if (profile !== undefined && normalizedProfile === null) {
-      fail(`Invalid runtime permission profile: ${profile}. Valid profiles: bootstrap, full-access, none`);
+      fail(
+        `Invalid runtime permission profile: ${profile}. Valid profiles: ${formatAgentRuntimePermissionProfileChoices()}`,
+      );
     }
 
     const nextConfig =
       normalizedProfile === "none"
         ? null
-        : {
-            ...(before ?? {}),
-            ...(normalizedProfile ? { profile: normalizedProfile } : {}),
-          };
+        : normalizedProfile === "chat-only"
+          ? ({ profile: "chat-only" } satisfies AgentRuntimePermissionsConfig)
+          : {
+              ...(before ?? {}),
+              ...(normalizedProfile ? { profile: normalizedProfile } : {}),
+            };
     if (nextConfig && explicitCapabilities !== undefined) {
       if (explicitCapabilities.length > 0) {
         nextConfig.capabilities = explicitCapabilities;
@@ -1366,13 +1490,18 @@ export class AgentsCommands {
       before,
       after,
       defaults: nextDefaults ?? null,
+      inspectCommand: buildAgentPermissionsInspectCommand(id),
+      recurringAccessCommand: buildAgentPermissionsRecurringAccessCommand(id),
+      authorityLayer: "agent-defaults" as const,
+      effectiveOn: "next-issued-runtime-context" as const,
       agent: buildAgentJson(updated, loadRouterConfig().defaultAgent),
     };
 
     if (asJson) {
       printJson(payload);
     } else {
-      console.log(`\u2713 Runtime permissions set: ${id} -> ${describeRuntimePermissionConfig(after)}`);
+      console.log(`\u2713 Agent runtime defaults updated: ${id} -> ${describeRuntimePermissionConfig(after)}`);
+      printAgentRuntimeDefaultsGuidance(id);
       if (after?.profile === "full-access") {
         console.log(
           "  Break-glass: materializes admin system:*, execute executable:*, and use tool:* for the agent and its own automation turns",
@@ -1382,6 +1511,10 @@ export class AgentsCommands {
         );
         console.log(
           "  Prefer replacing this with a provider-owned permission profile or narrow explicit capabilities.",
+        );
+      } else if (after?.profile === "chat-only") {
+        console.log(
+          "  Reception: conversation only. Host denies tools/shell/CLI groups on every runtime. none/clear/off resets to the bootstrap minimum, not zero-authority.",
         );
       }
     }

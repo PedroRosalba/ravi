@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import type { ZodTypeAny } from "zod";
 
 afterAll(() => mock.restore());
 
@@ -18,6 +19,7 @@ const publishedPrompts: Array<{
   sessionName: string;
   payload: Record<string, unknown>;
 }> = [];
+let publishSessionPromptError: Error | null = null;
 const natsEmits: Array<{ topic: string; data: Record<string, unknown> }> = [];
 const resetSessionCalls: string[] = [];
 const revokedRuntimeContextCalls: Array<{ sessionKey: string; reason?: string }> = [];
@@ -65,6 +67,7 @@ let renameSessionNameCalls: Array<{ sessionKey: string; newName: string }> = [];
 let renameSessionNameError: Error | null = null;
 let renameRouteReferencesUpdated = 0;
 let effortUpdates: Array<{ sessionKey: string; effort: string | null }> = [];
+let dropSessionOverrideWrites = false;
 const runtimeLiveStates = new Map<string, Record<string, unknown>>();
 let toolContext: Record<string, unknown> | undefined;
 let scopeEnforced = false;
@@ -149,6 +152,7 @@ mock.module("../../nats.js", () => ({
 
 mock.module("../../omni/session-stream.js", () => ({
   publishSessionPrompt: mock(async (sessionName: string, payload: Record<string, unknown>) => {
+    if (publishSessionPromptError) throw publishSessionPromptError;
     publishedPrompts.push({ sessionName, payload });
   }),
 }));
@@ -257,15 +261,62 @@ mock.module("../../router/sessions.js", () => ({
     };
   },
   updateSessionModelOverride: (sessionKey: string, model: string | null) => {
+    if (dropSessionOverrideWrites) return;
     if (resolvedSession?.sessionKey === sessionKey) {
       resolvedSession =
         model === null
           ? { ...resolvedSession, modelOverride: undefined }
           : { ...resolvedSession, modelOverride: model };
     }
+    listedSessions = listedSessions.map((session) =>
+      session.sessionKey === sessionKey
+        ? { ...session, ...(model === null ? { modelOverride: undefined } : { modelOverride: model }) }
+        : session,
+    );
+  },
+  updateSessionRuntimeProviderOverride: (sessionKey: string, provider: string | null) => {
+    if (dropSessionOverrideWrites) return;
+    if (resolvedSession?.sessionKey === sessionKey) {
+      resolvedSession =
+        provider === null
+          ? { ...resolvedSession, runtimeProviderOverride: undefined }
+          : { ...resolvedSession, runtimeProviderOverride: provider };
+    }
+    listedSessions = listedSessions.map((session) =>
+      session.sessionKey === sessionKey
+        ? {
+            ...session,
+            ...(provider === null ? { runtimeProviderOverride: undefined } : { runtimeProviderOverride: provider }),
+          }
+        : session,
+    );
+  },
+  clearProviderSession: (sessionKey: string) => {
+    if (resolvedSession?.sessionKey === sessionKey) {
+      resolvedSession = {
+        ...resolvedSession,
+        runtimeProvider: undefined,
+        providerSessionId: undefined,
+        sdkSessionId: undefined,
+      };
+    }
+    listedSessions = listedSessions.map((session) =>
+      session.sessionKey === sessionKey
+        ? { ...session, runtimeProvider: undefined, providerSessionId: undefined, sdkSessionId: undefined }
+        : session,
+    );
+  },
+  updateRuntimeProviderState: (sessionKey: string, runtimeProvider: string | null) => {
+    if (resolvedSession?.sessionKey === sessionKey) {
+      resolvedSession = { ...resolvedSession, runtimeProvider: runtimeProvider ?? undefined };
+    }
+    listedSessions = listedSessions.map((session) =>
+      session.sessionKey === sessionKey ? { ...session, runtimeProvider: runtimeProvider ?? undefined } : session,
+    );
   },
   updateSessionEffortOverride: (sessionKey: string, effort: string | null) => {
     effortUpdates.push({ sessionKey, effort });
+    if (dropSessionOverrideWrites) return;
     if (resolvedSession?.sessionKey === sessionKey) {
       resolvedSession =
         effort === null
@@ -287,6 +338,10 @@ mock.module("../../router/index.js", () => ({
   ...actualRouterIndexModule,
   loadRouterConfig: () => routerConfig,
   expandHome: (path: string) => path,
+  getAgent: (id: string) => routerConfig.agents[id] ?? null,
+  updateAgent: (id: string, partial: Record<string, unknown>) => {
+    routerConfig.agents[id] = { ...(routerConfig.agents[id] ?? {}), ...partial };
+  },
 }));
 
 mock.module("../../router/router-db.js", () => ({
@@ -432,7 +487,17 @@ const {
   buildSessionDetachCommand,
   serializeSessionActionMessage,
   extractNormalizedTranscriptMessages,
+  sessionSetEffortReturnSchema,
+  sessionSetModelReturnSchema,
+  sessionSetProviderReturnSchema,
 } = await import("./sessions.js");
+
+function expectReturnShape(schema: ZodTypeAny, payload: unknown): void {
+  const parsed = schema.safeParse(payload);
+  const issues = parsed.error?.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`) ?? [];
+  expect(issues).toEqual([]);
+  expect(parsed.success).toBe(true);
+}
 
 function captureLogs(run: () => void): string {
   const lines: string[] = [];
@@ -493,12 +558,14 @@ beforeEach(() => {
   renameSessionNameError = null;
   renameRouteReferencesUpdated = 0;
   effortUpdates = [];
+  dropSessionOverrideWrites = false;
   runtimeLiveStates.clear();
   natsEmits.length = 0;
   resetSessionCalls.length = 0;
   revokedRuntimeContextCalls.length = 0;
   providerRequestCalls.length = 0;
   providerRequestResponse = { success: true };
+  publishSessionPromptError = null;
 });
 
 describe("SessionCommands wait mode", () => {
@@ -535,9 +602,12 @@ describe("SessionCommands wait mode", () => {
         agentId: "codex-cli-locked",
         agentCwd: "/tmp/codex-cli-locked",
       }),
-    ).rejects.toThrow(
-      "Runtime provider 'codex' requires full tool and executable access because Ravi permission hooks are unsupported",
-    );
+    ).rejects.toMatchObject({
+      name: "ContractError",
+      code: "SESSION_RUNTIME_FAILED",
+      message:
+        "Runtime provider 'codex' requires full tool and executable access because Ravi permission hooks are unsupported",
+    });
 
     expect(publishedPrompts).toHaveLength(1);
     expect(publishedPrompts[0]?.sessionName).toBe("codex-cli-locked");
@@ -563,6 +633,10 @@ describe("SessionCommands wait mode", () => {
       "The agent could not complete this request because of an internal runtime error. Please try again.",
     );
     await expect(result).rejects.not.toThrow("/Users/luis");
+    await expect(result).rejects.toMatchObject({
+      name: "ContractError",
+      code: "SESSION_RUNTIME_FAILED",
+    });
   });
 
   it("does not print a success footer when send -w fails", async () => {
@@ -775,7 +849,11 @@ describe("SessionCommands wait mode", () => {
           agentId: "agent-slow",
           agentCwd: "/tmp/slow-session",
         }),
-      ).rejects.toThrow("Timed out waiting for response from slow-session after 120s");
+      ).rejects.toMatchObject({
+        name: "ContractError",
+        code: "SESSION_WAIT_TIMEOUT",
+        message: "Timed out waiting for response from slow-session after 120s",
+      });
     } finally {
       globalThis.setTimeout = originalSetTimeout;
       globalThis.clearTimeout = originalClearTimeout;
@@ -1047,6 +1125,78 @@ describe("SessionCommands delivery barriers", () => {
     expect(publishedPrompts.at(-1)?.payload.deliveryBarrierSource).toBe("explicit");
   });
 
+  it("rejects --immediate combined with --steer as USAGE_ERROR for send and execute", async () => {
+    const commands = new SessionCommands();
+    const sendAttempt = commands.send(
+      "dev",
+      "hello",
+      false,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      true,
+      true,
+    );
+    await expect(sendAttempt).rejects.toMatchObject({
+      name: "ContractError",
+      code: "USAGE_ERROR",
+      message: "--immediate cannot be combined with --steer.",
+    });
+
+    const executeAttempt = commands.execute("dev", "do the thing", undefined, undefined, undefined, true, true, true);
+    await expect(executeAttempt).rejects.toMatchObject({
+      name: "ContractError",
+      code: "USAGE_ERROR",
+      message: "--immediate cannot be combined with --steer.",
+    });
+    expect(publishedPrompts).toHaveLength(0);
+  });
+
+  it("maps publish failures on send and execute to SESSION_RELAY_FAILED", async () => {
+    publishSessionPromptError = new Error("NATS connection refused");
+    const commands = new SessionCommands();
+
+    await expect(
+      commands.send(
+        "dev",
+        "hello",
+        false,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        false,
+        false,
+        true,
+      ),
+    ).rejects.toMatchObject({
+      name: "ContractError",
+      code: "SESSION_RELAY_FAILED",
+      message: "NATS connection refused",
+    });
+    await expect(
+      commands.execute("dev", "do the thing", undefined, undefined, undefined, false, false, true),
+    ).rejects.toMatchObject({
+      name: "ContractError",
+      code: "SESSION_RELAY_FAILED",
+      message: "NATS connection refused",
+    });
+  });
+
   it("keeps Inform wrapping for in-context agent sends unless --raw", async () => {
     toolContext = { suppressCliOutput: true, sessionKey: "agent:origin-agent:main" };
     const commands = new SessionCommands();
@@ -1177,6 +1327,102 @@ describe("SessionCommands list --json", () => {
     });
   });
 });
+
+type WhatsAppActionKind = "group" | "dm";
+
+const WHATSAPP_ACTION_SURFACES: Record<
+  WhatsAppActionKind,
+  { chatId: string; platformChatId: string; title: string; sessionKeySuffix: string }
+> = {
+  group: {
+    chatId: "chat_ae70f8bc7ec999d2e2048219",
+    platformChatId: "120363424772797713@g.us",
+    title: "ravi - group",
+    sessionKeySuffix: "whatsapp:main:chat_ae70f8bc7ec999d2e2048219",
+  },
+  dm: {
+    chatId: "chat_dm_5511999999999",
+    platformChatId: "5511999999999",
+    title: "ravi - dm",
+    sessionKeySuffix: "whatsapp:main:chat_dm_5511999999999",
+  },
+};
+
+function whatsappActionSessionKey(kind: WhatsAppActionKind): string {
+  return `agent:dev:${WHATSAPP_ACTION_SURFACES[kind].sessionKeySuffix}`;
+}
+
+function setupWhatsAppActionSession(options: { kind: WhatsAppActionKind; sessionName: string }): void {
+  const surface = WHATSAPP_ACTION_SURFACES[options.kind];
+  const sessionKey = whatsappActionSessionKey(options.kind);
+  resolvedSession = {
+    sessionKey,
+    name: options.sessionName,
+    agentId: "dev",
+    agentCwd: "/tmp/dev",
+  };
+  sessionSubscriptions = [
+    {
+      id: `sub_${options.kind}`,
+      sessionKey,
+      chatId: surface.chatId,
+      role: "primary",
+      outputAttachedAt: 1,
+    },
+  ];
+  chatRecords.set(surface.chatId, {
+    id: surface.chatId,
+    title: surface.title,
+    channel: "whatsapp",
+    instanceId: "main",
+    platformChatId: surface.platformChatId,
+  });
+  stickerCatalog = [
+    {
+      id: "wave",
+      enabled: true,
+      channels: ["whatsapp"],
+      agents: [],
+    },
+  ];
+}
+
+function whatsappActionContext(options: {
+  kind: WhatsAppActionKind;
+  sessionName: string;
+  capabilities: Array<{ permission: string; objectType: string; objectId: string }>;
+}): Record<string, unknown> {
+  const surface = WHATSAPP_ACTION_SURFACES[options.kind];
+  const sessionKey = whatsappActionSessionKey(options.kind);
+  return {
+    agentId: "dev",
+    sessionKey,
+    sessionName: options.sessionName,
+    source: {
+      channel: "whatsapp",
+      accountId: "main",
+      instanceId: "main",
+      chatId: surface.platformChatId,
+      canonicalChatId: surface.chatId,
+    },
+    context: {
+      contextId: `ctx_${options.kind}_${options.sessionName}`,
+      contextKey: `rctx_${options.kind}_${options.sessionName}`,
+      kind: "turn-runtime",
+      agentId: "dev",
+      sessionKey,
+      sessionName: options.sessionName,
+      capabilities: options.capabilities,
+      createdAt: 0,
+    },
+  };
+}
+
+function mediaSendActionFrom(payload: { actions: Array<Record<string, unknown>> }): Record<string, unknown> {
+  const action = payload.actions.find((item) => item.id === "media.send");
+  if (!action) throw new Error("media.send action missing from sessions actions payload");
+  return action;
+}
 
 describe("SessionCommands attach hints", () => {
   it("builds the detach command returned by attach", () => {
@@ -1310,6 +1556,92 @@ describe("SessionCommands attach hints", () => {
     });
   });
 
+  it("keeps WhatsApp media.send available without a runtime snapshot", () => {
+    setupWhatsAppActionSession({
+      kind: "group",
+      sessionName: "dev",
+    });
+
+    const payload = JSON.parse(
+      captureLogs(() => {
+        new SessionCommands().actions("dev", undefined, true);
+      }),
+    );
+    const action = payload.actions.find((item: { id: string }) => item.id === "media.send");
+
+    expect(action).toMatchObject({
+      id: "media.send",
+      status: "available",
+      command: 'ravi media send "<file-path>" --execute',
+    });
+    expect(action.unavailableReasonCode).toBeUndefined();
+  });
+
+  it("advertises media.send on group and DM snapshots only when the same grant is present", () => {
+    const granted = [{ permission: "mutate", objectType: "media", objectId: "send" }];
+    const bootstrap = [{ permission: "execute", objectType: "group", objectId: "sessions" }];
+
+    setupWhatsAppActionSession({ kind: "group", sessionName: "group-granted" });
+    toolContext = whatsappActionContext({ kind: "group", sessionName: "group-granted", capabilities: granted });
+    const groupGranted = mediaSendActionFrom(
+      JSON.parse(
+        captureLogs(() => {
+          new SessionCommands().actions("group-granted", undefined, true);
+        }),
+      ),
+    );
+
+    setupWhatsAppActionSession({ kind: "dm", sessionName: "dm-granted" });
+    toolContext = whatsappActionContext({ kind: "dm", sessionName: "dm-granted", capabilities: granted });
+    const dmGranted = mediaSendActionFrom(
+      JSON.parse(
+        captureLogs(() => {
+          new SessionCommands().actions("dm-granted", undefined, true);
+        }),
+      ),
+    );
+
+    setupWhatsAppActionSession({ kind: "group", sessionName: "group-denied" });
+    toolContext = whatsappActionContext({ kind: "group", sessionName: "group-denied", capabilities: bootstrap });
+    const groupDenied = mediaSendActionFrom(
+      JSON.parse(
+        captureLogs(() => {
+          new SessionCommands().actions("group-denied", undefined, true);
+        }),
+      ),
+    );
+
+    setupWhatsAppActionSession({ kind: "dm", sessionName: "dm-denied" });
+    toolContext = whatsappActionContext({ kind: "dm", sessionName: "dm-denied", capabilities: bootstrap });
+    const dmDenied = mediaSendActionFrom(
+      JSON.parse(
+        captureLogs(() => {
+          new SessionCommands().actions("dm-denied", undefined, true);
+        }),
+      ),
+    );
+
+    expect(groupGranted).toMatchObject({
+      status: "available",
+      command: 'ravi media send "<file-path>" --execute',
+    });
+    expect(dmGranted).toMatchObject({
+      status: "available",
+      command: 'ravi media send "<file-path>" --execute',
+    });
+    expect(groupDenied).toMatchObject({
+      status: "unavailable",
+      unavailableReasonCode: "permission_denied",
+      unavailableReason: "The current runtime context is not authorized to send media.",
+    });
+    expect(dmDenied).toMatchObject({
+      status: "unavailable",
+      unavailableReasonCode: "permission_denied",
+    });
+    expect(groupDenied).not.toHaveProperty("command");
+    expect(dmDenied).not.toHaveProperty("command");
+  });
+
   it("resolves Slack actions per concrete surface and origin session", () => {
     const sessionKey = "agent:dev:slack:ravi-slack:C123";
     resolvedSession = {
@@ -1406,6 +1738,79 @@ describe("SessionCommands attach hints", () => {
           status: "available",
           executionMode: "durable",
           command: 'ravi sessions create-thread "<initial-message>" --model <model>',
+        }),
+      ]),
+    );
+  });
+
+  it("marks Slack conversation actions unavailable when the native channel has no credential", () => {
+    const sessionKey = "agent:dev:slack:hana-slack:C123";
+    resolvedSession = {
+      sessionKey,
+      name: "dev-slack",
+      agentId: "dev",
+      agentCwd: "/tmp/dev",
+    };
+    sessionSubscriptions = [
+      {
+        id: "sub_slack",
+        sessionKey,
+        chatId: "chat_slack",
+        role: "primary",
+        outputAttachedAt: 1,
+      },
+    ];
+    chatRecords.set("chat_slack", {
+      id: "chat_slack",
+      title: "ravi",
+      channel: "slack",
+      instanceId: "hana-slack",
+      platformChatId: "C123",
+    });
+    routerConfig = {
+      agents: {},
+      channels: {
+        "hana-slack": {
+          name: "hana-slack",
+          provider: "slack",
+          enabled: true,
+        },
+      },
+      instances: {},
+      instanceToAccount: {},
+    };
+
+    const payload = JSON.parse(
+      captureLogs(() => {
+        new SessionCommands().actions("dev-slack", undefined, true);
+      }),
+    );
+
+    expect(payload.surfaces.items[0]).toMatchObject({
+      id: "chat_slack",
+      credentialConfigured: false,
+    });
+    expect(payload.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "message.react",
+          status: "unavailable",
+          unavailableReasonCode: "missing_connection",
+        }),
+        expect.objectContaining({
+          id: "message.edit",
+          status: "unavailable",
+          unavailableReasonCode: "missing_connection",
+        }),
+        expect.objectContaining({
+          id: "message.delete",
+          status: "unavailable",
+          unavailableReasonCode: "missing_connection",
+        }),
+        expect.objectContaining({
+          id: "sticker.send",
+          status: "unavailable",
+          unavailableReasonCode: "unsupported_channel",
         }),
       ]),
     );
@@ -1972,6 +2377,374 @@ describe("SessionCommands set-model", () => {
     expect(natsEmits[0]?.data.modelOverride).toBeNull();
     expect(natsEmits[0]?.data.effectiveModel).toBe("model-default");
   });
+
+  it("notes when the session model differs from the agent default", async () => {
+    resolvedSession = {
+      sessionKey: "agent:main:model-switch",
+      name: "model-switch",
+      agentId: "main",
+    };
+    routerConfig = {
+      agents: {
+        main: {
+          model: "model-default",
+          provider: "codex",
+        },
+      },
+    };
+
+    const output = await captureLogsAsync(async () => {
+      await new SessionCommands().setModel("model-switch", "model-live", true);
+    });
+    const payload = JSON.parse(output);
+
+    expectReturnShape(sessionSetModelReturnSchema, payload);
+    expect(payload.agentDefaultDiffers).toBe(true);
+    expect(payload.agentDefaultModel).toBe("model-default");
+    expect(payload.propagateCommand).toBe("ravi sessions set-model model-switch model-live --propagate");
+    expect(payload.propagated).toBe(false);
+  });
+
+  it("propagates a session model to the agent when requested", async () => {
+    resolvedSession = {
+      sessionKey: "agent:main:model-switch",
+      name: "model-switch",
+      agentId: "main",
+      runtimeProvider: "codex",
+    };
+    listedSessions = [
+      resolvedSession,
+      {
+        sessionKey: "agent:main:sibling",
+        name: "sibling",
+        agentId: "main",
+        runtimeProvider: "claude",
+      },
+    ];
+    routerConfig = {
+      agents: {
+        main: {
+          model: "model-default",
+          provider: "codex",
+        },
+      },
+    };
+
+    const output = await captureLogsAsync(async () => {
+      await new SessionCommands().setModel("model-switch", "model-live", true, true);
+    });
+    const payload = JSON.parse(output);
+
+    expectReturnShape(sessionSetModelReturnSchema, payload);
+    expect(payload.propagated).toBe(true);
+    expect(routerConfig.agents.main?.model).toBe("model-live");
+    expect(payload.agentDefaultDiffers).toBe(false);
+  });
+
+  it("prints and returns the same schema-valid envelope with --json", async () => {
+    resolvedSession = {
+      sessionKey: "agent:main:model-switch",
+      name: "model-switch",
+      agentId: "main",
+    };
+    routerConfig = { agents: { main: { model: "model-default" } } };
+
+    let returned: unknown;
+    const output = await captureLogsAsync(async () => {
+      returned = await new SessionCommands().setModel("model-switch", "model-live", true);
+    });
+
+    expectReturnShape(sessionSetModelReturnSchema, returned);
+    expect(JSON.parse(output)).toEqual(JSON.parse(JSON.stringify(returned)));
+  });
+
+  it("returns the set-model envelope through the gateway, where --json is stripped", async () => {
+    toolContext = { suppressCliOutput: true, transport: "gateway" };
+    resolvedSession = {
+      sessionKey: "agent:main:model-switch",
+      name: "model-switch",
+      agentId: "main",
+    };
+    routerConfig = { agents: { main: { model: "model-default" } } };
+
+    let payload: Record<string, any> | undefined;
+    await captureLogsAsync(async () => {
+      payload = (await new SessionCommands().setModel("model-switch", "model-live")) as Record<string, any>;
+    });
+
+    expectReturnShape(sessionSetModelReturnSchema, payload);
+    expect(payload).toMatchObject({
+      action: "set-model",
+      changed: true,
+      sessionKey: "agent:main:model-switch",
+      sessionName: "model-switch",
+      modelOverride: "model-live",
+      effectiveModel: "model-live",
+      notification: { topic: "ravi.session.model.changed", delivered: true, error: null },
+    });
+    expect(payload?.before.modelOverride).toBeUndefined();
+    expect(payload?.after.modelOverride).toBe("model-live");
+    expect(resolvedSession?.modelOverride).toBe("model-live");
+  });
+
+  it("returns a schema-valid gateway envelope when clearing the model override", async () => {
+    toolContext = { suppressCliOutput: true, transport: "gateway" };
+    resolvedSession = {
+      sessionKey: "agent:main:model-clear",
+      name: "model-clear",
+      agentId: "main",
+      modelOverride: "model-live",
+    };
+    routerConfig = { agents: { main: { model: "model-default" } } };
+
+    let payload: Record<string, any> | undefined;
+    await captureLogsAsync(async () => {
+      payload = (await new SessionCommands().setModel("model-clear", "clear")) as Record<string, any>;
+    });
+
+    expectReturnShape(sessionSetModelReturnSchema, payload);
+    expect(payload).toMatchObject({ action: "set-model", changed: true, modelOverride: null });
+    expect(payload?.after.modelOverride).toBeUndefined();
+  });
+
+  it("fails instead of returning a success envelope when the model override did not persist", async () => {
+    toolContext = { suppressCliOutput: true, transport: "gateway" };
+    dropSessionOverrideWrites = true;
+    resolvedSession = {
+      sessionKey: "agent:main:model-switch",
+      name: "model-switch",
+      agentId: "main",
+    };
+    routerConfig = { agents: { main: { model: "model-default" } } };
+
+    await expect(
+      captureLogsAsync(async () => {
+        await new SessionCommands().setModel("model-switch", "model-live");
+      }),
+    ).rejects.toThrow("sessions set-model did not persist for model-switch.");
+    expect(resolvedSession?.modelOverride).toBeUndefined();
+  });
+});
+
+describe("SessionCommands set-provider", () => {
+  beforeEach(() => {
+    listedSessions = [];
+    resolvedSession = null;
+    routerConfig = { agents: {} };
+    natsEmits.length = 0;
+  });
+
+  it("notes when the session provider differs from the agent default", () => {
+    resolvedSession = {
+      sessionKey: "agent:ravi-console:wa",
+      name: "wa-group",
+      agentId: "ravi-console",
+      runtimeProvider: "codex",
+    };
+    routerConfig = {
+      agents: {
+        "ravi-console": {
+          provider: "pi",
+          model: "deepseek/deepseek-flash",
+        },
+      },
+    };
+
+    const output = captureLogs(() => {
+      new SessionCommands().setProvider("wa-group", "codex", true);
+    });
+    const payload = JSON.parse(output);
+
+    expectReturnShape(sessionSetProviderReturnSchema, payload);
+    expect(payload.action).toBe("set-provider");
+    expect(payload.runtimeProviderOverride).toBe("codex");
+    expect(payload.agentDefaultDiffers).toBe(true);
+    expect(payload.agentDefaultProvider).toBe("pi");
+    expect(payload.propagateCommand).toBe("ravi sessions set-provider wa-group codex --propagate");
+    expect(payload.propagated).toBe(false);
+  });
+
+  it("rematerializes last-used provider when clearing a session override", () => {
+    resolvedSession = {
+      sessionKey: "agent:ravi-console:wa",
+      name: "wa-group",
+      agentId: "ravi-console",
+      runtimeProvider: "codex",
+      runtimeProviderOverride: "codex",
+    };
+    routerConfig = {
+      agents: {
+        "ravi-console": {
+          provider: "pi",
+        },
+      },
+    };
+
+    const output = captureLogs(() => {
+      new SessionCommands().setProvider("wa-group", "clear", true);
+    });
+    const payload = JSON.parse(output);
+
+    expectReturnShape(sessionSetProviderReturnSchema, payload);
+    expect(payload.runtimeProviderOverride).toBeNull();
+    expect(payload.rematerializedSessions).toEqual([
+      expect.objectContaining({
+        sessionName: "wa-group",
+        previousRuntimeProvider: "codex",
+        runtimeProvider: "pi",
+      }),
+    ]);
+    expect(resolvedSession?.runtimeProvider).toBe("pi");
+  });
+
+  it("propagates a session provider to the agent and rematerializes siblings", () => {
+    resolvedSession = {
+      sessionKey: "agent:ravi-console:wa",
+      name: "wa-group",
+      agentId: "ravi-console",
+      runtimeProvider: "codex",
+    };
+    listedSessions = [
+      resolvedSession,
+      {
+        sessionKey: "agent:ravi-console:trigger",
+        name: "trigger-job",
+        agentId: "ravi-console",
+        runtimeProvider: "claude",
+      },
+    ];
+    routerConfig = {
+      agents: {
+        "ravi-console": {
+          provider: "pi",
+        },
+      },
+    };
+
+    const output = captureLogs(() => {
+      new SessionCommands().setProvider("wa-group", "codex", true, true);
+    });
+    const payload = JSON.parse(output);
+
+    expectReturnShape(sessionSetProviderReturnSchema, payload);
+    expect(payload.propagated).toBe(true);
+    expect(routerConfig.agents["ravi-console"]?.provider).toBe("codex");
+    expect(payload.rematerializedSessions.map((session: { sessionName: string }) => session.sessionName)).toEqual([
+      "trigger-job",
+    ]);
+    expect(resolvedSession?.runtimeProviderOverride).toBe("codex");
+  });
+
+  it("prints and returns the same schema-valid envelope with --json", () => {
+    resolvedSession = {
+      sessionKey: "agent:ravi-console:wa",
+      name: "wa-group",
+      agentId: "ravi-console",
+    };
+    routerConfig = { agents: { "ravi-console": { provider: "pi" } } };
+
+    let returned: unknown;
+    const output = captureLogs(() => {
+      returned = new SessionCommands().setProvider("wa-group", "codex", true);
+    });
+
+    expectReturnShape(sessionSetProviderReturnSchema, returned);
+    expect(JSON.parse(output)).toEqual(JSON.parse(JSON.stringify(returned)));
+  });
+
+  it("returns the set-provider envelope through the gateway, where --json is stripped", () => {
+    toolContext = { suppressCliOutput: true, transport: "gateway" };
+    resolvedSession = {
+      sessionKey: "agent:ravi-console:wa",
+      name: "wa-group",
+      agentId: "ravi-console",
+      runtimeProvider: "pi",
+    };
+    routerConfig = { agents: { "ravi-console": { provider: "pi" } } };
+
+    let payload: Record<string, any> | undefined;
+    captureLogs(() => {
+      payload = new SessionCommands().setProvider("wa-group", "codex") as Record<string, any>;
+    });
+
+    expectReturnShape(sessionSetProviderReturnSchema, payload);
+    expect(payload).toMatchObject({
+      action: "set-provider",
+      changed: true,
+      sessionKey: "agent:ravi-console:wa",
+      sessionName: "wa-group",
+      runtimeProviderOverride: "codex",
+      effectiveProvider: "codex",
+      providerSource: "session_override",
+      appliesOn: "next-turn-runtime-restart",
+      propagated: false,
+    });
+    expect(payload?.before.runtimeProviderOverride).toBeUndefined();
+    expect(payload?.after.runtimeProviderOverride).toBe("codex");
+    expect(payload?.after.runtimeOptions.provider).toEqual({ value: "codex", source: "session_override" });
+    expect(resolvedSession?.runtimeProviderOverride).toBe("codex");
+  });
+
+  it("returns a schema-valid gateway envelope when clearing and rematerializing the provider", () => {
+    toolContext = { suppressCliOutput: true, transport: "gateway" };
+    resolvedSession = {
+      sessionKey: "agent:ravi-console:wa",
+      name: "wa-group",
+      agentId: "ravi-console",
+      runtimeProvider: "codex",
+      runtimeProviderOverride: "codex",
+    };
+    routerConfig = { agents: { "ravi-console": { provider: "pi" } } };
+
+    let payload: Record<string, any> | undefined;
+    captureLogs(() => {
+      payload = new SessionCommands().setProvider("wa-group", "clear") as Record<string, any>;
+    });
+
+    expectReturnShape(sessionSetProviderReturnSchema, payload);
+    expect(payload).toMatchObject({
+      action: "set-provider",
+      changed: true,
+      runtimeProviderOverride: null,
+      effectiveProvider: "pi",
+    });
+    expect(payload?.rematerializedSessions).toEqual([
+      expect.objectContaining({ sessionName: "wa-group", previousRuntimeProvider: "codex", runtimeProvider: "pi" }),
+    ]);
+    expect(payload?.after.runtimeProviderOverride).toBeUndefined();
+  });
+
+  it("fails instead of returning a success envelope when the provider override did not persist", () => {
+    toolContext = { suppressCliOutput: true, transport: "gateway" };
+    dropSessionOverrideWrites = true;
+    resolvedSession = {
+      sessionKey: "agent:ravi-console:wa",
+      name: "wa-group",
+      agentId: "ravi-console",
+    };
+    routerConfig = { agents: { "ravi-console": { provider: "pi" } } };
+
+    expect(() =>
+      captureLogs(() => {
+        new SessionCommands().setProvider("wa-group", "codex");
+      }),
+    ).toThrow("sessions set-provider did not persist for wa-group.");
+    expect(resolvedSession?.runtimeProviderOverride).toBeUndefined();
+  });
+
+  it("rejects unknown providers through the gateway without persisting", () => {
+    toolContext = { suppressCliOutput: true, transport: "gateway" };
+    resolvedSession = {
+      sessionKey: "agent:ravi-console:wa",
+      name: "wa-group",
+      agentId: "ravi-console",
+    };
+
+    expect(() => new SessionCommands().setProvider("wa-group", "not-a-provider")).toThrow(
+      /Unknown runtime provider: not-a-provider/,
+    );
+    expect(resolvedSession?.runtimeProviderOverride).toBeUndefined();
+  });
 });
 
 describe("SessionCommands set-effort", () => {
@@ -2030,6 +2803,7 @@ describe("SessionCommands set-effort", () => {
     });
     const payload = JSON.parse(output);
 
+    expectReturnShape(sessionSetEffortReturnSchema, payload);
     expect(payload).toMatchObject({
       action: "set-effort",
       changed: true,
@@ -2050,6 +2824,46 @@ describe("SessionCommands set-effort", () => {
 
     expect(() => new SessionCommands().setEffort("effort-invalid", "turbo", true)).toThrow(/Invalid runtime effort/);
     expect(effortUpdates).toEqual([]);
+  });
+
+  it("returns the set-effort envelope through the gateway, where --json is stripped", () => {
+    toolContext = { suppressCliOutput: true, transport: "gateway" };
+    resolvedSession = {
+      sessionKey: "agent:main:effort-switch",
+      name: "effort-switch",
+      agentId: "main",
+    };
+    routerConfig = { agents: { main: { effort: "max" } } };
+
+    let payload: Record<string, any> | undefined;
+    captureLogs(() => {
+      payload = new SessionCommands().setEffort("effort-switch", "high") as Record<string, any>;
+    });
+
+    expectReturnShape(sessionSetEffortReturnSchema, payload);
+    expect(payload).toMatchObject({
+      action: "set-effort",
+      changed: true,
+      effortOverride: "high",
+      effectiveEffort: "high",
+      effectiveEffortSource: "session_override",
+    });
+    expect(payload?.after.effortOverride).toBe("high");
+  });
+
+  it("fails instead of returning a success envelope when the effort override did not persist", () => {
+    toolContext = { suppressCliOutput: true, transport: "gateway" };
+    dropSessionOverrideWrites = true;
+    resolvedSession = {
+      sessionKey: "agent:main:effort-switch",
+      name: "effort-switch",
+      agentId: "main",
+    };
+
+    expect(() => new SessionCommands().setEffort("effort-switch", "high")).toThrow(
+      "sessions set-effort did not persist for effort-switch.",
+    );
+    expect(resolvedSession?.effortOverride).toBeUndefined();
   });
 });
 

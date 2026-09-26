@@ -7,7 +7,11 @@
 import "reflect-metadata";
 import { z } from "zod";
 import { addContactTag, getContact } from "../../contacts.js";
-import { ensureAgentRuntimeCapability } from "../../permissions/agent-default-capabilities-provider.js";
+import {
+  ensureAgentRuntimeCapability,
+  isChatOnlyRuntimePermissions,
+  readAgentRuntimePermissionsConfig,
+} from "../../permissions/agent-default-capabilities-provider.js";
 import {
   buildAuthorizationGuidance,
   formatCanonicalCapability,
@@ -100,6 +104,7 @@ const permissionsCheckReturnSchema = z.object({
       preferredPath: z.object({
         kind: z.string(),
         message: z.string(),
+        allowCommand: z.string().optional(),
         suggestedTags: z.array(
           z.object({
             slug: z.string(),
@@ -109,6 +114,7 @@ const permissionsCheckReturnSchema = z.object({
           }),
         ),
       }),
+      candidateCapabilities: z.array(z.string()).optional(),
       rawCapabilityFallback: z.string(),
       breakGlass: z.string(),
       requestShape: z.object({
@@ -121,6 +127,7 @@ const permissionsCheckReturnSchema = z.object({
       nextSteps: z.array(z.string()),
     })
     .optional(),
+  diagnosticNote: z.string().optional(),
 });
 
 const permissionsMaterializeReturnSchema = z.object({
@@ -136,9 +143,11 @@ const permissionsMaterializeReturnSchema = z.object({
       source: z.string().optional(),
     }),
   ),
+  profile: z.string().optional(),
   guidance: z.object({
     recurringAccess: z.string(),
     breakGlass: z.string(),
+    chatOnly: z.string().optional(),
   }),
 });
 
@@ -260,12 +269,17 @@ export class PermissionsCommands {
       scope: "diagnostic",
       includeProviderOwnedTags: true,
     });
+    const diagnosticNote =
+      !decision.allowed && decision.reasonCode === "no_permission_provider_configured"
+        ? "This check has no subject or runtime context, so authorize cannot see agent-default-capabilities. Inspect with `ravi permissions materialize --subject-type agent --subject-id <id> --json`. Recurring grants use `ravi permissions allow <profile> --to agent:<id> --apply`."
+        : undefined;
     const payload = {
       allowed: decision.allowed,
       decision,
       ...(!decision.allowed
         ? {
             guidance,
+            ...(diagnosticNote ? { diagnosticNote } : {}),
           }
         : {}),
     };
@@ -278,11 +292,20 @@ export class PermissionsCommands {
     console.log(decision.allowed ? "allowed" : "denied");
     console.log(`${decision.providerId}@${decision.providerVersion}: ${decision.reasonCode}`);
     if (!decision.allowed && payload.guidance) {
+      if (payload.guidance.candidateCapabilities && payload.guidance.candidateCapabilities.length > 1) {
+        console.log(`required candidates: ${payload.guidance.candidateCapabilities.join(", ")}`);
+      }
       console.log(`missing capability: ${payload.guidance.canonicalCapability}`);
       console.log(`inspect: ${payload.guidance.inspectCommands[0]}`);
       console.log(`recurring: ${payload.guidance.preferredPath.message}`);
+      if (payload.guidance.preferredPath.allowCommand) {
+        console.log(`allow: ${payload.guidance.preferredPath.allowCommand}`);
+      }
       console.log(`fallback: ${payload.guidance.rawCapabilityFallback}`);
       console.log(`break-glass: ${payload.guidance.breakGlass}`);
+      if (payload.diagnosticNote) {
+        console.log(`note: ${payload.diagnosticNote}`);
+      }
     }
     return payload;
   }
@@ -407,13 +430,27 @@ export class PermissionsCommands {
   ) {
     const normalizedSubjectType = requiredOption(subjectType, "--subject-type");
     const normalizedSubjectId = requiredOption(subjectId, "--subject-id");
+    const storedProfile =
+      normalizedSubjectType === "agent"
+        ? readAgentRuntimePermissionsConfig(normalizedSubjectId)
+        : normalizedSubjectType === "agent_identity"
+          ? readAgentRuntimePermissionsConfig(normalizedSubjectId.split(":")[0] ?? "")
+          : null;
+    const chatOnly = isChatOnlyRuntimePermissions(storedProfile);
     const payload = {
       subject: { type: normalizedSubjectType, id: normalizedSubjectId },
       capabilities: materializeSubjectCapabilities(normalizedSubjectType, normalizedSubjectId),
+      ...(storedProfile?.profile || chatOnly ? { profile: storedProfile?.profile ?? "chat-only" } : {}),
       guidance: {
         recurringAccess:
           "Recurring access should come from provider-owned agent identity profiles/tags, not ad-hoc capability lists.",
         breakGlass: "full-access is break-glass and should be explicit.",
+        ...(chatOnly
+          ? {
+              chatOnly:
+                "chat-only is conversation only (no tools/shell/CLI groups). none/clear/off resets to the bootstrap minimum; it is not zero-authority.",
+            }
+          : {}),
       },
     };
 
@@ -423,6 +460,13 @@ export class PermissionsCommands {
     }
 
     if (payload.capabilities.length === 0) {
+      if (chatOnly) {
+        console.log(
+          `${normalizedSubjectType}:${normalizedSubjectId} is chat-only: conversation only, no tools/shell/CLI groups.`,
+        );
+        console.log("none/clear/off resets to the bootstrap minimum; it is not zero-authority.");
+        return payload;
+      }
       console.log(`${normalizedSubjectType}:${normalizedSubjectId} has no materialized capabilities.`);
       console.log("next: attach a provider-owned permission profile/tag, or add the narrowest explicit capability");
       return payload;

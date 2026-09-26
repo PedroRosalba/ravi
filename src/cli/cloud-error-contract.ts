@@ -2,6 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import { CloudAuthError } from "../cloud-auth/errors.js";
 import { ContractError, CONTRACT_EXIT_ERROR, CONTRACT_EXIT_USAGE } from "./agent-contract.js";
 import { getContext } from "./context.js";
+import { payloadInvalidIssues, sanitizePayloadInvalidMessage } from "./payload-error-message.js";
 
 const RETRYABLE_CODES = new Set(["AUTH_PENDING", "RATE_LIMITED", "SERVER_UNAVAILABLE"]);
 
@@ -12,6 +13,7 @@ export function commandOperation(group: string, command: string): string {
 
 /** Map provider/auth failures into the global CLI exit taxonomy without losing their stable code. */
 export function cloudErrorToContractError(op: string, error: CloudAuthError): ContractError {
+  const issues = error.code === "PAYLOAD_INVALID" ? payloadInvalidIssues(error.message, error.issues) : error.issues;
   return new ContractError(
     op,
     error.code,
@@ -20,6 +22,7 @@ export function cloudErrorToContractError(op: string, error: CloudAuthError): Co
     {
       retryable: RETRYABLE_CODES.has(error.code),
       ...(error.status !== undefined ? { status: error.status } : {}),
+      ...(issues ? { issues } : {}),
       suggestedAction: suggestedAction(error.code),
     },
   );
@@ -44,7 +47,7 @@ function publicMessage(code: CloudAuthError["code"], sourceMessage: string): str
     case "DOMAIN_SETUP_REQUIRED":
       return safeDomainSetupMessage(sourceMessage);
     case "PAYLOAD_INVALID":
-      return "Console request input was invalid.";
+      return sanitizePayloadInvalidMessage(sourceMessage) ?? "Console request input was invalid.";
     case "RATE_LIMITED":
       return "Console request was rate limited.";
     case "SERVER_UNAVAILABLE":
@@ -55,6 +58,10 @@ function publicMessage(code: CloudAuthError["code"], sourceMessage: string): str
       return "Console credentials are invalid.";
     case "CLOUD_PUBLISH_NOT_IMPLEMENTED":
       return "Console publishing is unavailable for this command.";
+    case "CONTACT_REQUIRED":
+      return "A resolved contact is required in the current turn or session.";
+    case "ACTOR_BINDING_CONFLICT":
+      return "This contact is already linked to a different Console user.";
   }
 }
 
@@ -96,6 +103,10 @@ function suggestedAction(code: CloudAuthError["code"]): string {
       return "run the same `ravi pages` command on the host, or retry after the host CLI gateway socket is available";
     case "CLOUD_PUBLISH_NOT_IMPLEMENTED":
       return "use a supported publish path";
+    case "CONTACT_REQUIRED":
+      return "run `ravi link` from a turn or session with a resolved contact; do not pass a contact flag";
+    case "ACTOR_BINDING_CONFLICT":
+      return "run `ravi unlink` on the existing binding, or login as the already-linked Console user";
   }
 }
 

@@ -286,6 +286,27 @@ describe("runCoverageGate", () => {
     expect(result.triggeredPrefixes).toEqual(["src/router/"]);
   });
 
+  it("accepts focused route CRUD coverage for router persistence changes", () => {
+    const result = runCoverageGate(["src/router/router-db.ts", "src/router/router-db.routes.test.ts"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.triggeredPrefixes).toEqual(["src/router/"]);
+  });
+
+  it("accepts announceCompaction coverage for router persistence changes", () => {
+    const result = runCoverageGate(["src/router/router-db.ts", "src/router/router-db.announce-compaction.test.ts"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.triggeredPrefixes).toEqual(["src/router/"]);
+  });
+
+  it("accepts daemon restart delivery ledger coverage for router persistence changes", () => {
+    const result = runCoverageGate(["src/router/router-db.ts", "src/router/router-db.daemon-restart.test.ts"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.triggeredPrefixes).toEqual(["src/router/"]);
+  });
+
   it("accepts crash recovery store coverage across router persistence and runtime changes", () => {
     const result = runCoverageGate([
       "src/router/router-db.ts",
@@ -365,6 +386,13 @@ describe("runCoverageGate", () => {
     expect(result.triggeredPrefixes).toEqual(["src/omni/"]);
   });
 
+  it("passes when the omni stub consumer focused test is in the diff", () => {
+    const result = runCoverageGate(["src/omni/stub-consumer.ts", "src/omni/stub-consumer.test.ts"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.triggeredPrefixes).toEqual(["src/omni/"]);
+  });
+
   it("passes when runtime transport focused tests are in the diff", () => {
     const cwd = makeWorkspace();
 
@@ -424,6 +452,27 @@ describe("runCoverageGate", () => {
 
     expect(result.ok).toBe(true);
     expect(result.triggeredPrefixes).toEqual(["src/runtime/"]);
+  });
+
+  it("passes when the session dispatcher focused test is in the diff", () => {
+    const cwd = makeWorkspace();
+
+    const result = runCoverageGate(
+      ["src/runtime/session-dispatcher.ts", "src/runtime/session-dispatcher.test.ts"],
+      cwd,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.triggeredPrefixes).toEqual(["src/runtime/"]);
+  });
+
+  it("passes when the tool safety focused test is in the diff", () => {
+    const cwd = makeWorkspace();
+
+    const result = runCoverageGate(["src/hooks/tool-safety.ts", "src/hooks/tool-safety.test.ts"], cwd);
+
+    expect(result.ok).toBe(true);
+    expect(result.triggeredPrefixes).toEqual(["src/hooks/"]);
   });
 
   it("passes when the Ravi env file focused test is in the diff", () => {
@@ -488,6 +537,10 @@ describe("runCoverageGate", () => {
     expect(runCoverageGate(["src/runtime/runtime-selection.ts", "src/runtime/runtime-selection.test.ts"]).ok).toBe(
       true,
     );
+    expect(
+      runCoverageGate(["src/runtime/agent-session-runtime-sync.ts", "src/runtime/agent-session-runtime-sync.test.ts"])
+        .ok,
+    ).toBe(true);
     expect(
       runCoverageGate(["src/runtime/daemon-restart-resume.ts", "src/runtime/daemon-restart-resume.test.ts"]).ok,
     ).toBe(true);

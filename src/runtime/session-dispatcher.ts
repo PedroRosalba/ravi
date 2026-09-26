@@ -26,7 +26,7 @@ import {
   dbHasServingTaskForSession,
 } from "../tasks/task-db.js";
 import { logger } from "../utils/logger.js";
-import { revokeAgentRuntimeContextsForSession } from "./context-registry.js";
+import { resolveRuntimeContext, revokeAgentRuntimeContextsForSession } from "./context-registry.js";
 import type { RuntimeCrashRecoveryCoordinator } from "./crash-recovery.js";
 import { hasRuntimeTurnAttemptInputMutation, type RuntimeTurnAttemptTerminalStatus } from "./crash-recovery-store.js";
 import {
@@ -67,6 +67,7 @@ import { planRuntimeModelBrokerRoute, type RuntimeModelBrokerPlan } from "./mode
 import type { RuntimeProviderId } from "./types.js";
 import type { RuntimeSafeEmit } from "./host-event-loop.js";
 import { markRuntimeLiveIdle, updateRuntimeLiveState } from "./live-state.js";
+import { FATAL_TOOL_FAILURE_REASON } from "./fatal-tool-failure.js";
 import { formatUserFacingTurnFailure } from "./public-failure.js";
 import {
   startRuntimeSession,
@@ -101,15 +102,26 @@ const PROVIDER_TRANSPORT_FAILURE_REASON = "provider_transport_failure";
 const MAX_RUNTIME_EVENT_LOOP_RESTARTS = 2;
 const MAX_PROVIDER_TURN_INACTIVE_RESTARTS = 1;
 const MAX_PROVIDER_TRANSPORT_FAILURE_RESTARTS = 2;
+const MAX_FATAL_TOOL_FAILURE_RESTARTS = 1;
 const RUNTIME_RECOVERY_RESTART_LIMITS: Readonly<Partial<Record<string, number>>> = {
   [RUNTIME_EVENT_LOOP_CLOSED_REASON]: MAX_RUNTIME_EVENT_LOOP_RESTARTS,
   [PROVIDER_TURN_INACTIVE_REASON]: MAX_PROVIDER_TURN_INACTIVE_RESTARTS,
   [PROVIDER_TRANSPORT_FAILURE_REASON]: MAX_PROVIDER_TRANSPORT_FAILURE_RESTARTS,
+  [FATAL_TOOL_FAILURE_REASON]: MAX_FATAL_TOOL_FAILURE_RESTARTS,
 };
 const RUNTIME_RESTART_EXHAUSTED_ERROR =
   "Runtime provider stream closed repeatedly. Automatic recovery was stopped; send a new message to retry.";
 const NATIVE_STEER_ACTIVE_TURN_MAX_IDLE_MS = 30_000;
 const IDLE_GAP_RECOVERY_MS = Math.max(1_000, Number(process.env.RAVI_RUNTIME_IDLE_GAP_RECOVERY_MS) || 5_000);
+const DEFAULT_BARRIER_STUCK_ALERT_MS = 30_000;
+
+function resolveBarrierStuckAlertMs(value = process.env.RAVI_RUNTIME_BARRIER_STUCK_MS): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.max(1, parsed);
+  }
+  return DEFAULT_BARRIER_STUCK_ALERT_MS;
+}
 
 interface DebounceState {
   messages: RuntimeLaunchPrompt[];
@@ -171,6 +183,8 @@ export class RuntimeSessionDispatcher {
   readonly startingSessions = new Set<string>();
   readonly deferredBootstraps = new Map<string, RuntimeLaunchPrompt>();
   private readonly runtimeRecoveryRestartAttempts = new Map<string, Readonly<Partial<Record<string, number>>>>();
+  private readonly barrierStuckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly barrierStuckAlerted = new Set<string>();
   private reclaimTimer: ReturnType<typeof setInterval> | null = null;
   private reclaiming = false;
 
@@ -519,11 +533,15 @@ export class RuntimeSessionDispatcher {
       getSessionByName(sessionName) ?? (identity.sessionKey ? getSession(identity.sessionKey) : null);
     const sessionKey = sessionEntry?.sessionKey ?? identity.sessionKey ?? sessionName;
 
-    if (session.toolResultDeliveryPending || (session.toolRunning && session.currentToolSafety === "unsafe")) {
-      log.info("Deferring abort - tool barrier active", {
+    // A completed tool result whose provider callback write is still in flight
+    // is an atomic barrier: closing the provider mid-write leaves its thread
+    // with a tool call and no result. That window is measured in milliseconds
+    // and releases on `tool.result_delivered`, so the abort waits for it.
+    if (session.toolResultDeliveryPending) {
+      log.info("Deferring abort - tool result delivery pending", {
         sessionName,
         tool: session.currentToolName,
-        toolResultDeliveryPending: Boolean(session.toolResultDeliveryPending),
+        toolResultDeliveryPending: true,
         provenance,
       });
       session.internalAbortReason = `${abortReason}_deferred`;
@@ -545,11 +563,20 @@ export class RuntimeSessionDispatcher {
           provenance,
           tool: session.currentToolName ?? null,
           toolSafety: session.currentToolSafety,
-          toolResultDeliveryPending: Boolean(session.toolResultDeliveryPending),
+          toolResultDeliveryPending: true,
         },
       });
       return true;
     }
+
+    // A tool that is still executing does not hold the abort. Waiting for the
+    // barrier made long commands survive the kill, which from outside looked
+    // like a no-op. The provider's native interrupt cancels the in-flight tool
+    // (Pi `abort`, Codex `turn/interrupt`, Claude `interrupt`, Grok
+    // `session/cancel`), and the turn ends now. Prompt-lane interrupts still
+    // respect unsafe tools through the delivery queue; this path is the
+    // explicit abort only.
+    const cancelledTool = describeCancelledRuntimeTool(session);
 
     if (session.pendingMessages.length > 0) {
       log.info("Stashing aborted messages", { sessionName, count: session.pendingMessages.length });
@@ -558,8 +585,25 @@ export class RuntimeSessionDispatcher {
       });
     }
 
-    log.info("Aborting streaming session", { sessionName, done: session.done, provenance });
-    recordStreamingAbortTrace(this.options.crashRecovery, sessionName, session, abortReason, sessionKey, provenance);
+    if (cancelledTool) {
+      log.info("Aborting streaming session - cancelling running tool", {
+        sessionName,
+        done: session.done,
+        provenance,
+        ...cancelledTool,
+      });
+    } else {
+      log.info("Aborting streaming session", { sessionName, done: session.done, provenance });
+    }
+    recordStreamingAbortTrace(
+      this.options.crashRecovery,
+      sessionName,
+      session,
+      abortReason,
+      sessionKey,
+      provenance,
+      cancelledTool,
+    );
     if (sessionKey) {
       revokeAgentRuntimeContextsForSession(sessionKey, {
         reason: abortReason,
@@ -571,6 +615,7 @@ export class RuntimeSessionDispatcher {
         provider: session.queryHandle.provider,
         reason: abortReason,
         sessionName,
+        ...(cancelledTool ? { cancelledTool } : {}),
         ...(session.currentSource ? { _source: session.currentSource } : {}),
         timestamp: new Date().toISOString(),
       })
@@ -618,28 +663,63 @@ export class RuntimeSessionDispatcher {
     };
 
     if (resolveRuntimeModelSwitchStrategy(streaming.queryHandle) === "direct-set") {
-      recordRuntimeTraceEvent({
-        sessionKey,
-        sessionName,
-        agentId: streaming.agentId,
-        runId: streaming.traceRunId,
-        turnId: streaming.currentTraceTurnId,
-        provider: streaming.queryHandle.provider,
-        model,
-        eventType: "session.model_changed",
-        eventGroup: "session",
-        status: "applied",
-        source: streaming.currentSource,
-        payloadJson: {
-          previousModel: streaming.currentModel,
+      const previousModel = streaming.currentModel;
+      try {
+        const switched = await applyDirectRuntimeModelSwitch(streaming.queryHandle, model);
+        if (!switched) {
+          throw new Error("Runtime handle rejected live model switch");
+        }
+        recordRuntimeTraceEvent({
+          sessionKey,
+          sessionName,
+          agentId: streaming.agentId,
+          runId: streaming.traceRunId,
+          turnId: streaming.currentTraceTurnId,
+          provider: streaming.queryHandle.provider,
+          model,
+          eventType: "session.model_changed",
+          eventGroup: "session",
+          status: "applied",
+          source: streaming.currentSource,
+          payloadJson: {
+            previousModel,
+            nextModel: model,
+            strategy: "direct-set",
+            ...presetTrace,
+          },
+        });
+        streaming.currentModel = model;
+        return "applied";
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.warn("Live model switch failed; restarting session on next turn", {
+          sessionName,
+          previousModel,
           nextModel: model,
-          strategy: "direct-set",
-          ...presetTrace,
-        },
-      });
-      await applyDirectRuntimeModelSwitch(streaming.queryHandle, model);
-      streaming.currentModel = model;
-      return "applied";
+          error: message,
+        });
+        recordRuntimeTraceEvent({
+          sessionKey,
+          sessionName,
+          agentId: streaming.agentId,
+          runId: streaming.traceRunId,
+          turnId: streaming.currentTraceTurnId,
+          provider: streaming.queryHandle.provider,
+          model,
+          eventType: "session.model_changed",
+          eventGroup: "session",
+          status: "failed",
+          error: message,
+          source: streaming.currentSource,
+          payloadJson: {
+            previousModel,
+            nextModel: model,
+            strategy: "direct-set",
+            fallback: "restart-next-turn",
+            ...presetTrace,
+          },
+        });
+      }
     }
 
     const hasStashedMessages = streaming.pendingMessages.length > 0;
@@ -861,7 +941,20 @@ export class RuntimeSessionDispatcher {
     }
     const sessionRuntimeProviderOverride =
       prompt._observation && prompt._runtimeProviderId ? undefined : sessionEntry?.runtimeProviderOverride;
-    if (existing && shouldQueuePromptOnLiveSession(sessionName, existing, prompt, agent.id)) {
+    // Resolve next-turn provider before the live-queue shortcut so a persisted
+    // set-provider override can take provider_change. Last-used / agent-default
+    // mismatches must not block live_session_queue on their own.
+    let requestedProvider: RuntimeProviderId = resolveRequestedRuntimeProvider({
+      observationProviderId: prompt._observation && prompt._runtimeProviderId ? prompt._runtimeProviderId : undefined,
+      sessionProviderOverride: sessionRuntimeProviderOverride,
+      lastUsedProvider: sessionEntry?.runtimeProvider,
+      restartSnapshotProvider: prompt._daemonRestartResume?.runtimeProvider,
+      agent,
+    }).value;
+    if (
+      existing &&
+      shouldQueuePromptOnLiveSession(sessionName, existing, prompt, agent.id, sessionRuntimeProviderOverride)
+    ) {
       await this.enqueuePromptOnLiveSession(sessionName, existing, prompt, {
         sessionEntry: sessionEntry ?? undefined,
         agentId: sessionEntry?.agentId ?? agent.id,
@@ -880,16 +973,9 @@ export class RuntimeSessionDispatcher {
     if (modelBrokerPlan && prompt._modelBrokerTurnId !== modelBrokerTurnId) {
       prompt = { ...prompt, _modelBrokerTurnId: modelBrokerTurnId };
     }
-    const requestedProvider: RuntimeProviderId = modelBrokerPlan
-      ? modelBrokerPlan.lease.runtimeProvider
-      : resolveRequestedRuntimeProvider({
-          observationProviderId:
-            prompt._observation && prompt._runtimeProviderId ? prompt._runtimeProviderId : undefined,
-          sessionProviderOverride: sessionRuntimeProviderOverride,
-          lastUsedProvider: sessionEntry?.runtimeProvider,
-          restartSnapshotProvider: prompt._daemonRestartResume?.runtimeProvider,
-          agent,
-        }).value;
+    if (modelBrokerPlan) {
+      requestedProvider = modelBrokerPlan.lease.runtimeProvider;
+    }
     let retainReleasedSlot = false;
 
     if (existing && !existing.done) {
@@ -1101,6 +1187,7 @@ export class RuntimeSessionDispatcher {
               queueSize: existing.pendingMessages.length,
               barrier: describeDeliveryBarrier(barrier),
             });
+            this.clearBarrierStuckAlert(sessionName);
             const resolver = existing.pushMessage;
             existing.pushMessage = null;
             resolver(null);
@@ -1145,6 +1232,13 @@ export class RuntimeSessionDispatcher {
               .catch((error) => {
                 log.warn("Failed to emit dispatch.queued event", { sessionName, error });
               });
+            this.scheduleBarrierStuckAlert(
+              sessionName,
+              existing,
+              barrier,
+              sessionEntry?.sessionKey ?? sessionName,
+              prompt,
+            );
           }
         } else {
           const decision = shouldInterruptRuntimeForIncoming(sessionName, existing, barrier, prompt.taskBarrierTaskId);
@@ -1426,9 +1520,9 @@ export class RuntimeSessionDispatcher {
     }
 
     const sessionKey = restartResume.sessionKey ?? sessionEntry?.sessionKey ?? sessionName;
-    const pendingMessages = normalizePersistedRuntimeMessages(
-      dbGetDaemonRestartPendingMessages(restartResume.restartEpoch, sessionKey),
-    );
+    const pendingMessages = restartResume.noticeOnly
+      ? []
+      : normalizePersistedRuntimeMessages(dbGetDaemonRestartPendingMessages(restartResume.restartEpoch, sessionKey));
     if (pendingMessages.length === 0 && restartResume.pendingOnly) {
       return null;
     }
@@ -1446,6 +1540,7 @@ export class RuntimeSessionDispatcher {
       sessionKey,
       restartEpoch: restartResume.restartEpoch,
       pendingMessages: pendingMessages.length,
+      noticeOnly: restartResume.noticeOnly === true,
     });
     return {
       prompt: {
@@ -1703,11 +1798,94 @@ export class RuntimeSessionDispatcher {
   }
 
   private releaseRuntimeSessionSlot(sessionName: string, options: { drainPendingStarts?: boolean } = {}): boolean {
+    this.clearBarrierStuckAlert(sessionName);
     const released = this.streamingSessions.delete(sessionName);
     if (released && (options.drainPendingStarts ?? true)) {
       this.drainPendingStarts();
     }
     return released;
+  }
+
+  private scheduleBarrierStuckAlert(
+    sessionName: string,
+    session: RuntimeHostStreamingSession,
+    barrier: DeliveryBarrier,
+    sessionKey = sessionName,
+    prompt?: RuntimeLaunchPrompt,
+  ): void {
+    if (this.barrierStuckTimers.has(sessionName) || this.barrierStuckAlerted.has(sessionName)) {
+      return;
+    }
+    const timeoutMs = resolveBarrierStuckAlertMs();
+    const timer = setTimeout(() => {
+      this.barrierStuckTimers.delete(sessionName);
+      const current = this.streamingSessions.get(sessionName);
+      if (current !== session || current.done) {
+        return;
+      }
+      if (hasDeliverableRuntimeMessages(sessionName, current)) {
+        return;
+      }
+      this.barrierStuckAlerted.add(sessionName);
+      const blockedBarrier = describeDeliveryBarrier(barrier);
+      log.warn("Delivery barrier still blocking queued prompts", {
+        sessionName,
+        queueSize: current.pendingMessages.length,
+        barrier: blockedBarrier,
+        tool: current.currentToolName,
+        turnActive: current.turnActive,
+        toolRunning: current.toolRunning,
+        timeoutMs,
+      });
+      recordRuntimeTraceEvent({
+        sessionKey,
+        sessionName,
+        agentId: current.agentId,
+        runId: current.traceRunId,
+        turnId: current.currentTraceTurnId,
+        provider: current.queryHandle.provider,
+        model: current.currentModel,
+        eventType: "dispatch.barrier_stuck",
+        eventGroup: "dispatch",
+        status: "blocked",
+        source: prompt?.source ?? current.currentSource,
+        messageId: prompt?.context?.messageId,
+        payloadJson: {
+          reason: "waiting_for_barrier",
+          barrier: blockedBarrier,
+          barrierSource: prompt?.deliveryBarrierSource ?? null,
+          queueSize: current.pendingMessages.length,
+          timeoutMs,
+          sessionState: describeSessionState(current),
+        },
+      });
+      this.options
+        .safeEmit(`ravi.session.${sessionName}.runtime`, {
+          type: "dispatch.barrier_stuck",
+          provider: current.queryHandle.provider,
+          reason: "waiting_for_barrier",
+          barrier: blockedBarrier,
+          barrierSource: prompt?.deliveryBarrierSource ?? null,
+          queueSize: current.pendingMessages.length,
+          timeoutMs,
+          sessionState: describeSessionState(current),
+          timestamp: new Date().toISOString(),
+        })
+        .catch((error) => {
+          log.warn("Failed to emit dispatch.barrier_stuck event", { sessionName, error });
+        });
+    }, timeoutMs);
+    timer.unref?.();
+    this.barrierStuckTimers.set(sessionName, timer);
+  }
+
+  private clearBarrierStuckAlert(sessionName: string): void {
+    const timer = this.barrierStuckTimers.get(sessionName);
+    if (timer) {
+      clearTimeout(timer);
+      this.barrierStuckTimers.delete(sessionName);
+    }
+    this.barrierStuckAlerted.delete(sessionName);
   }
 
   private async restartStashedSession(sessionName: string, reason: string): Promise<void> {
@@ -2268,6 +2446,7 @@ export class RuntimeSessionDispatcher {
   }
 
   private async releaseQueuedPromptsAfterTool(sessionName: string): Promise<void> {
+    this.clearBarrierStuckAlert(sessionName);
     const existing = this.streamingSessions.get(sessionName);
     if (
       !existing ||
@@ -2455,6 +2634,7 @@ export class RuntimeSessionDispatcher {
           queueSize: existing.pendingMessages.length,
           barrier: describeDeliveryBarrier(barrier),
         });
+        this.clearBarrierStuckAlert(sessionName);
         const resolver = existing.pushMessage;
         existing.pushMessage = null;
         resolver(null);
@@ -2499,6 +2679,7 @@ export class RuntimeSessionDispatcher {
           .catch((error) => {
             log.warn("Failed to emit dispatch.queued event", { sessionName, error });
           });
+        this.scheduleBarrierStuckAlert(sessionName, existing, barrier, sessionEntry?.sessionKey ?? sessionName, prompt);
       }
       return;
     }
@@ -2652,6 +2833,7 @@ export function shouldQueuePromptOnLiveSession(
   existing: RuntimeHostStreamingSession,
   prompt: RuntimeLaunchPrompt,
   agentId: string,
+  sessionProviderOverride?: RuntimeProviderId | null,
 ): boolean {
   if (existing.done || existing.agentId !== agentId) {
     return false;
@@ -2664,6 +2846,10 @@ export function shouldQueuePromptOnLiveSession(
     !prompt._observation &&
     existing.queryHandle.provider !== prompt._runtimeProviderId
   ) {
+    return false;
+  }
+  const explicitSessionProvider = sessionProviderOverride?.trim();
+  if (explicitSessionProvider && existing.queryHandle.provider !== explicitSessionProvider) {
     return false;
   }
   if (existing.currentTaskBarrierTaskId !== normalizePromptTaskBarrierTaskId(prompt.taskBarrierTaskId)) {
@@ -2746,8 +2932,20 @@ export function canUseNativeRuntimeSteer(
     !session.starting &&
     !session.compacting &&
     !session.toolRunning &&
-    getPendingRuntimeTurnSuccessors(session).length === 0
+    getPendingRuntimeTurnSuccessors(session).length === 0 &&
+    canReuseLivePiSteerAuthority(session.currentRuntimeContextKey)
   );
+}
+
+/** Unset keys stay compatible. A published key must still resolve or steer is refused. */
+export function canReuseLivePiSteerAuthority(contextKey: string | undefined): boolean {
+  const trimmed = contextKey?.trim();
+  if (!trimmed) return true;
+  try {
+    return Boolean(resolveRuntimeContext(trimmed, { touch: false, readOnly: true }));
+  } catch {
+    return false;
+  }
 }
 
 function buildDebouncedRuntimePrompts(messages: RuntimeLaunchPrompt[]): RuntimeLaunchPrompt[] {
@@ -3076,6 +3274,32 @@ function isRuntimeUserMessage(value: unknown): value is RuntimeUserMessage {
   );
 }
 
+/** Tool that an explicit abort cancels mid-flight, for logs, traces, and runtime events. */
+export interface RuntimeCancelledToolDescriptor {
+  toolId: string | null;
+  toolName: string | null;
+  toolSafety: "safe" | "unsafe" | null;
+  elapsedMs: number | null;
+}
+
+export function describeCancelledRuntimeTool(
+  session: Pick<
+    RuntimeHostStreamingSession,
+    "toolRunning" | "currentToolId" | "currentToolName" | "currentToolSafety" | "toolStartTime"
+  >,
+  now = Date.now(),
+): RuntimeCancelledToolDescriptor | null {
+  if (!session.toolRunning) {
+    return null;
+  }
+  return {
+    toolId: session.currentToolId ?? null,
+    toolName: session.currentToolName ?? null,
+    toolSafety: session.currentToolSafety,
+    elapsedMs: session.toolStartTime ? Math.max(0, now - session.toolStartTime) : null,
+  };
+}
+
 function recordStreamingAbortTrace(
   crashRecovery: RuntimeCrashRecoveryCoordinator,
   sessionName: string,
@@ -3083,6 +3307,7 @@ function recordStreamingAbortTrace(
   reason: string,
   sessionKey = sessionName,
   provenance: RuntimeAbortProvenance = {},
+  cancelledTool: RuntimeCancelledToolDescriptor | null = describeCancelledRuntimeTool(session),
 ): void {
   recordRuntimeTraceEvent({
     sessionKey,
@@ -3102,6 +3327,9 @@ function recordStreamingAbortTrace(
       queueSize: session.pendingMessages.length,
       toolRunning: session.toolRunning,
       tool: session.currentToolName ?? null,
+      toolSafety: session.currentToolSafety,
+      toolCancelled: cancelledTool !== null,
+      ...(cancelledTool ? { cancelledTool } : {}),
     },
   });
   recordStreamingTurnInterruptedTrace(crashRecovery, sessionName, session, reason, sessionKey, "aborted");

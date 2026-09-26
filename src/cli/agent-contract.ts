@@ -17,11 +17,17 @@
  * adapters own exit/status/audit translation so they can flush one consistent
  * outcome before the process ends.
  */
+import { stripVTControlCharacters } from "node:util";
 import type { Command as CommanderCommand, CommanderError } from "commander";
 import { isSqliteCapacityError, SQLITE_CAPACITY_USER_MESSAGE } from "../db/write-retry.js";
+import { isRuntimeContextError } from "../runtime/context-errors.js";
 import { getContext } from "./context.js";
 import { CliExpectedError } from "./expected-error.js";
+import { looksLikeProviderDump, redactAbsolutePathsInText } from "./payload-error-message.js";
 import { sanitizePublicValue } from "./redaction.js";
+
+export const GENERIC_COMMAND_FAILED_MESSAGE = "Command could not be completed.";
+const MAX_PUBLIC_CONTRACT_MESSAGE_LENGTH = 4096;
 
 export const CONTRACT_EXIT_ERROR = 1;
 export const CONTRACT_EXIT_USAGE = 2;
@@ -100,14 +106,25 @@ export function contractFailureOutcome(error: Pick<ContractError, "code" | "exit
 
 export function expectedErrorToContractError(op: string, error: unknown): ContractError | null {
   if (!(error instanceof CliExpectedError)) return null;
-  return new ContractError(op, error.code, "Command could not be completed.", error.exitCode, {
-    suggestedAction: `Inspect the command input and retry '${op}'`,
+  const message = sanitizePublicContractMessage(error.message) ?? GENERIC_COMMAND_FAILED_MESSAGE;
+  const suggestedAction =
+    sanitizePublicContractMessage(error.suggestedAction) ?? `Inspect the command input and retry '${op}'`;
+  return new ContractError(op, error.code, message, error.exitCode, {
+    suggestedAction,
   });
 }
 
 export function unexpectedErrorToContractError(op: string): ContractError {
   return new ContractError(op, "UNHANDLED_ERROR", "Command failed unexpectedly.", CONTRACT_EXIT_ERROR, {
     suggestedAction: "Inspect redacted runtime logs and retry when the underlying cause is resolved",
+  });
+}
+
+export function runtimeContextErrorToContractError(op: string, error: unknown): ContractError | null {
+  if (!isRuntimeContextError(error)) return null;
+  return new ContractError(op, error.code, error.message, error.exitCode, {
+    suggestedAction: error.suggestedAction,
+    ...error.details,
   });
 }
 
@@ -123,6 +140,7 @@ export function sqliteCapacityToContractError(op: string, error: unknown): Contr
 export function mapExecutionErrorToContractError(op: string, error: unknown): ContractError {
   return (
     expectedErrorToContractError(op, error) ??
+    runtimeContextErrorToContractError(op, error) ??
     sqliteCapacityToContractError(op, error) ??
     unexpectedErrorToContractError(op)
   );
@@ -183,15 +201,54 @@ export function binaryResponseToContractError(op: string, status: number): Contr
 
 export function renderContractError(error: ContractError, asJson: boolean | undefined): void {
   if (getContext({ localOnly: true })?.suppressCliOutput === true) return;
+  const envelope = error.envelope();
   if (asJson) {
-    console.log(JSON.stringify(error.envelope(), null, 2));
-  } else {
-    console.error(error.envelope().error.message);
+    console.log(JSON.stringify(envelope, null, 2));
+    return;
+  }
+  console.error(envelope.error.message);
+  const issues = envelope.error.issues;
+  if (!Array.isArray(issues) || issues.length === 0) return;
+  if (typeof envelope.error.status === "number") {
+    console.error(`status: ${envelope.error.status}`);
+  }
+  for (const issue of issues) {
+    if (!issue || typeof issue !== "object") continue;
+    const record = issue as Record<string, unknown>;
+    const message = typeof record.message === "string" ? record.message : "";
+    const path = Array.isArray(record.path) ? record.path.map(String).filter(Boolean).join(".") : "";
+    const line = path && message ? `${path}: ${message}` : message || path;
+    if (line && line !== envelope.error.message) console.error(line);
   }
 }
 
-function publicContractMessage(code: string, message: string): string {
-  return code === "COMMAND_FAILED" ? "Command could not be completed." : message;
+/**
+ * Public COMMAND_FAILED copy: keep the sanitized expected/daemon cause.
+ * The generic headline is used only when the cause is empty or unsafe.
+ */
+export function publicContractMessage(code: string, message: string): string {
+  if (code !== "COMMAND_FAILED") return message;
+  return sanitizePublicContractMessage(message) ?? GENERIC_COMMAND_FAILED_MESSAGE;
+}
+
+export function sanitizePublicContractMessage(message: string | undefined): string | undefined {
+  if (typeof message !== "string") return undefined;
+  const cleaned = stripVTControlCharacters(message)
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .trim();
+  if (!cleaned) return undefined;
+  if (looksLikeProviderDump(cleaned)) return undefined;
+  const sanitized = sanitizePublicValue(cleaned);
+  if (typeof sanitized !== "string") return undefined;
+  const trimmed = sanitized.trim();
+  if (!trimmed || trimmed === "[REDACTED:path]" || trimmed.startsWith("[REDACTED:content")) {
+    return undefined;
+  }
+  const redacted = redactAbsolutePathsInText(trimmed);
+  if (!redacted.trim() || redacted === "[REDACTED:path]") return undefined;
+  return redacted.length > MAX_PUBLIC_CONTRACT_MESSAGE_LENGTH
+    ? `${redacted.slice(0, MAX_PUBLIC_CONTRACT_MESSAGE_LENGTH - 3)}...`
+    : redacted;
 }
 
 export interface ContractFailOptions {

@@ -36,6 +36,8 @@ export const RUNTIME_PATH_MAP: Record<string, string[]> = {
     "src/omni/consumer-context.test.ts",
     "src/omni/consumer-policy.test.ts",
     "src/omni/session-stream.test.ts",
+    // Headless Omni stub: presence/renew no-ops when Omni is not installed.
+    "src/omni/stub-consumer.test.ts",
   ],
   "src/router/": [
     "src/channels/backend.test.ts",
@@ -44,6 +46,12 @@ export const RUNTIME_PATH_MAP: Record<string, string[]> = {
     "src/router/chat-schema.test.ts",
     "src/router/sessions.test.ts",
     "src/router/resolver.test.ts",
+    // Route CRUD persistence: pattern normalize, dmScope updates, soft-delete.
+    "src/router/router-db.routes.test.ts",
+    // Channel compaction notices stay off unless announceCompaction is true.
+    "src/router/router-db.announce-compaction.test.ts",
+    // Daemon restart ledger records resume vs notice, only for published events.
+    "src/router/router-db.daemon-restart.test.ts",
     // Crash-recovery storage covers both the router schema and its typed runtime DAO.
     "src/runtime/crash-recovery-store.test.ts",
     "src/runtime/session-goals.test.ts",
@@ -62,6 +70,8 @@ export const RUNTIME_PATH_MAP: Record<string, string[]> = {
     "src/runtime/runtime-request-context.test.ts",
     "src/runtime/runtime-request-builder.context-key.test.ts",
     "src/runtime/runtime-selection.test.ts",
+    // Agent default vs last-used runtime_provider rematerialize.
+    "src/runtime/agent-session-runtime-sync.test.ts",
     "src/runtime/session-goals.test.ts",
     "src/runtime/session-resolver.test.ts",
     "src/runtime/session-trace.test.ts",
@@ -81,10 +91,46 @@ export const RUNTIME_PATH_MAP: Record<string, string[]> = {
     // Closed-box provider auth: allowlisted env file + Codex/Grok device login.
     "src/runtime/ravi-env-file.test.ts",
     "src/runtime/provider-device-login.test.ts",
+    // Provider auth-stub detection on the assistant-message path.
+    "src/runtime/provider-login-stub.test.ts",
+    // Inactivity windows for long-running tools and their declared timeouts.
+    "src/runtime/tool-liveness.test.ts",
+    // Aviso de tool demorada: o runtime conta que está ocupado em vez de ficar mudo.
+    "src/runtime/slow-tool-notice.test.ts",
+    // Dispatcher abort semantics: an explicit abort cancels the running tool
+    // instead of parking behind the tool barrier; only tool-result delivery defers.
+    "src/runtime/session-dispatcher.test.ts",
+    // O observer de intenção é chamado de host-services.ts, e o comportamento que
+    // ele garante (o que vira acompanhamento e o que não vira) é coberto aqui.
+    // O call site em si ainda não tem teste de integração — está declarado como
+    // risco na PR da feature.
+    "src/hooks/gh-watch.test.ts",
+    // Decisão de promoção de comando longo para job, aplicada por host-services.
+    "src/jobs/promotion.test.ts",
+  ],
+  "src/jobs/": ["src/jobs/jobs.test.ts", "src/jobs/promotion.test.ts"],
+  "src/watch/": [
+    // Contrato: o que o connector declara suportado localmente é o que o poller
+    // consegue produzir. Foi o buraco que deixou `pull_request.merged` declarado e
+    // impossível de emitir.
+    "src/watch/connector-contract.test.ts",
+    "src/watch/local-events.test.ts",
+    "src/watch/local-runner.test.ts",
+    "src/watch/local-state.test.ts",
+    "src/watch/operations.test.ts",
+  ],
+  "src/hooks/": [
+    "src/hooks/gh-watch.test.ts",
+    "src/hooks/gh-follow-sweep.test.ts",
+    // Promoção de comando longo para job: a reescrita que evita prender o turno.
+    "src/hooks/jobs-promote.test.ts",
+    "src/hooks/rtk-rewrite.test.ts",
+    // Safe/unsafe classification that gates prompt-lane interrupts while a tool runs.
+    "src/hooks/tool-safety.test.ts",
   ],
   "src/session-trace/": ["src/session-trace/session-trace.test.ts"],
   "src/triggers/": ["src/triggers/triggers.test.ts"],
-  "src/approval/": ["src/approval/service.test.ts"],
+  "src/approval/": ["src/approval/service.test.ts", "src/approval/grantor.test.ts", "src/approval/decision.test.ts"],
   "src/apps/": ["src/apps/router.test.ts"],
   "src/devin/": ["src/devin/client.test.ts", "src/devin/store.test.ts"],
 };

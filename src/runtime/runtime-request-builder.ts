@@ -477,6 +477,9 @@ async function buildRuntimeStartRequestInternal(
     context: runtimeContext,
     session,
     ...(modelBroker ? { modelBroker } : {}),
+    // Resolved lazily: the event loop installs its listener after this request
+    // is built, and the gate must observe whichever loop currently owns the stream.
+    onSkillGatePersisted: (skillVisibility, info) => streamingSession.onSkillGatePersisted?.(skillVisibility, info),
   });
   const { hostServices, providerBootstrap, runtimePlugins } = preparedBootstrap;
   installCrashRecoveryApprovalFences({ hostServices, streamingSession, crashRecovery });
@@ -511,7 +514,9 @@ async function buildRuntimeStartRequestInternal(
     };
   };
 
-  const resolvedAllowedSkills = resolveAgentSkills(agent.id);
+  const resolvedAllowedSkills = resolveAgentSkills(agent.id, {
+    capabilitiesOverride: runtimeContext.capabilities.length > 0 ? runtimeContext.capabilities : undefined,
+  });
   const allowedSkills =
     resolvedAllowedSkills.hasConfiguration && resolvedAllowedSkills.allowlist.length > 0
       ? resolvedAllowedSkills.allowlist
@@ -856,6 +861,7 @@ async function buildRuntimeStartRequestInternal(
         approvalSource,
       });
       turnRuntimeContextActivated = true;
+      streamingSession.currentRuntimeContextKey = runtimeEnv.RAVI_CONTEXT_KEY;
     },
     traceTurnStart,
   });
@@ -889,6 +895,7 @@ async function buildRuntimeStartRequestInternal(
       settingSources: agent.settingSources ?? ["project"],
       ...(hooks ? { hooks } : {}),
       ...(runtimePlugins.length > 0 ? { plugins: runtimePlugins } : {}),
+      agentId: agent.id,
       ...(allowedSkills ? { allowedSkills } : {}),
       ...(prompt._cliDestination ? { omitAdvertisedSkillCatalog: true } : {}),
       ...(remoteSpawn ? { remoteSpawn } : {}),

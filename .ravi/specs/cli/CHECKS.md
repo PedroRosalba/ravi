@@ -24,17 +24,30 @@ and transport names follow [`SPEC.md`](./SPEC.md).
 - Remote dispatch is authorized by the target gateway, accepts only a complete
   coherent contract body for the expected `op`, preserves exit `1/2/3`, and
   fails closed on invalid gateway configuration with exit `2`.
+- The Codex `PreToolUse` hook exception preserves caller stdin in gateway
+  `payload`, never reads daemon stdin, and returns provider-native deny JSON
+  with exit `0` for transport, payload and authorization failures. Synthetic
+  subprocess tests cover automatic socket dispatch, the compatibility alias,
+  malformed responses, Bash permissions and payload audit redaction.
 - Remote detail projection preserves only bounded stable identifiers,
-  canonical flag/positional shapes and explicitly projected typed plan
-  metadata; sentinel free text, paths, URLs, tokens and arbitrary nested
-  objects MUST be absent from the resulting envelope.
+  canonical flag/positional shapes, HTTP `status`, sanitized validation
+  `issues`, and explicitly projected typed plan metadata; sentinel free text,
+  paths, URLs, tokens and arbitrary nested objects MUST be absent from the
+  resulting envelope. 400/422 gateway validation failures MUST keep `status`
+  and `issues` visible in both CLI text and `--json`. Isolated `media send`
+  catalog codes (`MEDIA_SEND_FAILED`, `OMNI_AUTH_FAILED`, `FILE_NOT_FOUND`)
+  MUST keep the code and use the local catalog message / `suggestedAction`;
+  generic `COMMAND_FAILED` stays `Remote command failed.`
 - Non-success binary responses and return-shape failures produce canonical,
   redacted gateway envelopes and matching `failed`/`denied` audit outcomes.
 - A handler using the compatibility `fail()` helper produces one parseable
-  `COMMAND_FAILED` envelope in JSON CLI, tool and gateway calls, while an
-  unexpected raw exception produces one redacted `UNHANDLED_ERROR` envelope,
-  exit `1`, and the same operation/error code in audit. Gateway HTTP status may
-  remain `500`, but its response body must not expose the raw exception.
+  `COMMAND_FAILED` envelope in JSON CLI, tool and gateway calls. The envelope
+  `message` MUST preserve the sanitized expected cause; the generic headline is
+  only used when the cause is empty or unsafe. A throw-site `suggestedAction`
+  MUST survive the envelope. An unexpected raw exception produces one redacted
+  `UNHANDLED_ERROR` envelope, exit `1`, and the same operation/error code in
+  audit. Gateway HTTP status may remain `500`, but its response body must not
+  expose the raw exception.
 - Every implementation with persistent mutation, outbound effect, paid
   generation, provider mutation or triggered execution uses
   `@CommandAccess({ kind: "mutate" })`.
@@ -93,10 +106,12 @@ Run these as independent groups so a failure identifies its contract layer.
 
 ```bash
 bun test src/cli/commands/usage-exit.smoke.test.ts
+bun test src/cli/agent-contract.test.ts
 bun test src/cli/transport-contract.test.ts
 bun test src/cli/tools-export.test.ts
 bun test src/sdk/gateway/dispatcher.test.ts
 bun test src/cli/remote-gateway.test.ts
+bun test src/cli/commands/context-hook-gateway.test.ts
 bun test src/cli/redaction.test.ts
 bun test src/cli/audit.test.ts
 bun test src/cli/provenance.test.ts

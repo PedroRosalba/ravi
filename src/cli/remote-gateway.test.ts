@@ -1,5 +1,18 @@
 import { describe, expect, it } from "bun:test";
+import { renderContractError } from "./agent-contract.js";
 import {
+  FILE_NOT_FOUND_CODE,
+  FILE_NOT_FOUND_MESSAGE,
+  FILE_NOT_FOUND_SUGGESTED_ACTION,
+  MEDIA_SEND_FAILED_CODE,
+  MEDIA_SEND_FAILED_MESSAGE,
+  MEDIA_SEND_FAILED_SUGGESTED_ACTION,
+  OMNI_AUTH_FAILED_CODE,
+  OMNI_AUTH_FAILED_MESSAGE,
+  OMNI_AUTH_FAILED_SUGGESTED_ACTION,
+} from "./media-send-auth.js";
+import {
+  CALLER_CWD_HEADER,
   dispatchRemote,
   getRemoteGatewayConfig,
   resolveRemoteGatewayConfig,
@@ -18,11 +31,17 @@ describe("remote gateway response bytes", () => {
       body: { id: "artifact-1" },
       config: { url: "https://gateway.example", source: "env" },
       contextKey: "rctx_test",
-      fetchImpl: (async () =>
-        new Response(bytes, {
-          status: 200,
-          headers: { "content-type": "application/octet-stream" },
-        })) as unknown as typeof fetch,
+      cwd: "/tmp/agent-workspace",
+      fetchImpl: ((input: string, init?: { headers?: Record<string, string> }) => {
+        void input;
+        expect(new Headers(init?.headers).get(CALLER_CWD_HEADER)).toBe("/tmp/agent-workspace");
+        return Promise.resolve(
+          new Response(bytes, {
+            status: 200,
+            headers: { "content-type": "application/octet-stream" },
+          }),
+        );
+      }) as unknown as typeof fetch,
     });
 
     expect(response.ok).toBe(true);
@@ -187,8 +206,164 @@ describe("remote gateway exit taxonomy", () => {
       result({ status: 503, contentType: "text/plain", body: "private upstream response" }),
     );
 
-    expect(error).toMatchObject({ op: "commands list", code: "SERVER_UNAVAILABLE", exitCode: 1 });
+    expect(error).toMatchObject({
+      op: "commands list",
+      code: "SERVER_UNAVAILABLE",
+      exitCode: 1,
+      details: { status: 503, retryable: true },
+    });
     expect(JSON.stringify(error?.envelope())).not.toContain("private upstream response");
+  });
+
+  it("preserves a remote PAYLOAD_INVALID issue instead of the generic rejection", () => {
+    const error = remoteGatewayErrorToContractError(
+      "pages ship",
+      result({
+        status: 400,
+        body: JSON.stringify({
+          success: false,
+          op: "pages ship",
+          exitCode: 2,
+          outcome: "usage_error",
+          error: {
+            code: "PAYLOAD_INVALID",
+            message: "--html file was not found: ./index.html",
+            retryable: false,
+            suggestedAction: "correct the command input and retry",
+            issues: [{ path: ["html"], code: "invalid", message: "--html file was not found: ./index.html" }],
+          },
+        }),
+      }),
+    );
+
+    expect(error).toMatchObject({
+      op: "pages ship",
+      code: "PAYLOAD_INVALID",
+      exitCode: 2,
+      message: "html: --html file was not found: ./index.html",
+    });
+    expect(error?.details.suggestedAction).toBe("Correct the command input and retry");
+    expect(JSON.stringify(error?.envelope())).toContain("--html file was not found: ./index.html");
+  });
+
+  it("preserves a safe PAYLOAD_INVALID message when the remote omitted issues", () => {
+    const error = remoteGatewayErrorToContractError(
+      "pages ship",
+      result({
+        status: 400,
+        body: JSON.stringify({
+          success: false,
+          op: "pages ship",
+          exitCode: 2,
+          outcome: "usage_error",
+          error: {
+            code: "PAYLOAD_INVALID",
+            message: "Missing Console project. Pass --project <project-ref>.",
+            retryable: false,
+          },
+        }),
+      }),
+    );
+
+    expect(error).toMatchObject({
+      code: "PAYLOAD_INVALID",
+      message: "Missing Console project. Pass --project <project-ref>.",
+    });
+    expect(JSON.stringify(error?.envelope())).not.toContain("Remote gateway rejected the command input");
+  });
+
+  it("projects 400 validation issues into a usage error", () => {
+    const error = remoteGatewayErrorToContractError(
+      "tasks create",
+      result({
+        status: 400,
+        body: JSON.stringify({
+          error: "ValidationError",
+          issues: [
+            { path: ["title"], code: "invalid_type", message: "Expected string, received undefined" },
+            { providerBody: "PRIVATE_MESSAGE_8K2R" },
+          ],
+        }),
+      }),
+    );
+
+    expect(error).toMatchObject({
+      op: "tasks create",
+      code: "USAGE_ERROR",
+      exitCode: 2,
+      message: "title: Expected string, received undefined",
+      details: {
+        status: 400,
+        issues: [{ path: ["title"], code: "invalid_type", message: "Expected string, received undefined" }],
+      },
+    });
+    expect(JSON.stringify(error?.envelope())).toContain("Expected string, received undefined");
+    expect(JSON.stringify(error?.envelope())).not.toContain("PRIVATE_MESSAGE_8K2R");
+  });
+
+  it("projects 422 contract issues without changing the remote taxonomy", () => {
+    const error = remoteGatewayErrorToContractError(
+      "tasks create",
+      result({
+        status: 422,
+        body: JSON.stringify({
+          success: false,
+          op: "tasks create",
+          exitCode: 1,
+          outcome: "failed",
+          error: {
+            code: "COMMAND_FAILED",
+            message: "Command could not be completed.",
+            retryable: false,
+            issues: [{ path: ["instructions"], code: "too_small", message: "Required" }],
+          },
+        }),
+      }),
+    );
+
+    expect(error).toMatchObject({
+      op: "tasks create",
+      code: "COMMAND_FAILED",
+      exitCode: 1,
+      details: {
+        status: 422,
+        retryable: false,
+        issues: [{ path: ["instructions"], code: "too_small", message: "Required" }],
+      },
+    });
+    expect(error?.envelope()).toMatchObject({
+      error: {
+        code: "COMMAND_FAILED",
+        message: "instructions: Required",
+        status: 422,
+        issues: [{ path: ["instructions"], code: "too_small", message: "Required" }],
+      },
+    });
+  });
+
+  it("prints HTTP status and issues in text CLI output", () => {
+    const error = remoteGatewayErrorToContractError(
+      "tasks create",
+      result({
+        status: 400,
+        body: JSON.stringify({
+          error: "ValidationError",
+          issues: [{ path: ["title"], code: "invalid_type", message: "Expected string, received undefined" }],
+        }),
+      }),
+    );
+    expect(error).not.toBeNull();
+    const lines: string[] = [];
+    const originalError = console.error;
+    console.error = ((line?: unknown) => {
+      lines.push(String(line ?? ""));
+    }) as typeof console.error;
+    try {
+      renderContractError(error!, false);
+    } finally {
+      console.error = originalError;
+    }
+    expect(lines).toEqual(["title: Expected string, received undefined", "status: 400"]);
   });
 
   it("rejects partial or incoherent contract-looking responses", () => {
@@ -275,6 +450,7 @@ describe("remote gateway exit taxonomy", () => {
       );
 
       expect(error).toMatchObject({ op: "commands list", code, exitCode, message, details: { retryable: true } });
+      expect(error?.envelope().error.message).toBe(message);
       const serialized = JSON.stringify(error?.envelope());
       expect(serialized).not.toContain("PRIVATE_MESSAGE_8K2R");
       expect(serialized).not.toContain("SENTINEL_SECRET_7M4Q");
@@ -459,5 +635,102 @@ describe("remote gateway exit taxonomy", () => {
 
       expect(error?.envelope().error).toMatchObject({ dryRun: true, plan: testCase.plan });
     }
+  });
+
+  it.each([
+    [MEDIA_SEND_FAILED_CODE, true, MEDIA_SEND_FAILED_MESSAGE, MEDIA_SEND_FAILED_SUGGESTED_ACTION],
+    [OMNI_AUTH_FAILED_CODE, false, OMNI_AUTH_FAILED_MESSAGE, OMNI_AUTH_FAILED_SUGGESTED_ACTION],
+    [FILE_NOT_FOUND_CODE, false, FILE_NOT_FOUND_MESSAGE, FILE_NOT_FOUND_SUGGESTED_ACTION],
+  ] as const)(
+    "projects isolated media send %s through the local catalog without remote text",
+    (code, retryable, message, suggestedAction) => {
+      const error = remoteGatewayErrorToContractError(
+        "media send",
+        result({
+          status: 500,
+          body: JSON.stringify({
+            success: false,
+            op: "media send",
+            exitCode: 1,
+            outcome: "failed",
+            error: {
+              code,
+              message: "PRIVATE_MESSAGE_8K2R sk-abcdefghijklmnop omni://internal",
+              retryable,
+              suggestedAction: "PRIVATE_ACTION_8K2R",
+            },
+          }),
+        }),
+      );
+
+      expect(error).toMatchObject({
+        op: "media send",
+        code,
+        exitCode: 1,
+        message,
+        details: { retryable, suggestedAction },
+      });
+      const serialized = JSON.stringify(error?.envelope());
+      expect(serialized).not.toContain("PRIVATE_MESSAGE_8K2R");
+      expect(serialized).not.toContain("PRIVATE_ACTION_8K2R");
+      expect(serialized).not.toContain("sk-abcdefghijklmnop");
+      expect(serialized).not.toContain("omni://internal");
+    },
+  );
+
+  it("keeps generic isolated media send failures as Remote command failed", () => {
+    const error = remoteGatewayErrorToContractError(
+      "media send",
+      result({
+        status: 500,
+        body: JSON.stringify({
+          success: false,
+          op: "media send",
+          exitCode: 1,
+          outcome: "failed",
+          error: {
+            code: "COMMAND_FAILED",
+            message: "PRIVATE_MESSAGE_8K2R",
+            retryable: true,
+          },
+        }),
+      }),
+    );
+
+    expect(error).toMatchObject({
+      op: "media send",
+      code: "COMMAND_FAILED",
+      message: "Remote command failed.",
+      details: { retryable: true },
+    });
+    expect(JSON.stringify(error?.envelope())).not.toContain("PRIVATE_MESSAGE_8K2R");
+  });
+
+  it("does not apply the media catalog when a different op reuses a catalog code", () => {
+    const error = remoteGatewayErrorToContractError(
+      "transcribe file",
+      result({
+        status: 404,
+        body: JSON.stringify({
+          success: false,
+          op: "transcribe file",
+          exitCode: 1,
+          outcome: "failed",
+          error: {
+            code: FILE_NOT_FOUND_CODE,
+            message: "PRIVATE_MESSAGE_8K2R",
+            retryable: false,
+          },
+        }),
+      }),
+    );
+
+    expect(error).toMatchObject({
+      op: "transcribe file",
+      code: FILE_NOT_FOUND_CODE,
+      message: "Remote command failed.",
+    });
+    expect(error?.message).not.toBe(FILE_NOT_FOUND_MESSAGE);
+    expect(JSON.stringify(error?.envelope())).not.toContain("PRIVATE_MESSAGE_8K2R");
   });
 });

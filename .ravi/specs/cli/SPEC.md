@@ -84,10 +84,13 @@ The canonical failure value is a `ContractError` and its envelope:
   including when Commander can suggest a valid command.
 - Expected handler failures that still use the compatibility `fail()` helper
   are normalized at the shared transport boundary as `COMMAND_FAILED`, exit
-  `1`. JSON CLI, tools and gateway MUST receive one canonical envelope; text
-  CLI keeps the concise message. This fallback is not a substitute for a
-  domain-specific code or `USAGE_ERROR` when the handler can classify the
-  failure more precisely.
+  `1`. JSON CLI, tools and gateway MUST receive one canonical envelope whose
+  `message` keeps the sanitized expected/daemon cause (or the generic headline
+  only when that cause is empty or unsafe). Text CLI keeps the same concise
+  message. A throw-site `suggestedAction` (for example
+  `--allow-runtime-mismatch`) MUST reach the envelope. This fallback is not a
+  substitute for a domain-specific code or `USAGE_ERROR` when the handler can
+  classify the failure more precisely.
 - An unexpected exception is normalized as `UNHANDLED_ERROR`, exit `1`, with
   the real operation path and a safe generic message. Process CLI, exported
   tools, gateway and audit MUST NOT expose the raw exception, provider detail
@@ -113,6 +116,11 @@ details and policy outcome:
 - Gateway/SDK: returns the canonical envelope plus `exitCode` and `outcome`.
   HTTP status MAY communicate the broad class, but a known `ContractError`
   MUST NOT become a generic HTTP 500 body.
+- Codex PreToolUse hook invocations retain their provider-required hook JSON
+  contract. Remote hook calls MUST carry the process stdin in an explicit,
+  redacted request field. Transport/authentication failures and invalid remote
+  replies MUST become a hook `deny`, never an empty success or generic CLI
+  failure that the provider could ignore. See `cli/context`.
 - Audit: records the same operation and outcome as `succeeded`, `blocked`,
   `usage_error`, `denied` or `failed`. A policy block MUST NOT be recorded as
   an executed mutation or generic failure.
@@ -131,9 +139,14 @@ details and policy outcome:
   strings that match restricted grammars; free text, paths, URLs,
   token-shaped values, commands and arbitrary objects are discarded. Flags
   and positionals must match their canonical grammars, and `suggestedAction`
-  is replaced by a safe local action. This privacy projection is the permitted
-  exception to byte-for-byte detail parity; semantic fields and taxonomy still
-  remain equivalent.
+  is replaced by a safe local action. For `media send`, catalog codes
+  `MEDIA_SEND_FAILED`, `OMNI_AUTH_FAILED` and `FILE_NOT_FOUND` MUST keep the
+  remote code and use the local catalog message and action; other codes stay
+  on the generic remote failure copy. HTTP `status` and structured `issues`
+  (`path`, `code`, sanitized `message`) from 400/422 validation failures MUST
+  be projected so CLI text and `--json` stay actionable. This privacy
+  projection is the permitted exception to byte-for-byte detail parity;
+  semantic fields and taxonomy still remain equivalent.
 
 ## Authorization and confirmation are different controls
 

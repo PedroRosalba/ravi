@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   buildPiRpcProcessArgs,
   buildPiRpcSpawnEnv,
   createPiRuntimeProvider,
+  listPiManagedRuntimeEnvKeys,
   type PiRpcCommand,
   type PiRpcEvent,
   type PiRpcResponse,
@@ -19,7 +20,13 @@ import {
   PI_PERMISSION_BRIDGE_UNAVAILABLE_MESSAGE,
   PI_PERMISSION_UI_TITLE,
 } from "./pi-tool-permissions.js";
-import type { RuntimeEvent, RuntimeHostServices, RuntimePromptMessage, RuntimeStartRequest } from "./types.js";
+import type {
+  RuntimeEvent,
+  RuntimeHostServices,
+  RuntimePromptMessage,
+  RuntimeSessionHandle,
+  RuntimeStartRequest,
+} from "./types.js";
 
 interface TestQueue<T> extends AsyncIterable<T> {
   push(value: T): void;
@@ -106,6 +113,7 @@ describe("Pi runtime provider", () => {
 
     expect(buildPiManagedRuntimeEnvSignature(first)).not.toBe(buildPiManagedRuntimeEnvSignature(second));
     expect(buildPiManagedRuntimeEnvSignature(first)).toBe(buildPiManagedRuntimeEnvSignature(sameKey));
+    expect(listPiManagedRuntimeEnvKeys(first)).toEqual(["RAVI_CONTEXT_KEY", "RAVI_TASK_ID"]);
   });
 
   it("refreshes Ravi authority env between turns by respawning Pi when the context key rotates", async () => {
@@ -154,6 +162,125 @@ describe("Pi runtime provider", () => {
     expect(transports[1]?.commands).toContainEqual(
       expect.objectContaining({ type: "switch_session", sessionPath: "/tmp/pi-session.jsonl" }),
     );
+  });
+
+  it("retries a later-turn env respawn after a failed restart without an external kill", async () => {
+    const env: Record<string, string> = {
+      PATH: "/usr/bin",
+      RAVI_CONTEXT_KEY: "rctx_first",
+    };
+    const transports: FakePiRpcTransport[] = [];
+    const createTransport = () => {
+      const transport = new FakePiRpcTransport();
+      transports.push(transport);
+      transport.responseFor = (command) => {
+        if (command.type === "get_state") {
+          return piResponse(command, { sessionFile: "/tmp/pi-session.jsonl" });
+        }
+        if (command.type === "prompt") {
+          transport.pushEvent({ type: "agent_end", messages: [assistantMessage("ok")] });
+        }
+        return defaultResponse(command);
+      };
+      if (transports.length === 2) {
+        const originalStart = transport.start.bind(transport);
+        transport.start = async (input) => {
+          await originalStart(input);
+          throw new Error("Pi RPC process exited with code 1. Stderr: session-launcher");
+        };
+      }
+      return transport;
+    };
+
+    const events = await collectRuntimeEvents(
+      createPiRuntimeProvider({ transportFactory: createTransport }).startSession(
+        createStartRequest("first", {
+          env,
+          prompt: (async function* () {
+            yield promptMessage("first");
+            env.RAVI_CONTEXT_KEY = "rctx_second";
+            yield promptMessage("second");
+            yield promptMessage("third");
+          })(),
+        }),
+      ).events,
+    );
+
+    expect(events.filter((event) => event.type === "turn.complete")).toHaveLength(2);
+    expect(events.filter((event) => event.type === "turn.failed")).toEqual([
+      expect.objectContaining({
+        type: "turn.failed",
+        recoverable: true,
+        failureKind: "transport",
+      }),
+    ]);
+    expect(transports).toHaveLength(3);
+    expect(transports[0]?.starts[0]?.env.RAVI_CONTEXT_KEY).toBe("rctx_first");
+    expect(transports[1]?.starts[0]?.env.RAVI_CONTEXT_KEY).toBe("rctx_second");
+    expect(transports[2]?.starts[0]?.env.RAVI_CONTEXT_KEY).toBe("rctx_second");
+    expect(transports[0]?.closed).toBe(true);
+    expect(transports[1]?.closed).toBe(true);
+    expect(transports[2]?.commands).toContainEqual(expect.objectContaining({ type: "prompt", message: "third" }));
+  });
+
+  it("rewrites the permission extension before respawn when the previous hook file disappeared", async () => {
+    const hookDir = mkdtempSync(join(tmpdir(), "ravi-pi-hooks-missing-"));
+    const env: Record<string, string> = {
+      PATH: "/usr/bin",
+      RAVI_CONTEXT_KEY: "rctx_first",
+    };
+    const transports: FakePiRpcTransport[] = [];
+    const seenExtensionPaths: string[] = [];
+    const createTransport = () => {
+      const transport = new FakePiRpcTransport();
+      transports.push(transport);
+      const originalStart = transport.start.bind(transport);
+      transport.start = async (input) => {
+        seenExtensionPaths.push(input.extensionPath ?? "");
+        if (input.extensionPath && transports.length === 1) {
+          rmSync(input.extensionPath, { force: true });
+        }
+        return originalStart(input);
+      };
+      transport.responseFor = (command) => {
+        if (command.type === "get_state") {
+          return piResponse(command, { sessionFile: "/tmp/pi-session.jsonl" });
+        }
+        if (command.type === "prompt") {
+          transport.pushEvent({ type: "agent_end", messages: [assistantMessage("ok")] });
+        }
+        return defaultResponse(command);
+      };
+      return transport;
+    };
+    const previousStateDir = process.env.RAVI_STATE_DIR;
+    process.env.RAVI_STATE_DIR = hookDir;
+
+    try {
+      const events = await collectRuntimeEvents(
+        createPiRuntimeProvider({ transportFactory: createTransport }).startSession(
+          createStartRequest("first", {
+            env,
+            prompt: (async function* () {
+              yield promptMessage("first");
+              env.RAVI_CONTEXT_KEY = "rctx_second";
+              yield promptMessage("second");
+            })(),
+          }),
+        ).events,
+      );
+
+      expect(events.filter((event) => event.type === "turn.complete")).toHaveLength(2);
+      expect(transports).toHaveLength(2);
+      expect(seenExtensionPaths).toHaveLength(2);
+      expect(seenExtensionPaths[0]).toContain("pi-hooks");
+      expect(seenExtensionPaths[1]).toBe(seenExtensionPaths[0]);
+      expect(existsSync(seenExtensionPaths[1]!)).toBe(true);
+      expect(transports[1]?.starts[0]?.env.RAVI_CONTEXT_KEY).toBe("rctx_second");
+    } finally {
+      if (previousStateDir === undefined) delete process.env.RAVI_STATE_DIR;
+      else process.env.RAVI_STATE_DIR = previousStateDir;
+    }
   });
 
   it("reuses the Pi RPC process when managed Ravi env is unchanged between turns", async () => {
@@ -238,6 +365,27 @@ describe("Pi runtime provider", () => {
     expect(buildPiRpcProcessArgs(transport.starts[0]!)).toEqual(
       expect.arrayContaining(["--mode", "rpc", "--extension", extensionPath]),
     );
+  });
+
+  it("disables Pi native skill discovery only when a skill allowlist is enforced", async () => {
+    const restricted = new FakePiRpcTransport();
+    restricted.pushEvent({ type: "agent_end", messages: [assistantMessage("fim")] });
+    await collectRuntimeEvents(
+      createPiRuntimeProvider({ transport: restricted }).startSession(
+        createStartRequest("restricted skills", { allowedSkills: ["ravi-dev-app-creator"] }),
+      ).events,
+    );
+    expect(restricted.starts[0]?.disableNativeSkillDiscovery).toBe(true);
+    expect(buildPiRpcProcessArgs(restricted.starts[0]!)).toContain("--no-skills");
+
+    const grandfathered = new FakePiRpcTransport();
+    grandfathered.pushEvent({ type: "agent_end", messages: [assistantMessage("fim")] });
+    await collectRuntimeEvents(
+      createPiRuntimeProvider({ transport: grandfathered }).startSession(createStartRequest("unrestricted skills"))
+        .events,
+    );
+    expect(grandfathered.starts[0]?.disableNativeSkillDiscovery).toBeUndefined();
+    expect(buildPiRpcProcessArgs(grandfathered.starts[0]!)).not.toContain("--no-skills");
   });
 
   it("denies a restricted Pi tool over the extension UI bridge and allows it when granted", async () => {
@@ -381,7 +529,8 @@ describe("Pi runtime provider", () => {
         confirmed: false,
         value: formatPiPermissionUiDecisionValue({
           allowed: false,
-          reason: "SKILL_NOT_AUTHORIZED: Skill not authorized for agent: whatsapp-manager",
+          reason:
+            "SKILL_NOT_AUTHORIZED: Skill 'whatsapp-manager' is not authorized for this agent. Install it into Ravi if needed ('ravi skills install --source <skill-dir>'), then grant it ('ravi skills grant <agent> whatsapp-manager').",
         }),
       },
     ]);
@@ -667,7 +816,8 @@ describe("Pi runtime provider", () => {
         confirmed: false,
         value: formatPiPermissionUiDecisionValue({
           allowed: false,
-          reason: "SKILL_NOT_AUTHORIZED: Skill not authorized for agent: whatsapp-manager",
+          reason:
+            "SKILL_NOT_AUTHORIZED: Skill 'whatsapp-manager' is not authorized for this agent. Install it into Ravi if needed ('ravi skills install --source <skill-dir>'), then grant it ('ravi skills grant <agent> whatsapp-manager').",
         }),
       },
     ]);
@@ -817,6 +967,8 @@ describe("Pi runtime provider", () => {
     expect(transport.commands.map((command) => command.type)).toEqual([
       "switch_session",
       "get_state",
+      "set_model",
+      "get_state",
       "set_steering_mode",
       "prompt",
       "get_state",
@@ -825,6 +977,9 @@ describe("Pi runtime provider", () => {
       type: "switch_session",
       sessionPath: sessionFile,
     });
+    expect(transport.commands).toContainEqual(
+      expect.objectContaining({ type: "set_model", provider: "openai", modelId: "gpt-5.5" }),
+    );
   });
 
   it("maps Pi aborted turns to a single interrupted terminal event", async () => {
@@ -851,7 +1006,23 @@ describe("Pi runtime provider", () => {
     const transport = new FakePiRpcTransport();
     const handle = createPiRuntimeProvider({ transport }).startSession(createStartRequest("controle"));
 
-    await expect(handle.setModel?.("openai/gpt-5.5")).resolves.toBeUndefined();
+    await expect(handle.setModel?.("openai/gpt-4.1")).resolves.toBeUndefined();
+    await expect(
+      handle.control?.({
+        operation: "model.set",
+        text: "openai/gpt-4.1",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        response: {
+          data: {
+            queued: true,
+            reason: "provider_starting",
+          },
+        },
+      },
+    });
     await expect(
       handle.control?.({
         operation: "thinking.set",
@@ -890,10 +1061,212 @@ describe("Pi runtime provider", () => {
       },
     });
 
-    expect(transport.commands).toEqual([
-      expect.objectContaining({ type: "set_model", provider: "openai", modelId: "gpt-5.5" }),
-      expect.objectContaining({ type: "set_thinking_level", level: "xhigh" }),
-    ]);
+    expect(transport.commands).toEqual([expect.objectContaining({ type: "set_thinking_level", level: "xhigh" })]);
+  });
+
+  it("applies setModel before the first Pi prompt via spawn model without session reset", async () => {
+    const transport = new FakePiRpcTransport();
+    transport.responseFor = (command) => {
+      if (command.type === "get_state") {
+        const started = transport.starts.at(-1);
+        return piResponse(command, {
+          model: {
+            provider: started?.provider ?? "openai",
+            id: started?.model ?? "gpt-5.5",
+          },
+        });
+      }
+      if (command.type === "prompt") {
+        const started = transport.starts.at(-1);
+        transport.pushEvent({
+          type: "agent_end",
+          messages: [assistantMessage("ok", { model: started?.model ?? "gpt-5.5" })],
+        });
+      }
+      return defaultResponse(command);
+    };
+
+    const handle = createPiRuntimeProvider({ transport }).startSession(
+      createStartRequest("primeira", { model: "openai/gpt-5.5" }),
+    );
+    await handle.setModel?.("openai/gpt-4.1");
+    const events = await collectRuntimeEvents(handle.events);
+
+    expect(transport.starts[0]?.modelArg).toBe("openai/gpt-4.1");
+    expect(transport.commands.filter((command) => command.type === "set_model")).toEqual([]);
+    expect(transport.commands.map((command) => command.type)).not.toContain("new_session");
+    expect(events.find((event) => event.type === "turn.complete")).toMatchObject({
+      execution: { model: "gpt-4.1" },
+    });
+  });
+
+  it("applies live setModel to the next Pi turn without session reset", async () => {
+    const transport = new FakePiRpcTransport();
+    let liveModel = "gpt-5.5";
+    const session: { handle?: RuntimeSessionHandle } = {};
+    session.handle = createPiRuntimeProvider({ transport }).startSession(
+      createStartRequest("primeira", {
+        model: "openai/gpt-5.5",
+        prompt: (async function* () {
+          yield promptMessage("primeira");
+          await session.handle?.setModel?.("openai/gpt-4.1");
+          yield promptMessage("segunda");
+        })(),
+      }),
+    );
+    transport.responseFor = (command) => {
+      if (command.type === "set_model") {
+        liveModel = String(command.modelId);
+        return defaultResponse(command);
+      }
+      if (command.type === "get_state") {
+        return piResponse(command, {
+          model: { provider: "openai", id: liveModel },
+        });
+      }
+      if (command.type === "prompt") {
+        transport.pushEvent({
+          type: "agent_end",
+          messages: [assistantMessage("ok", { model: liveModel })],
+        });
+      }
+      return defaultResponse(command);
+    };
+
+    const events = await collectRuntimeEvents(session.handle!.events);
+    const completed = events.filter((event) => event.type === "turn.complete");
+
+    expect(transport.starts).toHaveLength(1);
+    expect(transport.commands).toContainEqual(
+      expect.objectContaining({ type: "set_model", provider: "openai", modelId: "gpt-4.1" }),
+    );
+    expect(completed).toHaveLength(2);
+    expect(completed[0]).toMatchObject({ execution: { model: "gpt-5.5" } });
+    expect(completed[1]).toMatchObject({ execution: { model: "gpt-4.1" } });
+  });
+
+  it("reapplies the requested model after resume when the session file still has the old model", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "ravi-pi-provider-model-resume-"));
+    const sessionFile = join(cwd, "session.jsonl");
+    writeFileSync(sessionFile, "{}");
+
+    const transport = new FakePiRpcTransport();
+    let liveModel = "gpt-5.5";
+    transport.responseFor = (command) => {
+      if (command.type === "set_model") {
+        liveModel = String(command.modelId);
+        return defaultResponse(command);
+      }
+      if (command.type === "get_state") {
+        return piResponse(command, {
+          sessionFile,
+          model: { provider: "openai", id: liveModel },
+        });
+      }
+      if (command.type === "prompt") {
+        transport.pushEvent({
+          type: "agent_end",
+          messages: [assistantMessage("ok", { model: liveModel })],
+        });
+      }
+      return defaultResponse(command);
+    };
+
+    const events = await collectRuntimeEvents(
+      createPiRuntimeProvider({ transport }).startSession(
+        createStartRequest("continua", {
+          cwd,
+          model: "openai/gpt-4.1",
+          resumeSession: {
+            displayId: "session",
+            params: {
+              sessionFile,
+              cwd,
+            },
+          },
+        }),
+      ).events,
+    );
+
+    const commandTypes = transport.commands.map((command) => command.type);
+    expect(commandTypes.slice(0, 4)).toEqual(["switch_session", "get_state", "set_model", "get_state"]);
+    expect(transport.commands).toContainEqual(
+      expect.objectContaining({ type: "set_model", provider: "openai", modelId: "gpt-4.1" }),
+    );
+    expect(commandTypes.indexOf("set_model")).toBeLessThan(commandTypes.indexOf("prompt"));
+    expect(events.find((event) => event.type === "turn.complete")).toMatchObject({
+      execution: { model: "gpt-4.1" },
+    });
+  });
+
+  it("throws when live set_model RPC fails instead of reporting success", async () => {
+    const transport = new FakePiRpcTransport();
+    const session: { handle?: RuntimeSessionHandle } = {};
+    session.handle = createPiRuntimeProvider({ transport }).startSession(
+      createStartRequest("primeira", {
+        prompt: (async function* () {
+          yield promptMessage("primeira");
+          await expect(session.handle?.setModel?.("openai/gpt-4.1")).rejects.toThrow(/unknown model|set_model/);
+          yield promptMessage("segunda");
+        })(),
+      }),
+    );
+    transport.responseFor = (command) => {
+      if (command.type === "set_model") {
+        return {
+          id: command.id,
+          type: "response",
+          command: "set_model",
+          success: false,
+          error: "unknown model",
+        };
+      }
+      if (command.type === "prompt") {
+        transport.pushEvent({
+          type: "agent_end",
+          messages: [assistantMessage("ok")],
+        });
+      }
+      return defaultResponse(command);
+    };
+
+    const events = await collectRuntimeEvents(session.handle!.events);
+    expect(events.filter((event) => event.type === "turn.complete")).toHaveLength(2);
+    expect(transport.commands.filter((command) => command.type === "set_model")).toHaveLength(1);
+  });
+
+  it("throws when set_model succeeds but get_state still reports the previous model", async () => {
+    const transport = new FakePiRpcTransport();
+    const session: { handle?: RuntimeSessionHandle } = {};
+    session.handle = createPiRuntimeProvider({ transport }).startSession(
+      createStartRequest("primeira", {
+        prompt: (async function* () {
+          yield promptMessage("primeira");
+          await expect(session.handle?.setModel?.("openai/gpt-4.1")).rejects.toThrow(/did not apply/);
+          yield promptMessage("segunda");
+        })(),
+      }),
+    );
+    transport.responseFor = (command) => {
+      if (command.type === "get_state") {
+        return piResponse(command, {
+          model: { provider: "openai", id: "gpt-5.5" },
+        });
+      }
+      if (command.type === "prompt") {
+        transport.pushEvent({
+          type: "agent_end",
+          messages: [assistantMessage("ok")],
+        });
+      }
+      return defaultResponse(command);
+    };
+
+    const events = await collectRuntimeEvents(session.handle!.events);
+    expect(events.filter((event) => event.type === "turn.complete")).toHaveLength(2);
+    expect(transport.commands).toContainEqual(
+      expect.objectContaining({ type: "set_model", provider: "openai", modelId: "gpt-4.1" }),
+    );
   });
 
   it("flushes pre-start steering through Pi before the first prompt instead of host prompt concatenation", async () => {

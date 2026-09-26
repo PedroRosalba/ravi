@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { logger } from "../utils/logger.js";
 import { getRaviStateDir } from "../utils/paths.js";
-import { normalizePhone } from "../utils/phone.js";
+import { normalizePhone, normalizeRoutePattern } from "../utils/phone.js";
 import { normalizeLimitOffsetPage, type ListPage } from "../utils/pagination.js";
 import { timestampLikeToMs } from "../utils/provider-timestamp.js";
 import { executeWrite } from "../db/write-retry.js";
@@ -91,6 +91,8 @@ export const ContextSourceSchema = z.object({
   accountId: z.string().min(1),
   chatId: z.string().min(1),
   threadId: z.string().min(1).optional(),
+  instanceId: z.string().min(1).optional(),
+  canonicalChatId: z.string().min(1).optional(),
 });
 export const ContextCapabilitySchema = z.object({
   permission: z.string().min(1),
@@ -258,6 +260,15 @@ interface DaemonRestartSessionSnapshotRow {
   metadata_json: string | null;
   created_at: number;
   updated_at: number;
+}
+
+interface DaemonRestartResumeDeliveryRow {
+  restart_epoch: string;
+  session_key: string;
+  session_name: string | null;
+  delivery_kind: string;
+  decision_reason: string | null;
+  delivered_at: number;
 }
 
 interface ChatRow {
@@ -554,6 +565,8 @@ export interface ContextSource {
   accountId: string;
   chatId: string;
   threadId?: string;
+  instanceId?: string;
+  canonicalChatId?: string;
 }
 
 export interface ContextCapability {
@@ -1087,6 +1100,21 @@ export interface DaemonRestartSessionSnapshotInput {
   pendingMessages?: unknown[];
   metadata?: Record<string, unknown> | null;
   recordedAt?: number;
+}
+
+/**
+ * What actually reached the session for a restart epoch: `resume` continues or
+ * drains durable work, `notice` only reports a restart whose resume was fenced.
+ */
+export type DaemonRestartDeliveryKind = "resume" | "notice";
+
+export interface DaemonRestartResumeDeliveryRecord {
+  restartEpoch: string;
+  sessionKey: string;
+  sessionName?: string;
+  deliveryKind: DaemonRestartDeliveryKind;
+  decisionReason?: string;
+  deliveredAt: number;
 }
 
 export interface ListContextsOptions {
@@ -2350,6 +2378,8 @@ function getDb(): Database {
       restart_epoch TEXT NOT NULL,
       session_key TEXT NOT NULL,
       session_name TEXT,
+      delivery_kind TEXT NOT NULL DEFAULT 'resume',
+      decision_reason TEXT,
       delivered_at INTEGER NOT NULL,
       PRIMARY KEY (restart_epoch, session_key),
       FOREIGN KEY(restart_epoch) REFERENCES daemon_restart_epochs(restart_epoch) ON DELETE CASCADE
@@ -3230,6 +3260,8 @@ function getDb(): Database {
   ensureColumn(db, "channel_backend_runtime_state", "runtime_generation_id", "TEXT");
   ensureColumn(db, "channel_backend_runtime_state", "terminal_error_json", "TEXT");
   ensureColumn(db, "channel_backend_ingress_receipts", "prompt_json", "TEXT");
+  ensureColumn(db, "daemon_restart_resume_deliveries", "delivery_kind", "TEXT NOT NULL DEFAULT 'resume'");
+  ensureColumn(db, "daemon_restart_resume_deliveries", "decision_reason", "TEXT");
   ensureIdentityChatMigrations(db);
   ensureAgentVisibilityMigration(db);
   ensureCliCommandAccessKindGrantMigration(db);
@@ -6571,10 +6603,31 @@ export function dbHasDaemonRestartResumeDelivery(restartEpoch: string, sessionKe
   return Boolean(row);
 }
 
+export function dbGetDaemonRestartResumeDelivery(
+  restartEpoch: string,
+  sessionKey: string,
+): DaemonRestartResumeDeliveryRecord | null {
+  const row = getDb()
+    .prepare("SELECT * FROM daemon_restart_resume_deliveries WHERE restart_epoch = ? AND session_key = ?")
+    .get(restartEpoch, sessionKey) as DaemonRestartResumeDeliveryRow | undefined;
+  if (!row) return null;
+  return {
+    restartEpoch: row.restart_epoch,
+    sessionKey: row.session_key,
+    sessionName: row.session_name ?? undefined,
+    deliveryKind: row.delivery_kind === "notice" ? "notice" : "resume",
+    decisionReason: row.decision_reason ?? undefined,
+    deliveredAt: row.delivered_at,
+  };
+}
+
+/** Record only what was actually published to the session for this restart epoch. */
 export function dbMarkDaemonRestartResumeDelivered(input: {
   restartEpoch: string;
   sessionKey: string;
   sessionName?: string | null;
+  deliveryKind: DaemonRestartDeliveryKind;
+  decisionReason?: string | null;
   deliveredAt?: number;
 }): boolean {
   const deliveredAt = input.deliveredAt ?? Date.now();
@@ -6585,12 +6638,19 @@ export function dbMarkDaemonRestartResumeDelivered(input: {
         .prepare(
           `
           INSERT OR IGNORE INTO daemon_restart_resume_deliveries (
-            restart_epoch, session_key, session_name, delivered_at
+            restart_epoch, session_key, session_name, delivery_kind, decision_reason, delivered_at
           )
-          VALUES (?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?)
         `,
         )
-        .run(input.restartEpoch, input.sessionKey, input.sessionName ?? null, deliveredAt);
+        .run(
+          input.restartEpoch,
+          input.sessionKey,
+          input.sessionName ?? null,
+          input.deliveryKind,
+          input.decisionReason ?? null,
+          deliveredAt,
+        );
       return result.changes > 0;
     },
     { label: "daemon_restart_resume_delivered" },
@@ -9077,6 +9137,37 @@ export function dbSetAgentSpecMode(id: string, enabled: boolean): void {
 // Route CRUD
 // ============================================================================
 
+function routePatternKey(pattern: string): string {
+  return normalizeRoutePattern(pattern);
+}
+
+function findActiveRouteRow(pattern: string, accountId: string): RouteRow | undefined {
+  const key = routePatternKey(pattern);
+  const s = getStatements();
+  const exact = s.getRoute.get(key, accountId) as RouteRow | undefined;
+  if (exact) return exact;
+  const rows = s.listRoutesByAccount.all(accountId) as RouteRow[];
+  return rows.find((row) => routePatternKey(row.pattern) === key);
+}
+
+function findDeletedRouteRow(pattern: string, accountId: string): RouteRow | undefined {
+  const key = routePatternKey(pattern);
+  const s = getStatements();
+  const rows = s.listDeletedRoutesByAccount.all(accountId) as RouteRow[];
+  return rows.find((row) => routePatternKey(row.pattern) === key);
+}
+
+function rewriteRoutePatternIfFree(row: RouteRow): string {
+  const canonical = routePatternKey(row.pattern);
+  if (canonical === row.pattern) return canonical;
+  const conflict = getDb()
+    .prepare("SELECT id FROM routes WHERE pattern = ? AND account_id = ? AND id != ?")
+    .get(canonical, row.account_id, row.id);
+  if (conflict) return row.pattern;
+  getDb().prepare("UPDATE routes SET pattern = ? WHERE id = ?").run(canonical, row.id);
+  return canonical;
+}
+
 /**
  * Create a new route
  */
@@ -9090,7 +9181,7 @@ export function dbCreateRoute(input: z.input<typeof RouteInputSchema>): RouteCon
   }
 
   const now = Date.now();
-  const normalizedPattern = validated.pattern.toLowerCase();
+  const normalizedPattern = routePatternKey(validated.pattern);
 
   try {
     s.insertRoute.run(
@@ -9116,7 +9207,7 @@ export function dbCreateRoute(input: z.input<typeof RouteInputSchema>): RouteCon
   } catch (err) {
     if ((err as Error).message.includes("UNIQUE constraint failed")) {
       const channelSuffix = validated.channel ? ` [${validated.channel}]` : "";
-      throw new Error(`Route already exists: ${validated.pattern} (account: ${validated.accountId}${channelSuffix})`);
+      throw new Error(`Route already exists: ${normalizedPattern} (account: ${validated.accountId}${channelSuffix})`);
     }
     throw err;
   }
@@ -9126,8 +9217,7 @@ export function dbCreateRoute(input: z.input<typeof RouteInputSchema>): RouteCon
  * Get route by pattern and account
  */
 export function dbGetRoute(pattern: string, accountId: string): (RouteConfig & { id: number }) | null {
-  const s = getStatements();
-  const row = s.getRoute.get(pattern, accountId) as RouteRow | undefined;
+  const row = findActiveRouteRow(pattern, accountId);
   return row ? rowToRoute(row) : null;
 }
 
@@ -9173,12 +9263,21 @@ export function dbRenameRouteSessionName(oldName: string, newName: string): numb
 /**
  * Update an existing route
  */
-export function dbUpdateRoute(pattern: string, updates: Partial<RouteConfig>, accountId: string): RouteConfig {
+export function dbUpdateRoute(
+  pattern: string,
+  updates: Partial<Omit<RouteConfig, "dmScope" | "session" | "policy" | "channel">> & {
+    dmScope?: DmScope | null;
+    session?: string | null;
+    policy?: string | null;
+    channel?: string | null;
+  },
+  accountId: string,
+): RouteConfig {
   const s = getStatements();
-  const row = s.getRoute.get(pattern, accountId) as RouteRow | undefined;
+  const row = findActiveRouteRow(pattern, accountId);
 
   if (!row) {
-    throw new Error(`Route not found: ${pattern} (account: ${accountId})`);
+    throw new Error(`Route not found: ${routePatternKey(pattern)} (account: ${accountId})`);
   }
 
   // Verify agent if updating
@@ -9186,8 +9285,8 @@ export function dbUpdateRoute(pattern: string, updates: Partial<RouteConfig>, ac
     throw new Error(`Agent not found: ${updates.agent}`);
   }
 
-  // Validate dmScope if provided
-  if (updates.dmScope !== undefined) {
+  // Validate dmScope if provided. null clears the override (SQL stores NULL).
+  if (updates.dmScope !== undefined && updates.dmScope !== null) {
     DmScopeSchema.parse(updates.dmScope);
   }
 
@@ -9200,12 +9299,13 @@ export function dbUpdateRoute(pattern: string, updates: Partial<RouteConfig>, ac
     updates.priority ?? row.priority,
     updates.channel !== undefined ? (updates.channel ?? null) : row.channel,
     now,
-    pattern,
+    row.pattern,
     accountId,
   );
 
-  log.info("Updated route", { pattern, accountId });
-  return dbGetRoute(pattern, accountId)!;
+  const storedPattern = rewriteRoutePatternIfFree(row);
+  log.info("Updated route", { pattern: storedPattern, accountId });
+  return dbGetRoute(storedPattern, accountId)!;
 }
 
 /**
@@ -9213,20 +9313,21 @@ export function dbUpdateRoute(pattern: string, updates: Partial<RouteConfig>, ac
  */
 export function dbDeleteRoute(pattern: string, accountId: string): boolean {
   const s = getStatements();
-  const route = dbGetRoute(pattern, accountId);
-  if (!route) return false;
+  const row = findActiveRouteRow(pattern, accountId);
+  if (!row) return false;
+  const route = rowToRoute(row);
   const now = Date.now();
-  s.softDeleteRoute.run(now, pattern, accountId);
+  s.softDeleteRoute.run(now, row.pattern, accountId);
   if (getDbChanges() > 0) {
     s.insertAuditLog.run(
       "route.deleted",
       "route",
-      `${pattern}@${accountId}`,
+      `${route.pattern}@${accountId}`,
       JSON.stringify(route),
       process.env.USER ?? "daemon",
       now,
     );
-    log.info("Soft-deleted route", { pattern, accountId });
+    log.info("Soft-deleted route", { pattern: route.pattern, accountId });
     return true;
   }
   return false;
@@ -9237,11 +9338,22 @@ export function dbDeleteRoute(pattern: string, accountId: string): boolean {
  */
 export function dbRestoreRoute(pattern: string, accountId: string): boolean {
   const s = getStatements();
+  const row = findDeletedRouteRow(pattern, accountId);
+  if (!row) return false;
   const now = Date.now();
-  s.restoreRoute.run(pattern, accountId);
+  s.restoreRoute.run(row.pattern, accountId);
   if (getDbChanges() > 0) {
-    s.insertAuditLog.run("route.restored", "route", `${pattern}@${accountId}`, null, process.env.USER ?? "daemon", now);
-    log.info("Restored route", { pattern, accountId });
+    rewriteRoutePatternIfFree(row);
+    const restoredKey = routePatternKey(row.pattern);
+    s.insertAuditLog.run(
+      "route.restored",
+      "route",
+      `${restoredKey}@${accountId}`,
+      null,
+      process.env.USER ?? "daemon",
+      now,
+    );
+    log.info("Restored route", { pattern: restoredKey, accountId });
     return true;
   }
   return false;
@@ -10036,10 +10148,11 @@ export function getAccountForAgent(agentId: string): string | undefined {
 
 /**
  * Whether to announce compaction start/end to the active session's channel.
- * Setting value: "true" or "false" (default: "true")
+ * Setting value: "true" or "false" (default: "false").
+ * Compaction itself still runs; this only controls the user-facing chat notices.
  */
 export function getAnnounceCompaction(): boolean {
-  return dbGetSetting("announceCompaction") !== "false";
+  return dbGetSetting("announceCompaction") === "true";
 }
 
 // ============================================================================
@@ -10330,6 +10443,153 @@ const SESSION_EVENTS_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — daily rollu
 const SESSION_TRACE_BLOBS_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — keep blob TTL aligned with events
 const AUDIT_LOG_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
 const COST_EVENTS_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+
+/** Rows deleted per TTL write. Sized so one batch stays well under the 30s crash-recovery boot lease. */
+export const TTL_PRUNE_BATCH_SIZE = 2_000;
+const TTL_PRUNE_BATCH_SIZE_MIN = 1;
+const TTL_PRUNE_BATCH_SIZE_MAX = 50_000;
+
+export interface DbPruneResult {
+  messageMetadata: number;
+  sessionEvents: number;
+  sessionTraceBlobs: number;
+  auditLog: number;
+  costEvents: number;
+  expiredSessions: number;
+  vacuumed: boolean;
+  vacuumedBytesReclaimed?: number;
+  walCheckpointed: boolean;
+}
+
+export interface DbPruneBatchInfo {
+  table: string;
+  deleted: number;
+  totalForTable: number;
+}
+
+export interface DbPruneOptions {
+  vacuum?: boolean;
+  dryRun?: boolean;
+  walCheckpoint?: boolean;
+  now?: number;
+  /** Override the default `TTL_PRUNE_BATCH_SIZE` (tests / operator tuning). */
+  batchSize?: number;
+  /**
+   * Yield to the event loop after each full batch so crash-recovery heartbeats
+   * can run. Default yields via `setImmediate`. Pass `false` to keep the loop
+   * tight (CLI), or a function to observe/inject the yield.
+   */
+  yieldBetweenBatches?: boolean | (() => Promise<void> | void);
+  /** Called after every DELETE batch, including the final short/empty one. */
+  onBatch?: (info: DbPruneBatchInfo) => void;
+}
+
+type TtlPruneResultKey = keyof Pick<
+  DbPruneResult,
+  "messageMetadata" | "sessionEvents" | "sessionTraceBlobs" | "auditLog" | "costEvents" | "expiredSessions"
+>;
+
+interface TtlPruneTableSpec {
+  resultKey: TtlPruneResultKey;
+  table: string;
+  whereSql: string;
+  threshold: number;
+}
+
+function ttlPruneTableSpecs(now: number): TtlPruneTableSpec[] {
+  return [
+    {
+      resultKey: "messageMetadata",
+      table: "message_metadata",
+      whereSql: "created_at < ?",
+      threshold: now - MESSAGE_META_TTL_MS,
+    },
+    {
+      resultKey: "sessionEvents",
+      table: "session_events",
+      whereSql: "timestamp < ?",
+      threshold: now - SESSION_EVENTS_TTL_MS,
+    },
+    {
+      resultKey: "sessionTraceBlobs",
+      table: "session_trace_blobs",
+      whereSql: "created_at < ?",
+      threshold: now - SESSION_TRACE_BLOBS_TTL_MS,
+    },
+    { resultKey: "auditLog", table: "audit_log", whereSql: "ts < ?", threshold: now - AUDIT_LOG_TTL_MS },
+    {
+      resultKey: "costEvents",
+      table: "cost_events",
+      whereSql: "created_at < ?",
+      threshold: now - COST_EVENTS_TTL_MS,
+    },
+    {
+      resultKey: "expiredSessions",
+      table: "sessions",
+      whereSql: "ephemeral = 1 AND expires_at IS NOT NULL AND expires_at <= ?",
+      threshold: now,
+    },
+  ];
+}
+
+function resolveTtlPruneBatchSize(batchSize: number | undefined): number {
+  if (batchSize === undefined) return TTL_PRUNE_BATCH_SIZE;
+  if (
+    !Number.isSafeInteger(batchSize) ||
+    batchSize < TTL_PRUNE_BATCH_SIZE_MIN ||
+    batchSize > TTL_PRUNE_BATCH_SIZE_MAX
+  ) {
+    throw new Error(`batchSize must be an integer between ${TTL_PRUNE_BATCH_SIZE_MIN} and ${TTL_PRUNE_BATCH_SIZE_MAX}`);
+  }
+  return batchSize;
+}
+
+function resolveTtlPruneYield(
+  yieldBetweenBatches: DbPruneOptions["yieldBetweenBatches"],
+): (() => Promise<void> | void) | null {
+  if (yieldBetweenBatches === false) return null;
+  if (typeof yieldBetweenBatches === "function") return yieldBetweenBatches;
+  return yieldToEventLoop;
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
+function buildTtlPruneDeleteSql(table: string, whereSql: string): string {
+  return `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${whereSql} LIMIT ?)`;
+}
+
+async function deleteExpiredRowsInBatches(
+  db: Database,
+  spec: TtlPruneTableSpec,
+  batchSize: number,
+  onBatch: DbPruneOptions["onBatch"],
+  yieldBetweenBatches: (() => Promise<void> | void) | null,
+): Promise<number> {
+  const stmt = db.prepare(buildTtlPruneDeleteSql(spec.table, spec.whereSql));
+  let total = 0;
+  let batchIndex = 0;
+  while (true) {
+    const deleted = executeWrite(db, () => Number(stmt.run(spec.threshold, batchSize).changes ?? 0), {
+      label: `ttl-prune:${spec.table}`,
+    });
+    total += deleted;
+    batchIndex += 1;
+    onBatch?.({ table: spec.table, deleted, totalForTable: total });
+    if (batchIndex === 1 || batchIndex % 25 === 0) {
+      log.debug("TTL prune batch", { table: spec.table, batchIndex, deleted, total });
+    }
+    if (deleted < batchSize) break;
+    if (yieldBetweenBatches) {
+      await yieldBetweenBatches();
+    }
+  }
+  return total;
+}
+
 /**
  * Delete message metadata older than 7 days.
  * Returns number of rows deleted.
@@ -10351,38 +10611,21 @@ export function dbCleanupExpiredSessions(): number {
   return getDbChanges();
 }
 
-export interface DbPruneResult {
-  messageMetadata: number;
-  sessionEvents: number;
-  sessionTraceBlobs: number;
-  auditLog: number;
-  costEvents: number;
-  expiredSessions: number;
-  vacuumed: boolean;
-  vacuumedBytesReclaimed?: number;
-  walCheckpointed: boolean;
-}
-
-export interface DbPruneOptions {
-  vacuum?: boolean;
-  dryRun?: boolean;
-  walCheckpoint?: boolean;
-  now?: number;
-}
-
 /**
  * Prune stale rows from large tables.
  *
  * In dry-run mode, returns the row counts that WOULD be deleted (no writes).
  *
- * In live mode, runs each delete in its own transaction so a slow path doesn't
- * block subsequent prunes if the daemon is under load. After pruning, optionally
- * runs `PRAGMA wal_checkpoint(PASSIVE)` to drain the WAL and `VACUUM` to reclaim
- * file space (rewrites the file — slow but reclaims megabytes).
+ * In live mode, deletes run in bounded `LIMIT` batches. Each batch is its own
+ * `BEGIN IMMEDIATE` write so a large backlog cannot hold one multi-minute lock.
+ * The default path yields to the event loop between full batches so crash-recovery
+ * heartbeats can renew the boot lease. After pruning, optionally runs
+ * `PRAGMA wal_checkpoint(PASSIVE)` and `VACUUM`.
  */
-export function dbPruneStaleRows(options: DbPruneOptions = {}): DbPruneResult {
+export async function dbPruneStaleRows(options: DbPruneOptions = {}): Promise<DbPruneResult> {
   const db = getDb();
   const now = options.now ?? Date.now();
+  const specs = ttlPruneTableSpecs(now);
   const result: DbPruneResult = {
     messageMetadata: 0,
     sessionEvents: 0,
@@ -10397,47 +10640,27 @@ export function dbPruneStaleRows(options: DbPruneOptions = {}): DbPruneResult {
   if (options.dryRun) {
     const count = (sql: string, threshold: number): number =>
       Number((db.prepare(sql).get(threshold) as { c: number }).c ?? 0);
-    result.messageMetadata = count(
-      "SELECT COUNT(*) AS c FROM message_metadata WHERE created_at < ?",
-      now - MESSAGE_META_TTL_MS,
-    );
     // The local TTL is a hard retention boundary. An optional cloud-export
     // cursor must not pin an unbounded local backlog when export is disabled,
     // unlinked, or stale. The exporter already tolerates gaps and resumes from
     // the first surviving id above its cursor.
-    result.sessionEvents = count(
-      "SELECT COUNT(*) AS c FROM session_events WHERE timestamp < ?",
-      now - SESSION_EVENTS_TTL_MS,
-    );
-    result.sessionTraceBlobs = count(
-      "SELECT COUNT(*) AS c FROM session_trace_blobs WHERE created_at < ?",
-      now - SESSION_TRACE_BLOBS_TTL_MS,
-    );
-    result.auditLog = count("SELECT COUNT(*) AS c FROM audit_log WHERE ts < ?", now - AUDIT_LOG_TTL_MS);
-    result.costEvents = count("SELECT COUNT(*) AS c FROM cost_events WHERE created_at < ?", now - COST_EVENTS_TTL_MS);
-    result.expiredSessions = count(
-      "SELECT COUNT(*) AS c FROM sessions WHERE ephemeral = 1 AND expires_at IS NOT NULL AND expires_at <= ?",
-      now,
-    );
+    for (const spec of specs) {
+      result[spec.resultKey] = count(`SELECT COUNT(*) AS c FROM ${spec.table} WHERE ${spec.whereSql}`, spec.threshold);
+    }
     return result;
   }
 
-  // Each delete runs in its own implicit transaction. We deliberately don't
-  // wrap them in a single BEGIN/COMMIT — a long single transaction is a worse
-  // lock-contention risk than several short ones.
-  const runDelete = (sql: string, threshold: number): number => {
-    db.prepare(sql).run(threshold);
-    return getDbChanges();
-  };
-  result.messageMetadata = runDelete("DELETE FROM message_metadata WHERE created_at < ?", now - MESSAGE_META_TTL_MS);
-  result.sessionEvents = runDelete("DELETE FROM session_events WHERE timestamp < ?", now - SESSION_EVENTS_TTL_MS);
-  result.sessionTraceBlobs = runDelete(
-    "DELETE FROM session_trace_blobs WHERE created_at < ?",
-    now - SESSION_TRACE_BLOBS_TTL_MS,
-  );
-  result.auditLog = runDelete("DELETE FROM audit_log WHERE ts < ?", now - AUDIT_LOG_TTL_MS);
-  result.costEvents = runDelete("DELETE FROM cost_events WHERE created_at < ?", now - COST_EVENTS_TTL_MS);
-  result.expiredSessions = dbCleanupExpiredSessions();
+  const batchSize = resolveTtlPruneBatchSize(options.batchSize);
+  const yieldBetweenBatches = resolveTtlPruneYield(options.yieldBetweenBatches);
+  for (const spec of specs) {
+    result[spec.resultKey] = await deleteExpiredRowsInBatches(
+      db,
+      spec,
+      batchSize,
+      options.onBatch,
+      yieldBetweenBatches,
+    );
+  }
 
   if (options.walCheckpoint) {
     db.exec("PRAGMA wal_checkpoint(PASSIVE)");

@@ -354,17 +354,25 @@ class AgentsPermissionsOptions {
 }
 
 class AgentsPermissionsReturn {
-  const AgentsPermissionsReturn({required this.action, this.after, this.agent, required this.agentId, this.before, required this.changed, this.command, this.defaults, this.profile, this.runtimePermissions});
+  const AgentsPermissionsReturn({required this.action, this.after, this.agent, required this.agentId, this.authorityLayer, this.before, this.breakGlassCommand, required this.changed, this.chatOnlyCommand, this.command, this.defaults, this.effectiveOn, this.inspectCommand, this.leastPrivilegeExample, this.profile, this.recurringAccessCommand, this.resetToBootstrapCommand, this.runtimePermissions});
 
   final String action;
   final RaviJson? after;
   final RaviJson? agent;
   final String agentId;
+  final String? authorityLayer;
   final RaviJson? before;
+  final String? breakGlassCommand;
   final bool changed;
+  final String? chatOnlyCommand;
   final String? command;
   final RaviJson? defaults;
+  final String? effectiveOn;
+  final String? inspectCommand;
+  final String? leastPrivilegeExample;
   final String? profile;
+  final String? recurringAccessCommand;
+  final String? resetToBootstrapCommand;
   final RaviJson? runtimePermissions;
 
   factory AgentsPermissionsReturn.fromJson(Map<String, Object?> json) {
@@ -373,11 +381,19 @@ class AgentsPermissionsReturn {
       after: json["after"] == null ? null : RaviJson.from(json["after"]),
       agent: json["agent"] == null ? null : RaviJson.from(json["agent"]),
       agentId: raviJsonAsString(json["agentId"]),
+      authorityLayer: json["authorityLayer"] == null ? null : raviJsonAsString(json["authorityLayer"]),
       before: json["before"] == null ? null : RaviJson.from(json["before"]),
+      breakGlassCommand: json["breakGlassCommand"] == null ? null : raviJsonAsString(json["breakGlassCommand"]),
       changed: raviJsonAsBool(json["changed"]),
+      chatOnlyCommand: json["chatOnlyCommand"] == null ? null : raviJsonAsString(json["chatOnlyCommand"]),
       command: json["command"] == null ? null : raviJsonAsString(json["command"]),
       defaults: json["defaults"] == null ? null : RaviJson.from(json["defaults"]),
+      effectiveOn: json["effectiveOn"] == null ? null : raviJsonAsString(json["effectiveOn"]),
+      inspectCommand: json["inspectCommand"] == null ? null : raviJsonAsString(json["inspectCommand"]),
+      leastPrivilegeExample: json["leastPrivilegeExample"] == null ? null : raviJsonAsString(json["leastPrivilegeExample"]),
       profile: json["profile"] == null ? null : raviJsonAsString(json["profile"]),
+      recurringAccessCommand: json["recurringAccessCommand"] == null ? null : raviJsonAsString(json["recurringAccessCommand"]),
+      resetToBootstrapCommand: json["resetToBootstrapCommand"] == null ? null : raviJsonAsString(json["resetToBootstrapCommand"]),
       runtimePermissions: json["runtimePermissions"] == null ? null : RaviJson.from(json["runtimePermissions"]),
     );
   }
@@ -457,14 +473,28 @@ class AgentsSessionReturn {
 
 AgentsSessionReturn agentsSessionReturnFromJson(Object? json) => AgentsSessionReturn.fromJsonValue(json);
 
+class AgentsSetOptions {
+  const AgentsSetOptions({this.force});
+
+  final bool? force;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (force != null) {
+      into["force"] = RaviJson.from(force);
+    }
+  }
+}
+
 class AgentsSetReturn {
-  const AgentsSetReturn({required this.action, this.agent, required this.agentId, required this.changed, required this.key, required this.sessionOverrides, required this.value});
+  const AgentsSetReturn({required this.action, this.agent, required this.agentId, required this.changed, required this.forcedClearedOverrides, required this.key, required this.rematerializedSessions, required this.sessionOverrides, required this.value});
 
   final String action;
   final Map<String, RaviJson>? agent;
   final String agentId;
   final bool changed;
+  final List<RaviJson> forcedClearedOverrides;
   final String key;
+  final List<RaviJson> rematerializedSessions;
   final List<RaviJson> sessionOverrides;
   final RaviJson value;
 
@@ -474,7 +504,9 @@ class AgentsSetReturn {
       agent: json["agent"] == null ? null : raviJsonAsRaviJsonMap(json["agent"]),
       agentId: raviJsonAsString(json["agentId"]),
       changed: raviJsonAsBool(json["changed"]),
+      forcedClearedOverrides: raviJsonAsList(json["forcedClearedOverrides"], RaviJson.from),
       key: raviJsonAsString(json["key"]),
+      rematerializedSessions: raviJsonAsList(json["rematerializedSessions"], RaviJson.from),
       sessionOverrides: raviJsonAsList(json["sessionOverrides"], RaviJson.from),
       value: RaviJson.from(json["value"]),
     );
@@ -2286,6 +2318,76 @@ class BridgesRevokeReturn {
 }
 
 BridgesRevokeReturn bridgesRevokeReturnFromJson(Object? json) => BridgesRevokeReturn.fromJsonValue(json);
+
+class BugCommentOptions {
+  const BugCommentOptions({this.console, this.dossierFile, this.dossierJson, this.evidenceFile, this.execute, this.idempotencyKey, this.text});
+
+  final String? console;
+  final String? dossierFile;
+  final String? dossierJson;
+  final String? evidenceFile;
+  final bool? execute;
+  final String? idempotencyKey;
+  final String? text;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (console != null) {
+      into["console"] = RaviJson.from(console);
+    }
+    if (dossierFile != null) {
+      into["dossierFile"] = RaviJson.from(dossierFile);
+    }
+    if (dossierJson != null) {
+      into["dossierJson"] = RaviJson.from(dossierJson);
+    }
+    if (evidenceFile != null) {
+      into["evidenceFile"] = RaviJson.from(evidenceFile);
+    }
+    if (execute != null) {
+      into["execute"] = RaviJson.from(execute);
+    }
+    if (idempotencyKey != null) {
+      into["idempotencyKey"] = RaviJson.from(idempotencyKey);
+    }
+    if (text != null) {
+      into["text"] = RaviJson.from(text);
+    }
+  }
+}
+
+class BugCommentReturn {
+  const BugCommentReturn({required this.bug, required this.bugId, required this.comment, required this.consoleUrl, required this.id, required this.idempotencyKey, required this.reused, required this.success, required this.url});
+
+  final Map<String, RaviJson> bug;
+  final String bugId;
+  final Map<String, RaviJson> comment;
+  final String consoleUrl;
+  final String id;
+  final String idempotencyKey;
+  final bool reused;
+  final bool success;
+  final String url;
+
+  factory BugCommentReturn.fromJson(Map<String, Object?> json) {
+    return BugCommentReturn(
+      bug: raviJsonAsRaviJsonMap(json["bug"]),
+      bugId: raviJsonAsString(json["bugId"]),
+      comment: raviJsonAsRaviJsonMap(json["comment"]),
+      consoleUrl: raviJsonAsString(json["consoleUrl"]),
+      id: raviJsonAsString(json["id"]),
+      idempotencyKey: raviJsonAsString(json["idempotencyKey"]),
+      reused: raviJsonAsBool(json["reused"]),
+      success: raviJsonAsBool(json["success"]),
+      url: raviJsonAsString(json["url"]),
+    );
+  }
+
+  static BugCommentReturn fromJsonValue(Object? json) {
+    return BugCommentReturn.fromJson(raviJsonObject(json, "BugCommentReturn"));
+  }
+}
+
+BugCommentReturn bugCommentReturnFromJson(Object? json) => BugCommentReturn.fromJsonValue(json);
 
 class BugListOptions {
   const BugListOptions({this.console, this.fields, this.limit, this.offset});
@@ -4520,14 +4622,22 @@ typedef ContactsActivityReturn = Map<String, RaviJson>;
 ContactsActivityReturn contactsActivityReturnFromJson(Object? json) => raviJsonAsRaviJsonMap(json);
 
 class ContactsAddOptions {
-  const ContactsAddOptions({this.agent, this.kind});
+  const ContactsAddOptions({this.agent, this.channel, this.instance, this.kind});
 
   final String? agent;
+  final String? channel;
+  final String? instance;
   final String? kind;
 
   void encodeBody(Map<String, RaviJson> into) {
     if (agent != null) {
       into["agent"] = RaviJson.from(agent);
+    }
+    if (channel != null) {
+      into["channel"] = RaviJson.from(channel);
+    }
+    if (instance != null) {
+      into["instance"] = RaviJson.from(instance);
     }
     if (kind != null) {
       into["kind"] = RaviJson.from(kind);
@@ -5112,6 +5222,18 @@ class ContextCleanupAgentRuntimeReturn {
 }
 
 ContextCleanupAgentRuntimeReturn contextCleanupAgentRuntimeReturnFromJson(Object? json) => ContextCleanupAgentRuntimeReturn.fromJsonValue(json);
+
+class ContextCodexBashHookOptions {
+  const ContextCodexBashHookOptions({this.payload});
+
+  final String? payload;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (payload != null) {
+      into["payload"] = RaviJson.from(payload);
+    }
+  }
+}
 
 class ContextCodexBashHookReturn {
   const ContextCodexBashHookReturn({this.hookSpecificOutput});
@@ -10513,6 +10635,218 @@ typedef InstancesTargetReturn = Map<String, RaviJson>;
 
 InstancesTargetReturn instancesTargetReturnFromJson(Object? json) => raviJsonAsRaviJsonMap(json);
 
+class JobsKillReturn {
+  const JobsKillReturn({required this.id, required this.killed, required this.status});
+
+  final String id;
+  final bool killed;
+  final String status;
+
+  factory JobsKillReturn.fromJson(Map<String, Object?> json) {
+    return JobsKillReturn(
+      id: raviJsonAsString(json["id"]),
+      killed: raviJsonAsBool(json["killed"]),
+      status: raviJsonAsString(json["status"]),
+    );
+  }
+
+  static JobsKillReturn fromJsonValue(Object? json) {
+    return JobsKillReturn.fromJson(raviJsonObject(json, "JobsKillReturn"));
+  }
+}
+
+JobsKillReturn jobsKillReturnFromJson(Object? json) => JobsKillReturn.fromJsonValue(json);
+
+class JobsListOptions {
+  const JobsListOptions({this.all, this.limit, this.offset, this.session});
+
+  final bool? all;
+  final String? limit;
+  final String? offset;
+  final String? session;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (all != null) {
+      into["all"] = RaviJson.from(all);
+    }
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
+    if (session != null) {
+      into["session"] = RaviJson.from(session);
+    }
+  }
+}
+
+class JobsListReturn {
+  const JobsListReturn({required this.items, required this.pagination, required this.total});
+
+  final List<RaviJson> items;
+  final RaviJson pagination;
+  final double total;
+
+  factory JobsListReturn.fromJson(Map<String, Object?> json) {
+    return JobsListReturn(
+      items: raviJsonAsList(json["items"], RaviJson.from),
+      pagination: RaviJson.from(json["pagination"]),
+      total: raviJsonAsDouble(json["total"]),
+    );
+  }
+
+  static JobsListReturn fromJsonValue(Object? json) {
+    return JobsListReturn.fromJson(raviJsonObject(json, "JobsListReturn"));
+  }
+}
+
+JobsListReturn jobsListReturnFromJson(Object? json) => JobsListReturn.fromJsonValue(json);
+
+class JobsRunOptions {
+  const JobsRunOptions({this.agent, this.cwd, this.session, this.wait});
+
+  final String? agent;
+  final String? cwd;
+  final String? session;
+  final bool? wait;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (agent != null) {
+      into["agent"] = RaviJson.from(agent);
+    }
+    if (cwd != null) {
+      into["cwd"] = RaviJson.from(cwd);
+    }
+    if (session != null) {
+      into["session"] = RaviJson.from(session);
+    }
+    if (wait != null) {
+      into["wait"] = RaviJson.from(wait);
+    }
+  }
+}
+
+class JobsRunReturn {
+  const JobsRunReturn({required this.command, required this.hint, required this.id, required this.logPath, required this.sessionName, required this.status});
+
+  final String command;
+  final String hint;
+  final String id;
+  final String logPath;
+  final RaviJson sessionName;
+  final String status;
+
+  factory JobsRunReturn.fromJson(Map<String, Object?> json) {
+    return JobsRunReturn(
+      command: raviJsonAsString(json["command"]),
+      hint: raviJsonAsString(json["hint"]),
+      id: raviJsonAsString(json["id"]),
+      logPath: raviJsonAsString(json["logPath"]),
+      sessionName: RaviJson.from(json["sessionName"]),
+      status: raviJsonAsString(json["status"]),
+    );
+  }
+
+  static JobsRunReturn fromJsonValue(Object? json) {
+    return JobsRunReturn.fromJson(raviJsonObject(json, "JobsRunReturn"));
+  }
+}
+
+JobsRunReturn jobsRunReturnFromJson(Object? json) => JobsRunReturn.fromJsonValue(json);
+
+class JobsShowReturn {
+  const JobsShowReturn({required this.job});
+
+  final RaviJson job;
+
+  factory JobsShowReturn.fromJson(Map<String, Object?> json) {
+    return JobsShowReturn(
+      job: RaviJson.from(json["job"]),
+    );
+  }
+
+  static JobsShowReturn fromJsonValue(Object? json) {
+    return JobsShowReturn.fromJson(raviJsonObject(json, "JobsShowReturn"));
+  }
+}
+
+JobsShowReturn jobsShowReturnFromJson(Object? json) => JobsShowReturn.fromJsonValue(json);
+
+class JobsTailOptions {
+  const JobsTailOptions({this.lines});
+
+  final String? lines;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (lines != null) {
+      into["lines"] = RaviJson.from(lines);
+    }
+  }
+}
+
+class JobsTailReturn {
+  const JobsTailReturn({required this.id, required this.logPath, required this.status, required this.tail});
+
+  final String id;
+  final String logPath;
+  final String status;
+  final String tail;
+
+  factory JobsTailReturn.fromJson(Map<String, Object?> json) {
+    return JobsTailReturn(
+      id: raviJsonAsString(json["id"]),
+      logPath: raviJsonAsString(json["logPath"]),
+      status: raviJsonAsString(json["status"]),
+      tail: raviJsonAsString(json["tail"]),
+    );
+  }
+
+  static JobsTailReturn fromJsonValue(Object? json) {
+    return JobsTailReturn.fromJson(raviJsonObject(json, "JobsTailReturn"));
+  }
+}
+
+JobsTailReturn jobsTailReturnFromJson(Object? json) => JobsTailReturn.fromJsonValue(json);
+
+class JobsWaitOptions {
+  const JobsWaitOptions({this.timeout});
+
+  final String? timeout;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (timeout != null) {
+      into["timeout"] = RaviJson.from(timeout);
+    }
+  }
+}
+
+class JobsWaitReturn {
+  const JobsWaitReturn({required this.exitCode, required this.id, required this.logPath, required this.signal, required this.status});
+
+  final RaviJson exitCode;
+  final String id;
+  final String logPath;
+  final RaviJson signal;
+  final String status;
+
+  factory JobsWaitReturn.fromJson(Map<String, Object?> json) {
+    return JobsWaitReturn(
+      exitCode: RaviJson.from(json["exitCode"]),
+      id: raviJsonAsString(json["id"]),
+      logPath: raviJsonAsString(json["logPath"]),
+      signal: RaviJson.from(json["signal"]),
+      status: raviJsonAsString(json["status"]),
+    );
+  }
+
+  static JobsWaitReturn fromJsonValue(Object? json) {
+    return JobsWaitReturn.fromJson(raviJsonObject(json, "JobsWaitReturn"));
+  }
+}
+
+JobsWaitReturn jobsWaitReturnFromJson(Object? json) => JobsWaitReturn.fromJsonValue(json);
+
 class MailAccountsCreateOptions {
   const MailAccountsCreateOptions({this.credentialsRef, this.id, this.name, this.provider});
 
@@ -12930,24 +13264,34 @@ class PagesUpdateOptions {
 }
 
 class PagesUpdateReturn {
-  const PagesUpdateReturn({required this.consoleUrl, required this.edgeManifestRepair, required this.projectRef, required this.site, required this.siteRef, required this.success, required this.url});
+  const PagesUpdateReturn({required this.consoleUrl, this.defaultVisibility, required this.edgeManifestRepair, this.effectiveVisibility, this.path, required this.projectRef, this.route, required this.site, required this.siteRef, required this.success, this.target, required this.url});
 
   final String consoleUrl;
+  final RaviJson? defaultVisibility;
   final RaviJson edgeManifestRepair;
+  final String? effectiveVisibility;
+  final String? path;
   final String projectRef;
+  final Map<String, RaviJson>? route;
   final Map<String, RaviJson> site;
   final String siteRef;
   final bool success;
+  final String? target;
   final RaviJson url;
 
   factory PagesUpdateReturn.fromJson(Map<String, Object?> json) {
     return PagesUpdateReturn(
       consoleUrl: raviJsonAsString(json["consoleUrl"]),
+      defaultVisibility: json["defaultVisibility"] == null ? null : RaviJson.from(json["defaultVisibility"]),
       edgeManifestRepair: RaviJson.from(json["edgeManifestRepair"]),
+      effectiveVisibility: json["effectiveVisibility"] == null ? null : raviJsonAsString(json["effectiveVisibility"]),
+      path: json["path"] == null ? null : raviJsonAsString(json["path"]),
       projectRef: raviJsonAsString(json["projectRef"]),
+      route: json["route"] == null ? null : raviJsonAsRaviJsonMap(json["route"]),
       site: raviJsonAsRaviJsonMap(json["site"]),
       siteRef: raviJsonAsString(json["siteRef"]),
       success: raviJsonAsBool(json["success"]),
+      target: json["target"] == null ? null : raviJsonAsString(json["target"]),
       url: RaviJson.from(json["url"]),
     );
   }
@@ -12960,11 +13304,12 @@ class PagesUpdateReturn {
 PagesUpdateReturn pagesUpdateReturnFromJson(Object? json) => PagesUpdateReturn.fromJsonValue(json);
 
 class PagesVisibilityOptions {
-  const PagesVisibilityOptions({this.console, this.execute, this.project});
+  const PagesVisibilityOptions({this.console, this.execute, this.project, this.route});
 
   final String? console;
   final bool? execute;
   final String? project;
+  final String? route;
 
   void encodeBody(Map<String, RaviJson> into) {
     if (console != null) {
@@ -12976,28 +13321,41 @@ class PagesVisibilityOptions {
     if (project != null) {
       into["project"] = RaviJson.from(project);
     }
+    if (route != null) {
+      into["route"] = RaviJson.from(route);
+    }
   }
 }
 
 class PagesVisibilityReturn {
-  const PagesVisibilityReturn({required this.consoleUrl, required this.edgeManifestRepair, required this.projectRef, required this.site, required this.siteRef, required this.success, required this.url});
+  const PagesVisibilityReturn({required this.consoleUrl, this.defaultVisibility, required this.edgeManifestRepair, this.effectiveVisibility, this.path, required this.projectRef, this.route, required this.site, required this.siteRef, required this.success, this.target, required this.url});
 
   final String consoleUrl;
+  final RaviJson? defaultVisibility;
   final RaviJson edgeManifestRepair;
+  final String? effectiveVisibility;
+  final String? path;
   final String projectRef;
+  final Map<String, RaviJson>? route;
   final Map<String, RaviJson> site;
   final String siteRef;
   final bool success;
+  final String? target;
   final RaviJson url;
 
   factory PagesVisibilityReturn.fromJson(Map<String, Object?> json) {
     return PagesVisibilityReturn(
       consoleUrl: raviJsonAsString(json["consoleUrl"]),
+      defaultVisibility: json["defaultVisibility"] == null ? null : RaviJson.from(json["defaultVisibility"]),
       edgeManifestRepair: RaviJson.from(json["edgeManifestRepair"]),
+      effectiveVisibility: json["effectiveVisibility"] == null ? null : raviJsonAsString(json["effectiveVisibility"]),
+      path: json["path"] == null ? null : raviJsonAsString(json["path"]),
       projectRef: raviJsonAsString(json["projectRef"]),
+      route: json["route"] == null ? null : raviJsonAsRaviJsonMap(json["route"]),
       site: raviJsonAsRaviJsonMap(json["site"]),
       siteRef: raviJsonAsString(json["siteRef"]),
       success: raviJsonAsBool(json["success"]),
+      target: json["target"] == null ? null : raviJsonAsString(json["target"]),
       url: RaviJson.from(json["url"]),
     );
   }
@@ -13104,16 +13462,18 @@ class PermissionsCheckOptions {
 }
 
 class PermissionsCheckReturn {
-  const PermissionsCheckReturn({required this.allowed, required this.decision, this.guidance});
+  const PermissionsCheckReturn({required this.allowed, required this.decision, this.diagnosticNote, this.guidance});
 
   final bool allowed;
   final RaviJson decision;
+  final String? diagnosticNote;
   final RaviJson? guidance;
 
   factory PermissionsCheckReturn.fromJson(Map<String, Object?> json) {
     return PermissionsCheckReturn(
       allowed: raviJsonAsBool(json["allowed"]),
       decision: RaviJson.from(json["decision"]),
+      diagnosticNote: json["diagnosticNote"] == null ? null : raviJsonAsString(json["diagnosticNote"]),
       guidance: json["guidance"] == null ? null : RaviJson.from(json["guidance"]),
     );
   }
@@ -13142,16 +13502,18 @@ class PermissionsMaterializeOptions {
 }
 
 class PermissionsMaterializeReturn {
-  const PermissionsMaterializeReturn({required this.capabilities, required this.guidance, required this.subject});
+  const PermissionsMaterializeReturn({required this.capabilities, required this.guidance, this.profile, required this.subject});
 
   final List<RaviJson> capabilities;
   final RaviJson guidance;
+  final String? profile;
   final RaviJson subject;
 
   factory PermissionsMaterializeReturn.fromJson(Map<String, Object?> json) {
     return PermissionsMaterializeReturn(
       capabilities: raviJsonAsList(json["capabilities"], RaviJson.from),
       guidance: RaviJson.from(json["guidance"]),
+      profile: json["profile"] == null ? null : raviJsonAsString(json["profile"]),
       subject: RaviJson.from(json["subject"]),
     );
   }
@@ -17861,20 +18223,97 @@ class SessionsSetEffortReturn {
 
 SessionsSetEffortReturn sessionsSetEffortReturnFromJson(Object? json) => SessionsSetEffortReturn.fromJsonValue(json);
 
-typedef SessionsSetModelReturn = Map<String, RaviJson>;
+class SessionsSetModelOptions {
+  const SessionsSetModelOptions({this.propagate});
 
-SessionsSetModelReturn sessionsSetModelReturnFromJson(Object? json) => raviJsonAsRaviJsonMap(json);
+  final bool? propagate;
 
-class SessionsSetProviderReturn {
-  const SessionsSetProviderReturn({required this.action, required this.after, required this.appliesOn, required this.before, required this.changed, required this.effectiveProvider, required this.providerSource, required this.runtimeProviderOverride, required this.sessionKey, required this.sessionName});
+  void encodeBody(Map<String, RaviJson> into) {
+    if (propagate != null) {
+      into["propagate"] = RaviJson.from(propagate);
+    }
+  }
+}
+
+class SessionsSetModelReturn {
+  const SessionsSetModelReturn({required this.action, required this.after, this.agentDefaultDiffers, this.agentDefaultModel, this.agentDefaultProvider, required this.before, required this.changed, required this.effectiveModel, this.event, this.hint, required this.modelOverride, this.notification, this.propagateCommand, this.propagated, this.rematerializedSessions, required this.sessionKey, required this.sessionName});
 
   final String action;
   final RaviJson after;
+  final bool? agentDefaultDiffers;
+  final RaviJson? agentDefaultModel;
+  final RaviJson? agentDefaultProvider;
+  final RaviJson before;
+  final bool changed;
+  final String effectiveModel;
+  final Map<String, RaviJson>? event;
+  final RaviJson? hint;
+  final RaviJson modelOverride;
+  final Map<String, RaviJson>? notification;
+  final RaviJson? propagateCommand;
+  final bool? propagated;
+  final List<RaviJson>? rematerializedSessions;
+  final String sessionKey;
+  final RaviJson sessionName;
+
+  factory SessionsSetModelReturn.fromJson(Map<String, Object?> json) {
+    return SessionsSetModelReturn(
+      action: raviJsonAsString(json["action"]),
+      after: RaviJson.from(json["after"]),
+      agentDefaultDiffers: json["agentDefaultDiffers"] == null ? null : raviJsonAsBool(json["agentDefaultDiffers"]),
+      agentDefaultModel: json["agentDefaultModel"] == null ? null : RaviJson.from(json["agentDefaultModel"]),
+      agentDefaultProvider: json["agentDefaultProvider"] == null ? null : RaviJson.from(json["agentDefaultProvider"]),
+      before: RaviJson.from(json["before"]),
+      changed: raviJsonAsBool(json["changed"]),
+      effectiveModel: raviJsonAsString(json["effectiveModel"]),
+      event: json["event"] == null ? null : raviJsonAsRaviJsonMap(json["event"]),
+      hint: json["hint"] == null ? null : RaviJson.from(json["hint"]),
+      modelOverride: RaviJson.from(json["modelOverride"]),
+      notification: json["notification"] == null ? null : raviJsonAsRaviJsonMap(json["notification"]),
+      propagateCommand: json["propagateCommand"] == null ? null : RaviJson.from(json["propagateCommand"]),
+      propagated: json["propagated"] == null ? null : raviJsonAsBool(json["propagated"]),
+      rematerializedSessions: json["rematerializedSessions"] == null ? null : raviJsonAsList(json["rematerializedSessions"], RaviJson.from),
+      sessionKey: raviJsonAsString(json["sessionKey"]),
+      sessionName: RaviJson.from(json["sessionName"]),
+    );
+  }
+
+  static SessionsSetModelReturn fromJsonValue(Object? json) {
+    return SessionsSetModelReturn.fromJson(raviJsonObject(json, "SessionsSetModelReturn"));
+  }
+}
+
+SessionsSetModelReturn sessionsSetModelReturnFromJson(Object? json) => SessionsSetModelReturn.fromJsonValue(json);
+
+class SessionsSetProviderOptions {
+  const SessionsSetProviderOptions({this.propagate});
+
+  final bool? propagate;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (propagate != null) {
+      into["propagate"] = RaviJson.from(propagate);
+    }
+  }
+}
+
+class SessionsSetProviderReturn {
+  const SessionsSetProviderReturn({required this.action, required this.after, this.agentDefaultDiffers, this.agentDefaultModel, this.agentDefaultProvider, required this.appliesOn, required this.before, required this.changed, required this.effectiveProvider, this.hint, this.propagateCommand, this.propagated, required this.providerSource, this.rematerializedSessions, required this.runtimeProviderOverride, required this.sessionKey, required this.sessionName});
+
+  final String action;
+  final RaviJson after;
+  final bool? agentDefaultDiffers;
+  final RaviJson? agentDefaultModel;
+  final RaviJson? agentDefaultProvider;
   final String appliesOn;
   final RaviJson before;
   final bool changed;
   final String effectiveProvider;
+  final RaviJson? hint;
+  final RaviJson? propagateCommand;
+  final bool? propagated;
   final String providerSource;
+  final List<RaviJson>? rematerializedSessions;
   final RaviJson runtimeProviderOverride;
   final String sessionKey;
   final RaviJson sessionName;
@@ -17883,11 +18322,18 @@ class SessionsSetProviderReturn {
     return SessionsSetProviderReturn(
       action: raviJsonAsString(json["action"]),
       after: RaviJson.from(json["after"]),
+      agentDefaultDiffers: json["agentDefaultDiffers"] == null ? null : raviJsonAsBool(json["agentDefaultDiffers"]),
+      agentDefaultModel: json["agentDefaultModel"] == null ? null : RaviJson.from(json["agentDefaultModel"]),
+      agentDefaultProvider: json["agentDefaultProvider"] == null ? null : RaviJson.from(json["agentDefaultProvider"]),
       appliesOn: raviJsonAsString(json["appliesOn"]),
       before: RaviJson.from(json["before"]),
       changed: raviJsonAsBool(json["changed"]),
       effectiveProvider: raviJsonAsString(json["effectiveProvider"]),
+      hint: json["hint"] == null ? null : RaviJson.from(json["hint"]),
+      propagateCommand: json["propagateCommand"] == null ? null : RaviJson.from(json["propagateCommand"]),
+      propagated: json["propagated"] == null ? null : raviJsonAsBool(json["propagated"]),
       providerSource: raviJsonAsString(json["providerSource"]),
+      rematerializedSessions: json["rematerializedSessions"] == null ? null : raviJsonAsList(json["rematerializedSessions"], RaviJson.from),
       runtimeProviderOverride: RaviJson.from(json["runtimeProviderOverride"]),
       sessionKey: raviJsonAsString(json["sessionKey"]),
       sessionName: RaviJson.from(json["sessionName"]),

@@ -1,7 +1,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractRequestedSkillFromToolCall, isSkillNameAuthorizedOnAllowlist } from "./skill-visibility.js";
+import type { ContextCapability } from "../router/router-db.js";
+import { getRaviStateDir } from "../utils/paths.js";
+import { formatSkillNotAuthorizedReason, isSkillAuthorizedForAgent } from "./skill-authorization.js";
+import { extractRequestedSkillsFromToolCall, isSkillNameAuthorizedOnAllowlist } from "./skill-visibility.js";
 import type {
   RuntimeApprovalHandler,
   RuntimeApprovalQuestion,
@@ -140,6 +142,9 @@ export interface PiToolPermissionHandlers {
    * Absent/empty keeps Invariant F grandfather behavior.
    */
   allowedSkills?: readonly string[];
+  /** Executor agent — used to authorize official gated skills from capabilities. */
+  agentId?: string;
+  capabilities?: readonly ContextCapability[];
 }
 
 export interface PiToolPermissionDecision {
@@ -363,11 +368,13 @@ export async function authorizePiToolCall(
     }
   }
 
-  const requestedSkill = extractRequestedSkillFromToolCall(mapped, input);
-  if (requestedSkill && !isPiSkillAuthorized(requestedSkill, handlers)) {
+  const deniedSkill = extractRequestedSkillsFromToolCall(mapped, input).find(
+    (skill) => !isPiSkillAuthorized(skill, handlers),
+  );
+  if (deniedSkill) {
     return {
       allowed: false,
-      reason: `SKILL_NOT_AUTHORIZED: Skill not authorized for agent: ${requestedSkill}`,
+      reason: formatSkillNotAuthorizedReason(deniedSkill, handlers.agentId),
     };
   }
 
@@ -378,7 +385,15 @@ function isPiSkillAuthorized(skillName: string, handlers: PiToolPermissionHandle
   if (!handlers.allowedSkills || handlers.allowedSkills.length === 0) {
     return true;
   }
-  return isSkillNameAuthorizedOnAllowlist(skillName, handlers.allowedSkills);
+  if (isSkillNameAuthorizedOnAllowlist(skillName, handlers.allowedSkills)) {
+    return true;
+  }
+  if (!handlers.agentId) {
+    return false;
+  }
+  return isSkillAuthorizedForAgent(handlers.agentId, skillName, {
+    capabilities: handlers.capabilities,
+  });
 }
 
 export async function resolvePiExtensionUiResponse(
@@ -423,7 +438,12 @@ export function createPiApprovalHandler(hostServices: RuntimeHostServices): Runt
   return async (request) => authorizePiHostApproval(hostServices, request);
 }
 
-export function materializePiPermissionExtensionFile(directory = join(tmpdir(), "ravi-pi-hooks")): string {
+/** Durable hook dir. `/tmp/ravi-pi-hooks` is cleaned by tmpwatch and breaks respawn. */
+export function resolvePiPermissionExtensionDirectory(env: NodeJS.ProcessEnv = process.env): string {
+  return join(getRaviStateDir(env), "pi-hooks");
+}
+
+export function materializePiPermissionExtensionFile(directory = resolvePiPermissionExtensionDirectory()): string {
   mkdirSync(directory, { recursive: true });
   const path = join(directory, PI_PERMISSION_EXTENSION_FILENAME);
   writeFileSync(path, PI_RAVI_PERMISSION_EXTENSION_SOURCE, "utf8");

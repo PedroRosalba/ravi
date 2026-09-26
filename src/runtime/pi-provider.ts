@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { logger } from "../utils/logger.js";
 import type {
   RuntimeControlOperation,
   RuntimeControlRequest,
@@ -41,6 +42,7 @@ import {
   resolvePiExtensionUiResponse,
 } from "./pi-tool-permissions.js";
 
+const log = logger.child("runtime:pi");
 const DEFAULT_PI_COMMAND = "pi";
 const DEFAULT_PI_RESPONSE_TIMEOUT_MS = 30_000;
 const PI_INTERRUPT_GRACE_MS = 1_000;
@@ -117,6 +119,14 @@ export interface PiRpcStartInput {
   thinkingLevel?: PiThinkingLevel;
   systemPromptAppend?: string;
   extensionPath?: string;
+  /**
+   * Pass `--no-skills` so Pi does not announce skills it discovers on disk
+   * (`~/.agents/skills`, `~/.pi/agent/skills`, project `.agents/skills`).
+   * Set whenever Ravi enforces a skill allowlist: Ravi's filtered catalog in
+   * the appended system prompt is then the only advertisement, so the model is
+   * never told about skills the permission gate would deny.
+   */
+  disableNativeSkillDiscovery?: boolean;
 }
 
 export interface PiRpcCommand extends Record<string, unknown> {
@@ -173,6 +183,7 @@ interface PiSessionRuntimeState {
   permissionHooksReady: boolean;
   currentState?: PiRpcSessionState;
   started: boolean;
+  requestedModel?: string;
   transport?: PiRpcTransport;
   pendingSteers: string[];
 }
@@ -289,6 +300,7 @@ export function createPiRuntimeProvider(options: CreatePiRuntimeProviderOptions 
         ignoreStaleTerminals: false,
         permissionHooksReady: false,
         started: false,
+        requestedModel: input.model,
         transport: initialTransport,
         pendingSteers: [],
       };
@@ -326,14 +338,13 @@ export function createPiRuntimeProvider(options: CreatePiRuntimeProviderOptions 
           if (input.modelBroker && model !== input.modelBroker.model) {
             throw new Error("Changing models requires resolving a matching model-broker route.");
           }
-          const parsed = parsePiModelSelector(model);
-          await sendPiCommand(requireTransport(), {
-            type: "set_model",
-            provider: input.modelBroker
-              ? resolveRuntimeModelBrokerLocalProviderId(input.modelBroker)
-              : (parsed.provider ?? defaultPiModelProvider()),
-            modelId: parsed.modelId ?? model,
-          });
+          state.requestedModel = model;
+          input.model = model;
+          request.model = model;
+          if (!state.started) {
+            return;
+          }
+          await applyPiSetModel(requireTransport(), state, model, input.modelBroker, { verify: true });
         },
         control: (request) => controlPiRuntime(state, request, input.modelBroker),
       };
@@ -611,8 +622,10 @@ export function buildPiManagedRuntimeEnvSignature(env: NodeJS.ProcessEnv): strin
   );
 }
 
-function piManagedRuntimeEnvChanged(current: NodeJS.ProcessEnv, next: NodeJS.ProcessEnv): boolean {
-  return buildPiManagedRuntimeEnvSignature(current) !== buildPiManagedRuntimeEnvSignature(next);
+export function listPiManagedRuntimeEnvKeys(env: NodeJS.ProcessEnv): string[] {
+  return Object.keys(env)
+    .filter((key) => key.startsWith("RAVI_"))
+    .sort((left, right) => left.localeCompare(right));
 }
 
 async function* runPiTurns(
@@ -625,25 +638,24 @@ async function* runPiTurns(
     permissionHooksReadyTimeoutMs: number;
   },
 ): AsyncGenerator<RuntimeEvent> {
-  const modelSelector = parsePiModelSelector(input.model);
   const thinkingLevel = toPiThinkingLevel(input.effort, input.thinking);
   const abortSignal = input.abortController.signal;
   const startInput: PiRpcStartInput = {
     cwd: input.cwd,
     env: resolvePiRpcProcessEnv(input),
-    provider: input.modelBroker ? resolveRuntimeModelBrokerLocalProviderId(input.modelBroker) : modelSelector.provider,
-    model: modelSelector.modelId,
-    modelArg: input.modelBroker
-      ? `${resolveRuntimeModelBrokerLocalProviderId(input.modelBroker)}/${resolveRuntimeModelBrokerProviderModel(input.modelBroker)}`
-      : modelSelector.modelArg,
     thinkingLevel,
     systemPromptAppend: input.systemPromptAppend,
     extensionPath: materializePiPermissionExtensionFile(),
+    ...(input.allowedSkills && input.allowedSkills.length > 0 ? { disableNativeSkillDiscovery: true } : {}),
   };
+  refreshPiStartInputModel(startInput, state.requestedModel ?? input.model, input.modelBroker);
   let transport = state.transport ?? createTransport();
   state.transport = transport;
   let eventIterator = transport.events[Symbol.asyncIterator]();
   let pendingStartupEvents: PiRpcEvent[] = [];
+  // Last env that actually reached a live Pi process. Do not update this until
+  // start/handshake succeeds — a failed respawn must retry the new key.
+  let appliedManagedEnvSignature: string | undefined;
 
   const takeNextPiEvent = async (): Promise<IteratorResult<PiRpcEvent>> => {
     if (pendingStartupEvents.length > 0) {
@@ -652,31 +664,32 @@ async function* runPiTurns(
     return eventIterator.next();
   };
 
-  // The host rotates `input.env` (RAVI_CONTEXT_KEY and related managed Ravi
-  // keys) before yielding each turn. Snapshot at start/restart so the long-lived
-  // Pi process never keeps a revoked context key.
-  const applyCurrentPiRpcSpawnEnv = (): boolean => {
+  const snapshotDesiredPiRpcSpawn = (): NodeJS.ProcessEnv => {
     const nextEnv = resolvePiRpcProcessEnv(input);
-    const changed = piManagedRuntimeEnvChanged(startInput.env, nextEnv);
     startInput.env = nextEnv;
-    return changed;
+    // Rewrite on every spawn. A stale `/tmp` (or deleted state-dir) path is why
+    // Pi session-launcher exits 1 after Codex-style env respawn.
+    startInput.extensionPath = materializePiPermissionExtensionFile();
+    return nextEnv;
   };
 
+  const desiredManagedEnvSignature = (): string => buildPiManagedRuntimeEnvSignature(resolvePiRpcProcessEnv(input));
+
   const startTransport = async () => {
-    applyCurrentPiRpcSpawnEnv();
-    await transport.start(startInput);
-    state.started = true;
-    state.permissionHooksReady = false;
-    eventIterator = transport.events[Symbol.asyncIterator]();
-    await resumePiSessionIfNeeded(transport, input, state.currentState);
-    state.currentState = await readPiState(transport, state.currentState);
-    await configurePiQueueModes(transport, state);
-    await flushPendingPiSteers(transport, state);
-    if (!transport.writeMessage) {
-      await transport.close().catch(() => {});
-      throw new PiPermissionBridgeError("Pi RPC transport cannot answer extension UI permission requests");
-    }
+    const nextEnv = snapshotDesiredPiRpcSpawn();
+    refreshPiStartInputModel(startInput, state.requestedModel ?? input.model, input.modelBroker);
     try {
+      await transport.start(startInput);
+      state.permissionHooksReady = false;
+      eventIterator = transport.events[Symbol.asyncIterator]();
+      const resumed = await resumePiSessionIfNeeded(transport, input, state.currentState);
+      state.currentState = await readPiState(transport, state.currentState);
+      await applyPiRequestedModelAfterStart(transport, state, input.modelBroker, { force: resumed });
+      await configurePiQueueModes(transport, state);
+      await flushPendingPiSteers(transport, state);
+      if (!transport.writeMessage) {
+        throw new PiPermissionBridgeError("Pi RPC transport cannot answer extension UI permission requests");
+      }
       pendingStartupEvents = await awaitPiPermissionHooksReady(
         transport,
         eventIterator,
@@ -688,6 +701,8 @@ async function* runPiTurns(
       await transport.close().catch(() => {});
       throw error;
     }
+    appliedManagedEnvSignature = buildPiManagedRuntimeEnvSignature(nextEnv);
+    state.started = true;
   };
 
   const restartTransport = async (): Promise<boolean> => {
@@ -697,6 +712,28 @@ async function* runPiTurns(
     await transport.close().catch(() => {});
     transport = createTransport();
     state.transport = transport;
+    await startTransport();
+    return true;
+  };
+
+  // Codex-parity ensure: compare against the last *successful* spawn, rematerialize
+  // hooks, and respawn when managed RAVI_* (including RAVI_CONTEXT_KEY) changed.
+  const ensurePiRpcReady = async (): Promise<boolean> => {
+    const nextSignature = desiredManagedEnvSignature();
+    const envChanged = appliedManagedEnvSignature !== undefined && appliedManagedEnvSignature !== nextSignature;
+    if (state.started && !envChanged) {
+      return false;
+    }
+    if (state.started && envChanged) {
+      log.info("pi env changed; respawning", {
+        envKeys: listPiManagedRuntimeEnvKeys(resolvePiRpcProcessEnv(input)),
+      });
+      const restarted = await restartTransport();
+      if (!restarted) {
+        throw new Error("Pi RPC transport cannot respawn after Ravi runtime env changed");
+      }
+      return true;
+    }
     await startTransport();
     return true;
   };
@@ -717,24 +754,28 @@ async function* runPiTurns(
       // Start (or respawn) after the host has applied this turn's runtime env.
       // Eager spawn at session open would bake the pre-rotation context key,
       // which refreshRuntimeRequestContextForTurn then revokes.
-      if (!state.started) {
-        try {
-          await startTransport();
-        } catch (error) {
-          if (!isPiPermissionBridgeError(error)) {
-            throw error;
-          }
-          yield {
-            type: "turn.failed",
-            error: error.message,
-            recoverable: true,
-            failureKind: "transport",
-            rawEvent: { type: "permission.bridge_unavailable" },
-          };
+      try {
+        await ensurePiRpcReady();
+      } catch (error) {
+        const firstStart = !state.started;
+        if (!isPiPermissionBridgeError(error) && firstStart) {
+          throw error;
+        }
+        yield {
+          type: "turn.failed",
+          error: error instanceof Error ? error.message : String(error),
+          recoverable: true,
+          failureKind: "transport",
+          rawEvent: isPiPermissionBridgeError(error)
+            ? { type: "permission.bridge_unavailable" }
+            : { type: "transport.respawn_failed" },
+        };
+        // First start without a live bridge cannot recover in-process.
+        // A failed env-respawn must not stick the revoked key: retry next prompt.
+        if (firstStart) {
           return;
         }
-      } else if (applyCurrentPiRpcSpawnEnv()) {
-        await restartTransport();
+        continue;
       }
 
       const terminalTracker = createRuntimeTerminalEventTracker();
@@ -1156,16 +1197,26 @@ async function controlPiRuntime(
             buildState(),
           );
         }
-        const parsed = parsePiModelSelector(model);
+        state.requestedModel = model;
+        if (!state.started) {
+          return okControl(
+            request,
+            {
+              type: "response",
+              command: "set_model",
+              success: true,
+              queued: true,
+              data: {
+                queued: true,
+                reason: "provider_starting",
+              },
+            },
+            buildState(),
+          );
+        }
         return okControl(
           request,
-          await sendPiCommand(transport, {
-            type: "set_model",
-            provider: modelBroker
-              ? resolveRuntimeModelBrokerLocalProviderId(modelBroker)
-              : (parsed.provider ?? defaultPiModelProvider()),
-            modelId: parsed.modelId ?? model,
-          }),
+          await sendPiCommand(transport, resolvePiSetModelCommand(model, modelBroker)),
           buildState(),
         );
       }
@@ -1239,7 +1290,7 @@ async function resumePiSessionIfNeeded(
   transport: PiRpcTransport,
   input: RuntimeStartRequest,
   currentState?: PiRpcSessionState,
-): Promise<void> {
+): Promise<boolean> {
   const sessionFile = firstString(
     currentState?.sessionFile,
     input.resumeSession?.params?.sessionFile,
@@ -1248,9 +1299,10 @@ async function resumePiSessionIfNeeded(
     input.resume,
   );
   if (!sessionFile) {
-    return;
+    return false;
   }
   await sendPiCommand(transport, { type: "switch_session", sessionPath: sessionFile });
+  return true;
 }
 
 async function readPiState(
@@ -1294,6 +1346,101 @@ async function sendPiCommand(transport: PiRpcTransport, command: PiRpcCommand): 
     throw new Error(response.error ?? `Pi RPC command ${command.type} failed`);
   }
   return response;
+}
+
+function resolvePiSetModelCommand(
+  model: string,
+  modelBroker?: RuntimeStartRequest["modelBroker"],
+): { type: "set_model"; provider: string; modelId: string } {
+  const parsed = parsePiModelSelector(model);
+  return {
+    type: "set_model",
+    provider: modelBroker
+      ? resolveRuntimeModelBrokerLocalProviderId(modelBroker)
+      : (parsed.provider ?? defaultPiModelProvider()),
+    modelId: modelBroker ? resolveRuntimeModelBrokerProviderModel(modelBroker) : (parsed.modelId ?? model),
+  };
+}
+
+function refreshPiStartInputModel(
+  startInput: PiRpcStartInput,
+  requestedModel: string | undefined,
+  modelBroker?: RuntimeStartRequest["modelBroker"],
+): void {
+  const parsed = parsePiModelSelector(requestedModel);
+  startInput.provider = modelBroker ? resolveRuntimeModelBrokerLocalProviderId(modelBroker) : parsed.provider;
+  startInput.model = parsed.modelId;
+  startInput.modelArg = modelBroker
+    ? `${resolveRuntimeModelBrokerLocalProviderId(modelBroker)}/${resolveRuntimeModelBrokerProviderModel(modelBroker)}`
+    : parsed.modelArg;
+}
+
+function piSessionReportedModel(state?: PiRpcSessionState): { provider?: string; id: string } | null {
+  const model = isRecord(state?.model) ? state.model : undefined;
+  const id = firstString(model?.id, model?.name);
+  if (!id) {
+    return null;
+  }
+  return {
+    ...(firstString(model?.provider) ? { provider: firstString(model?.provider) } : {}),
+    id,
+  };
+}
+
+function piSessionMatchesRequestedModel(
+  state: PiRpcSessionState | undefined,
+  command: { provider: string; modelId: string },
+): boolean {
+  const reported = piSessionReportedModel(state);
+  if (!reported) {
+    return false;
+  }
+  const idMatches =
+    reported.id === command.modelId ||
+    reported.id === `${command.provider}/${command.modelId}` ||
+    reported.id.endsWith(`/${command.modelId}`);
+  const providerMatches = !reported.provider || reported.provider === command.provider;
+  return idMatches && providerMatches;
+}
+
+async function applyPiSetModel(
+  transport: PiRpcTransport,
+  state: PiSessionRuntimeState,
+  model: string,
+  modelBroker: RuntimeStartRequest["modelBroker"] | undefined,
+  options: { verify: boolean },
+): Promise<void> {
+  const command = resolvePiSetModelCommand(model, modelBroker);
+  await sendPiCommand(transport, command);
+  state.currentState = await readPiState(transport, state.currentState);
+  if (
+    options.verify &&
+    piSessionReportedModel(state.currentState) &&
+    !piSessionMatchesRequestedModel(state.currentState, command)
+  ) {
+    throw new Error(`Pi set_model did not apply ${model}`);
+  }
+}
+
+async function applyPiRequestedModelAfterStart(
+  transport: PiRpcTransport,
+  state: PiSessionRuntimeState,
+  modelBroker: RuntimeStartRequest["modelBroker"] | undefined,
+  options: { force: boolean },
+): Promise<void> {
+  const requested = state.requestedModel?.trim();
+  if (!requested) {
+    return;
+  }
+  const command = resolvePiSetModelCommand(requested, modelBroker);
+  const reported = piSessionReportedModel(state.currentState);
+  if (!options.force && !reported) {
+    return;
+  }
+  if (reported && piSessionMatchesRequestedModel(state.currentState, command)) {
+    return;
+  }
+  await applyPiSetModel(transport, state, requested, modelBroker, { verify: Boolean(reported) });
 }
 
 function sendPiPrompt(transport: PiRpcTransport, prompt: string): Promise<PiRpcResponse> {
@@ -1437,6 +1584,9 @@ export function buildPiRpcProcessArgs(input: PiRpcStartInput, commandArgs: strin
   if (input.extensionPath) {
     args.push("--extension", input.extensionPath);
   }
+  if (input.disableNativeSkillDiscovery) {
+    args.push("--no-skills");
+  }
 
   return args;
 }
@@ -1513,6 +1663,7 @@ async function answerPiExtensionUiRequest(
     canUseTool: input.canUseTool,
     approveRuntimeRequest: input.approveRuntimeRequest,
     allowedSkills: input.allowedSkills,
+    agentId: input.agentId,
   });
   if (!response) {
     return;

@@ -253,6 +253,51 @@ describe("runtime delivery queue", () => {
     });
   });
 
+  it("queues behind a short tool and interrupts behind a long one", () => {
+    const shortTool = makeStreamingSession({
+      turnActive: true,
+      toolRunning: true,
+      currentToolSafety: "unsafe",
+      currentToolName: "bash",
+      toolStartTime: Date.now() - 2_000,
+    });
+    // 2s: enfileirar é melhor, porque a tool termina e a mensagem entra em seguida.
+    expect(shouldInterruptRuntimeForIncoming("dev", shortTool, "after_tool")).toEqual({
+      interrupt: false,
+      reason: "tool",
+    });
+
+    const longTool = makeStreamingSession({
+      turnActive: true,
+      toolRunning: true,
+      currentToolSafety: "unsafe",
+      currentToolName: "bash",
+      toolStartTime: Date.now() - 30_000,
+    });
+    // 30s e unsafe: ainda assim interrompe. A mensagem da pessoa não fica presa
+    // atrás de um `sleep 100`.
+    expect(shouldInterruptRuntimeForIncoming("dev", longTool, "after_tool")).toEqual({
+      interrupt: true,
+      reason: "long_running_tool",
+    });
+  });
+
+  it("lets an explicit interrupt win over a running tool", () => {
+    const session = makeStreamingSession({
+      turnActive: true,
+      toolRunning: true,
+      currentToolSafety: "unsafe",
+      currentToolName: "bash",
+      toolStartTime: Date.now() - 500,
+    });
+
+    // 500ms de tool: curto demais para o limiar, mas o pedido é explícito.
+    expect(shouldInterruptRuntimeForIncoming("dev", session, "immediate_interrupt")).toEqual({
+      interrupt: true,
+      reason: "explicit_interrupt",
+    });
+  });
+
   it("keeps every interrupt lane closed while a provider tool callback is being delivered", () => {
     const session = makeStreamingSession({
       turnActive: true,
@@ -302,6 +347,46 @@ describe("runtime delivery queue", () => {
       message: { content: "stop and use the new plan" },
     });
     expect(session.pendingMessages).toEqual([steering]);
+
+    session.done = true;
+    session.onTurnComplete?.();
+    await generator.return(undefined);
+  });
+
+  it("wakes the generator and drains after_tool FIFO after a fatal tool barrier clears", async () => {
+    const active = createQueuedRuntimeUserMessage({ prompt: "run bash", deliveryBarrier: "after_tool" });
+    const first = createQueuedRuntimeUserMessage({ prompt: "first follow-up", deliveryBarrier: "after_tool" });
+    const second = createQueuedRuntimeUserMessage({ prompt: "second follow-up", deliveryBarrier: "after_tool" });
+    const session = makeStreamingSession({
+      pendingMessages: [active],
+    });
+    const generator = createRuntimeMessageGenerator({
+      sessionName: "dev",
+      session,
+      stashedMessages: new Map(),
+    });
+
+    expect((await generator.next()).value).toMatchObject({
+      message: { content: "run bash" },
+    });
+
+    session.toolRunning = true;
+    session.pendingMessages.push(first, second);
+    expect(canReleaseRuntimeDeliveryBarrier("dev", session, "after_tool")).toBe(false);
+    expect(getDeliverableRuntimeMessages("dev", session)).toEqual([]);
+
+    session.toolRunning = false;
+    session.turnActive = false;
+    expect(canReleaseRuntimeDeliveryBarrier("dev", session, "after_tool")).toBe(true);
+    session.onTurnComplete?.();
+
+    expect((await generator.next()).value).toMatchObject({
+      message: { content: "first follow-up\n\nsecond follow-up" },
+    });
+    expect(session.pendingMessages.map((message) => message.message.content)).toEqual([
+      "first follow-up",
+      "second follow-up",
+    ]);
 
     session.done = true;
     session.onTurnComplete?.();

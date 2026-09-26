@@ -32,6 +32,11 @@ import { emitCliAuditEvent } from "./audit.js";
 import { getContext, runWithContext } from "./context.js";
 import { omitRenderingFlags } from "./registry-snapshot.js";
 import {
+  codexHookTransportFailure,
+  dispatchRemoteCodexBashHook,
+  isCodexBashHookCommand,
+} from "./codex-hook-transport.js";
+import {
   dispatchRemote,
   resolveRemoteGatewayConfig,
   remoteGatewayErrorToContractError,
@@ -228,6 +233,10 @@ function registerCommand(
     try {
       remoteConfig = await resolveRemoteGatewayConfig(process.env, commandOperation(groupName, cmdMeta.name));
     } catch (error) {
+      if (isCodexBashHookCommand(groupName, cmdMeta.name)) {
+        console.log(JSON.stringify(codexHookTransportFailure("invalid gateway configuration")));
+        return;
+      }
       if (!(error instanceof ContractError)) throw error;
       renderContractError(error, input.json === true);
       process.exit(error.exitCode);
@@ -237,6 +246,10 @@ function registerCommand(
     // local authorization first can reject a valid remote-only credential or
     // authorize a different local default principal.
     if (remoteConfig) {
+      if (isCodexBashHookCommand(groupName, cmdMeta.name)) {
+        console.log(JSON.stringify(await dispatchRemoteCodexBashHook(remoteConfig, input)));
+        return;
+      }
       await dispatchRemoteCommand({
         config: remoteConfig,
         groupName,
@@ -394,6 +407,7 @@ async function dispatchRemoteCommand(input: DispatchRemoteCommandInput): Promise
       body: omitRenderingFlags(input.input),
       config: input.config,
       contextKey,
+      cwd: process.cwd(),
     });
   } catch {
     const error = new ContractError(op, "SERVER_UNAVAILABLE", "Remote gateway request failed.", 1, {

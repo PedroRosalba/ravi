@@ -3,15 +3,27 @@
  *
  * Connects to external NATS and omni services (managed by PM2/omni CLI).
  * No child process spawning — all infrastructure is external.
+ *
+ * This process must never block on stdin. Session dispatch, delivery, and the
+ * host CLI gateway share the daemon event loop. Under PM2, fd 0 is often an
+ * idle socketpair; a synchronous `read(0)` wedges every agent and CLI call.
+ * Interactive stdin consumers belong in a real TTY CLI, not this process.
+ *
+ * #539 stopped audit TTY probes from instantiating `process.stdin`. Bun can
+ * still read fd 0 without that getter, so boot also replaces fd 0 with
+ * `/dev/null` (`maybeNeuterDaemonStdin`). PM2 registration launches through
+ * the inert-stdin wrapper so `ravi update --next` keeps the same story.
  */
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { maybeNeuterDaemonStdin } from "./daemon-stdin.js";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { RaviBot } from "./bot.js";
 import { createGateway } from "./gateway.js";
-import { OmniSender, OmniConsumer } from "./omni/index.js";
+import { OmniSender, OmniConsumer, createStubOmniConsumer } from "./omni/index.js";
+
 import { loadConfig } from "./utils/config.js";
 import { connectNats, closeNats } from "./nats.js";
 import { configStore } from "./config-store.js";
@@ -29,6 +41,9 @@ import { getMainSession, getSession, getSessionByName } from "./router/sessions.
 import { closeAllRaviDbs } from "./db/close-all.js";
 import { startHeartbeatRunner, stopHeartbeatRunner } from "./heartbeat/index.js";
 import { startCronRunner, stopCronRunner } from "./cron/index.js";
+import { startLocalWatchRunner, stopLocalWatchRunner } from "./watch/local-runner.js";
+import { startGhFollowMaintenanceRunner, stopGhFollowMaintenanceRunner } from "./hooks/gh-follow-sweep.js";
+import { startJobsRunner, stopJobsRunner } from "./jobs/index.js";
 import { startSessionFollowupRunner, stopSessionFollowupRunner } from "./session-followups/index.js";
 import { startTriggerRunner, stopTriggerRunner } from "./triggers/index.js";
 import { startEphemeralRunner, stopEphemeralRunner } from "./ephemeral/index.js";
@@ -43,10 +58,7 @@ import { ensureRaviEventsStream } from "./events/audit-stream.js";
 import { startWebhookHttpServerFromEnv, type WebhookHttpServerHandle } from "./webhooks/http-server.js";
 import { startHostCliGateway, type HostCliGatewayHandle } from "./cli/host-cli-gateway.js";
 import type { MessageTarget } from "./runtime/message-types.js";
-import {
-  buildDaemonRestartResumePrompt,
-  resolveCrashRecoveryRestartResumeDecision,
-} from "./runtime/daemon-restart-resume.js";
+import { deliverDaemonRestartSessionEvent } from "./runtime/daemon-restart-resume.js";
 import { dbHasActiveAssignedTaskForSession } from "./tasks/task-db.js";
 import { startWorkObjectNatsService, type WorkObjectNatsServiceHandle } from "./work-objects/index.js";
 import { createChannelBackendEgressRequester } from "./channels/backend-egress.js";
@@ -244,6 +256,9 @@ async function shutdown(signal: string, exitCode = 0) {
     await stopHeartbeatRunner();
     await stopCronRunner();
     await stopSessionFollowupRunner();
+    await stopLocalWatchRunner();
+    await stopGhFollowMaintenanceRunner();
+    await stopJobsRunner();
     await stopTaskCheckpointRunner();
     await releaseLeadership("runners");
 
@@ -303,6 +318,8 @@ function restartAfterFatalRuntimeError(error: Error): void {
 }
 
 export async function startDaemon() {
+  maybeNeuterDaemonStdin();
+
   // Step 1: Connect to NATS (with retry for PM2 parallel startup)
   const natsUrl = process.env.NATS_URL || "nats://127.0.0.1:4222";
   log.info("Connecting to NATS...", { natsUrl });
@@ -369,7 +386,7 @@ export async function startDaemon() {
     // No omni — create a stub gateway that handles internal routing only
     log.warn("Creating gateway without omni — channel delivery will fail");
     const stubSender = createStubSender();
-    const stubConsumer = createStubConsumer();
+    const stubConsumer = createStubOmniConsumer();
     gateway = createGateway({
       logLevel: config.logLevel,
       omniSender: stubSender,
@@ -390,6 +407,12 @@ export async function startDaemon() {
     log.info("Heartbeat runner started (leader)");
     await startCronRunner();
     log.info("Cron runner started (leader)");
+    await startLocalWatchRunner();
+    log.info("Local watch runner started (leader)");
+    await startGhFollowMaintenanceRunner();
+    log.info("gh follow maintenance runner started (leader)");
+    await startJobsRunner();
+    log.info("Jobs runner started (leader)");
     await startSessionFollowupRunner();
     log.info("Session followup runner started (leader)");
     await startTaskCheckpointRunner({
@@ -403,6 +426,9 @@ export async function startDaemon() {
       await startHeartbeatRunner();
       await startCronRunner();
       await startSessionFollowupRunner();
+      await startLocalWatchRunner();
+      await startGhFollowMaintenanceRunner();
+      await startJobsRunner();
       await startTaskCheckpointRunner({
         canPublishSessionPrompt: (sessionName) => bot?.canAcceptRuntimePrompt(sessionName) ?? true,
       });
@@ -491,18 +517,6 @@ function createStubSender(): OmniSender {
 }
 
 /**
- * Stub OmniConsumer for when omni is not configured.
- */
-function createStubConsumer(): OmniConsumer {
-  return {
-    start: async () => {},
-    stop: async () => {},
-    getActiveTarget: () => undefined,
-    clearActiveTarget: () => {},
-  } as unknown as OmniConsumer;
-}
-
-/**
  * Check if there's a restart reason file and notify the originating session.
  */
 async function notifyRestartReason() {
@@ -526,6 +540,12 @@ async function notifyRestartReason() {
   });
 
   const callerSessionName = restartInfo.sessionName ?? resolveFallbackRestartSessionName();
+  log.info("Delivering daemon restart events", {
+    restartEpoch: restartInfo.restartEpoch,
+    restartReason: restartInfo.reason,
+    callerSessionName: callerSessionName ?? null,
+    eligibleSnapshots: snapshots.length,
+  });
   const eligibleCallerSnapshot = callerSessionName
     ? findRestartSnapshotForSession(snapshots, callerSessionName)
     : undefined;
@@ -578,92 +598,25 @@ async function publishRestartResumeEvent(
     snapshotEligible?: boolean;
   } = { kind: "active" },
 ): Promise<boolean> {
-  const sessionKey = options.snapshot?.sessionKey ?? resolveRestartSessionKey(sessionName);
-  if (dbHasDaemonRestartResumeDelivery(restartInfo.restartEpoch, sessionKey)) {
-    log.info("Restart resume event already delivered", {
-      restartEpoch: restartInfo.restartEpoch,
-      sessionKey,
-      sessionName,
-      kind: options.kind,
-    });
-    return false;
-  }
-
-  const crashRecoveryResumeDecision = resolveCrashRecoveryRestartResumeDecision({
-    metadata: options.snapshot?.metadata,
-    snapshotPresent: Boolean(options.snapshot),
-    snapshotEligible: options.snapshotEligible ?? true,
-  });
-  const crashRecoveryResumeMode = crashRecoveryResumeDecision.mode;
-  if (!crashRecoveryResumeDecision.publish) {
-    log.info("Skipping restart resume for a crash-recovery-fenced snapshot", {
-      restartEpoch: restartInfo.restartEpoch,
-      sessionName,
-      sessionKey,
-      kind: options.kind,
-      reason: crashRecoveryResumeDecision.reason,
-    });
-    dbMarkDaemonRestartResumeDelivered({
-      restartEpoch: restartInfo.restartEpoch,
-      sessionKey,
-      sessionName,
-    });
-    return false;
-  }
-
-  if (shouldSkipRestartResumeForTerminalTaskSession(sessionName, options.snapshot)) {
-    log.info("Skipping restart resume event for terminal task session", {
-      restartEpoch: restartInfo.restartEpoch,
-      sessionName,
-      sessionKey,
-      kind: options.kind,
-      taskBarrierTaskId: getRestartSnapshotTaskBarrierTaskId(options.snapshot) ?? null,
-    });
-    dbMarkDaemonRestartResumeDelivered({
-      restartEpoch: restartInfo.restartEpoch,
-      sessionKey,
-      sessionName,
-    });
-    return false;
-  }
-
-  const payload = buildDaemonRestartResumePrompt({
-    restartEpoch: restartInfo.restartEpoch,
-    reason: restartInfo.reason,
-    sessionKey,
-    mode: crashRecoveryResumeMode,
-    ...(options.snapshot?.runtimeProvider ? { runtimeProvider: options.snapshot.runtimeProvider } : {}),
-  });
-  if (!payload) {
-    return false;
-  }
-  const restartSource = resolveRestartResumeSource(options.snapshot);
-  if (restartSource) {
-    payload.source = restartSource;
-  }
-
-  try {
-    log.info("Publishing restart resume event", {
+  const outcome = await deliverDaemonRestartSessionEvent(
+    {
       restartEpoch: restartInfo.restartEpoch,
       reason: restartInfo.reason,
       sessionName,
-      sessionKey,
+      sessionKey: options.snapshot?.sessionKey ?? resolveRestartSessionKey(sessionName),
       kind: options.kind,
-      sourceActorType: restartSource?.actorType ?? null,
-      sourceContactId: restartSource?.contactId ?? null,
-    });
-    await publishSessionPrompt(sessionName, payload);
-    dbMarkDaemonRestartResumeDelivered({
-      restartEpoch: restartInfo.restartEpoch,
-      sessionKey,
-      sessionName,
-    });
-    log.info("Restart resume event published", { sessionName, sessionKey, kind: options.kind });
-    return true;
-  } catch (err) {
-    log.error("Failed to publish restart resume event", { sessionName, sessionKey, error: err });
-    return false;
-  }
+      snapshot: options.snapshot,
+      snapshotEligible: options.snapshotEligible,
+    },
+    {
+      hasDelivery: dbHasDaemonRestartResumeDelivery,
+      markDelivered: dbMarkDaemonRestartResumeDelivered,
+      publish: publishSessionPrompt,
+      isTerminalTaskSession: shouldSkipRestartResumeForTerminalTaskSession,
+      resolveSource: resolveRestartResumeSource,
+    },
+  );
+  return outcome.status === "delivered";
 }
 
 function resolveRestartResumeSource(snapshot?: DaemonRestartSessionSnapshotRecord): MessageTarget | undefined {

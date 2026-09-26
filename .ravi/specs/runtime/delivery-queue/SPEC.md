@@ -61,6 +61,10 @@ Ravi recognizes these delivery barriers:
 
 The barrier value MUST be stored on the prompt atom and traceable through publish, queue, release, interrupt, and provider handoff events.
 
+Every canonical barrier value MUST survive normalization and strict parsing
+unchanged. A producer-normalized `immediate_interrupt` MUST remain valid at
+the publication boundary, including when produced by `--immediate` or `p0`.
+
 ## Default Classification
 
 Explicit caller intent wins. If a producer supplies a valid `deliveryBarrier`, the runtime MUST honor that value unless doing so would violate a safety barrier such as startup, compaction, or unsafe tool execution.
@@ -91,6 +95,8 @@ Every operator-facing producer that can inject an external session event SHOULD 
 CLI commands MAY expose these as `--barrier followup`, `--barrier steer`, `--steer`, `--barrier immediate_interrupt`, `--barrier p0`, or `--immediate`. The output JSON and session trace MUST show the lane source: explicit caller choice, producer default, or runtime inference.
 
 Immediate delivery is a request, not permission to break safety. The runtime MUST still avoid interrupting startup, compaction, and unsafe tool execution.
+
+An explicit session abort (reset, delete, kill, `ravi.session.abort`) is not a delivery lane. It cancels the running tool through the provider's native interrupt and ends the turn; it waits only while a completed tool result is still being written back to the provider.
 
 ## Reply Surface Identity
 
@@ -128,6 +134,14 @@ dispatcher MUST immediately re-evaluate queued `after_tool` and
 `immediate_interrupt` atoms. The callback write is an atomic safety barrier:
 even the immediate lane MUST wait for its delivery acknowledgement. Releasing a
 tool barrier MUST NOT depend on another inbound message arriving.
+
+A tool result that proves a fatal host-side process death (SIGKILL, exit 137,
+or an equivalent fatal signal) MUST close the active turn with a terminal
+`turn.failed` or equivalent abort. The runtime MUST release `after_tool`, wake
+the generator, and drain queued atoms in FIFO order without waiting for the
+provider stream to close and without requiring a daemon restart. Ordinary
+non-zero tool exits MUST remain non-terminal so the provider can continue the
+turn. `after_response` and `after_task` release rules MUST stay unchanged.
 
 The runtime MAY fold the leading run of compatible human channel steer atoms
 into one physical successor turn. Compatibility requires the same channel
@@ -244,6 +258,7 @@ Each queued, released, batched, bypassed, or interrupted prompt SHOULD include:
 - Operational execute/heartbeat/trigger prompts do not interrupt active task work by default.
 - Human channel messages can still interrupt after safe tool barriers.
 - Human channel messages queued during a tool are reconsidered as soon as its result is delivered to the provider, without requiring another inbound message.
+- A fatal tool result such as SIGKILL/exit 137 produces a turn terminal, releases `after_tool`, and drains the queued lane without a daemon restart.
 - A compatible burst from the same human, channel, and thread is delivered as one chronological steering input using the newest envelope.
 - Bursts are never folded across actors, channels, threads, authority envelopes, Ravi Commands, or replay ownership.
 - A human channel message that interrupts an active turn is the next provider input; the superseded turn is not replayed ahead of it.
@@ -256,7 +271,9 @@ Each queued, released, batched, bypassed, or interrupted prompt SHOULD include:
 ## Validation
 
 - `bun test src/runtime/delivery-queue.test.ts`
+- `bun test src/runtime/fatal-tool-failure.test.ts`
 - `bun test src/runtime/session-dispatcher.test.ts`
+- `bun test src/runtime/session-trace.test.ts -t "SIGKILL/exit 137"`
 - `bun test src/cli/commands/sessions.test.ts`
 - `bun test src/session-trace/channel-trace.test.ts`
 - `bun run build`

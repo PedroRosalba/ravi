@@ -1,4 +1,5 @@
 import { isNetworkIsolationError, type ExecutionPlaneSnapshot } from "../isolation/execution-plane.js";
+import type { PublicValidationIssue } from "../cli/redaction.js";
 
 export const CLOUD_AUTH_ERROR_CODES = [
   "AUTH_REQUIRED",
@@ -15,34 +16,46 @@ export const CLOUD_AUTH_ERROR_CODES = [
   "HOST_UNREACHABLE",
   "CREDENTIALS_INVALID",
   "CLOUD_PUBLISH_NOT_IMPLEMENTED",
+  "CONTACT_REQUIRED",
+  "ACTOR_BINDING_CONFLICT",
 ] as const;
 
 export type CloudAuthErrorCode = (typeof CLOUD_AUTH_ERROR_CODES)[number];
 
 const KNOWN_CODES = new Set<string>(CLOUD_AUTH_ERROR_CODES);
 
+/** Console `/api/cli/link` codes → CLI codes already exposed to agents. */
+const CONSOLE_LINK_ERROR_ALIASES: Record<string, CloudAuthErrorCode> = {
+  CONFLICT: "ACTOR_BINDING_CONFLICT",
+  NOT_MEMBER: "ORG_ACCESS_DENIED",
+  INSTALLATION_ORG_MISMATCH: "ORG_ACCESS_DENIED",
+};
+
 export class CloudAuthError extends Error {
   readonly code: CloudAuthErrorCode;
   readonly status?: number;
+  readonly issues?: PublicValidationIssue[];
   readonly exitCode: number;
 
   constructor(
     code: CloudAuthErrorCode,
     message: string,
-    options: { status?: number; exitCode?: number; cause?: unknown } = {},
+    options: { status?: number; exitCode?: number; cause?: unknown; issues?: PublicValidationIssue[] } = {},
   ) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "CloudAuthError";
     this.code = code;
     this.status = options.status;
+    this.issues = options.issues;
     this.exitCode = options.exitCode ?? defaultExitCode(code);
   }
 
-  toJSON(): { code: CloudAuthErrorCode; message: string; status?: number } {
+  toJSON(): { code: CloudAuthErrorCode; message: string; status?: number; issues?: PublicValidationIssue[] } {
     return {
       code: this.code,
       message: this.message,
       ...(this.status !== undefined ? { status: this.status } : {}),
+      ...(this.issues ? { issues: this.issues } : {}),
     };
   }
 }
@@ -57,7 +70,8 @@ export function normalizeCloudAuthErrorCode(value: unknown, fallback: CloudAuthE
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9_]/g, "_");
-  return KNOWN_CODES.has(normalized) ? (normalized as CloudAuthErrorCode) : fallback;
+  const mapped = CONSOLE_LINK_ERROR_ALIASES[normalized] ?? normalized;
+  return KNOWN_CODES.has(mapped) ? (mapped as CloudAuthErrorCode) : fallback;
 }
 
 export function cloudAuthErrorFromUnknown(error: unknown): CloudAuthError {

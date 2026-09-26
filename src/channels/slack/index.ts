@@ -42,6 +42,8 @@ export {
   resolveSlackCredentialConfigFromEnv,
 } from "./credentials.js";
 export type { SlackCredentialConfig, SlackSecretPayload } from "./credentials.js";
+export { slackInboundReactionFromEnvelope } from "./reactions.js";
+export type { SlackInboundReaction } from "./reactions.js";
 export { SlackGatewayModeService } from "./gateway-mode.js";
 export type { SlackGatewayEnvelopeProcessor, SlackGatewayModeServiceOptions } from "./gateway-mode.js";
 export {
@@ -63,6 +65,13 @@ export {
   slackSenderIdForEvent,
   slackTsToMs,
 } from "./routing.js";
+export {
+  isSlackMessageTs,
+  isSlackPlatformChannelId,
+  normalizeSlackReactionName,
+  resolveSlackApiChannelId,
+  resolveSlackApiTimestamp,
+} from "./chat-action-target.js";
 export {
   SlackAssistantThreadPresence,
   SlackPresenceStack,
@@ -89,6 +98,7 @@ export type {
   SlackFilePayload,
   SlackNormalizedFile,
   SlackNormalizedMessage,
+  SlackReactionItem,
   SlackRootReplyMode,
   SlackRoutingPolicy,
   SlackSocketEnvelope,
@@ -98,6 +108,9 @@ export type {
 } from "./types.js";
 export {
   createSlackNativeChannelDriver,
+  renderSlackBackendOutput,
+  renderSlackContent,
   slackNativeRuntimeHealth,
 } from "./driver.js";
+export { markdownToSlackMrkdwn } from "./mrkdwn.js";
 export type { SlackNativeChannelDriverOptions } from "./driver.js";

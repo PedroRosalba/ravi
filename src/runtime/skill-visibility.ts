@@ -154,6 +154,32 @@ function skillMatchesAllowlist(skill: PluginSkillDescriptor, allowlist: readonly
 
 const MANAGED_SKILL_PREFIXES = ["ravi-system-", "ravi-dev-", "ravi-user-skills-"] as const;
 
+/**
+ * Logical identity shared by every physical alias of a managed skill: the
+ * catalog frontmatter name (`pages`) and the provider-facing plugin aliases
+ * (`ravi-system-pages`, `ravi-user-skills-pages`) all reduce to `pages`.
+ */
+export function logicalSkillKey(name: string): string {
+  const slug = slugifySkillName(name);
+  const prefix = MANAGED_SKILL_PREFIXES.find(
+    (candidate) => slug.startsWith(candidate) && slug.length > candidate.length,
+  );
+  return prefix ? slug.slice(prefix.length) : slug;
+}
+
+/**
+ * Whether two skill identifiers name the same skill: literal, slug, or
+ * plugin-alias equivalence (`pages` ↔ `ravi-system-pages`). Pure string
+ * comparison — safe on hot paths that must not touch the filesystem.
+ */
+export function skillIdentifiersMatch(left: string, right: string): boolean {
+  if (left === right) return true;
+  const leftSlug = slugifySkillName(left);
+  const rightSlug = slugifySkillName(right);
+  if (leftSlug === rightSlug) return true;
+  return logicalSkillKey(leftSlug) === logicalSkillKey(rightSlug);
+}
+
 /** Match provider-native aliases such as `ravi-system-sessions` to the
  * canonical allowlist entry `sessions`. */
 export function skillNameMatchesAllowlist(name: string, allowlist: readonly string[]): boolean {
@@ -360,8 +386,17 @@ export function markLoadedFromSkillGate(
     lastSeenAt: now,
   });
 
+  // Prefer the exact id; otherwise mark the record the provider already
+  // advertises under another alias (`pages` for gate `ravi-system-pages`) so a
+  // single logical skill never ends up split across two records.
+  const matchesExactly = (skill: RuntimeSkillVisibilityRecord) =>
+    skill.id === input.skill || slugifySkillName(skill.id) === loadedSlug;
+  const matchesGateSkill = snapshot.skills.some(matchesExactly)
+    ? matchesExactly
+    : (skill: RuntimeSkillVisibilityRecord) => skillIdentifiersMatch(skill.id, input.skill);
+
   const records = snapshot.skills.map((skill) => {
-    if (skill.id === input.skill || slugifySkillName(skill.id) === loadedSlug) {
+    if (matchesGateSkill(skill)) {
       found = true;
       return loadedRecord(skill);
     }
@@ -417,6 +452,21 @@ export function resetLoadedSkillVisibilitySnapshot(
   return buildSkillVisibilitySnapshot(records, now);
 }
 
+/**
+ * Merge the persisted session snapshot with a provider's freshly announced
+ * catalog (delivered on every `turn.complete`).
+ *
+ * The incoming catalog is authoritative for catalog membership: stored
+ * advertised/declared entries the provider no longer announces are dropped, so
+ * a revoked skill disappears from the session view. It has no authority over
+ * load state. A `loaded` record leaves the vector only through an explicit
+ * reset (compaction, session reset); it MUST survive a per-turn re-announce
+ * even when no incoming entry shares its id: records persisted under the gate
+ * alias (`ravi-system-routes-manager`) before alias equivalence marked the
+ * advertised short id (`routes-manager`), and gates for plugins outside the
+ * managed prefixes, which `skillIdentifiersMatch` cannot relate to the
+ * catalog entry. Spec: runtime/skill-loading.
+ */
 export function mergeSkillVisibilitySnapshots(
   stored: RuntimeSkillVisibilitySnapshot | null | undefined,
   incoming: RuntimeSkillVisibilitySnapshot | null | undefined,
@@ -431,13 +481,22 @@ export function mergeSkillVisibilitySnapshots(
 
   const incomingIds = new Set(incoming.skills.map((skill) => slugifySkillName(skill.id)));
   const retainedStored = incomingIds.size
-    ? stored.skills.filter((skill) => incomingIds.has(slugifySkillName(skill.id)))
+    ? stored.skills.filter((skill) => skill.state === "loaded" || incomingIds.has(slugifySkillName(skill.id)))
     : stored.skills;
 
   return buildSkillVisibilitySnapshot(
     [...retainedStored, ...incoming.skills],
     Math.max(stored.updatedAt ?? 0, incoming.updatedAt ?? 0, now),
   );
+}
+
+/** Skill ids that entered the loaded vector between two snapshots. */
+export function diffLoadedSkills(
+  previous: RuntimeSkillVisibilitySnapshot | null | undefined,
+  next: RuntimeSkillVisibilitySnapshot,
+): string[] {
+  const seen = new Set(previous?.loadedSkills ?? []);
+  return next.loadedSkills.filter((skill) => !seen.has(skill));
 }
 
 export function readSkillVisibilityFromParams(params: Record<string, unknown> | null | undefined) {
@@ -597,43 +656,73 @@ function extractDedicatedSkillShowName(toolName: string | undefined, toolInput: 
 }
 
 /**
- * Detect a skill the tool is trying to load or invoke. Covers dedicated Skill
- * tools, `ravi skills show`, and Read/Edit of `skills/<name>/SKILL.md`.
+ * Detect every skill the tool is trying to load or invoke. Covers dedicated
+ * Skill tools, `ravi skills show`, and Read/Edit of `skills/<name>/SKILL.md`.
+ * Callers must authorize each entry: one authorized skill never vouches for
+ * another referenced by the same call.
  */
-export function extractRequestedSkillFromToolCall(
+export function extractRequestedSkillsFromToolCall(
   toolName: string | undefined,
   toolInput: Record<string, unknown> | undefined,
-): string | null {
+): string[] {
   const dedicated = extractDedicatedSkillShowName(toolName, toolInput);
   if (dedicated) {
-    return dedicated;
+    return [dedicated];
   }
 
+  const skills = new Set<string>();
   const command = extractCommandFromToolInput(toolInput);
   if (command) {
-    const fromCommand = extractRequestedSkillFromCommandLine(command);
-    if (fromCommand) {
-      return fromCommand;
-    }
+    for (const skill of extractRequestedSkillsFromCommandLine(command)) skills.add(skill);
   }
 
-  if (!toolInput) {
-    return null;
-  }
-  const path = firstNonEmptyString(
-    toolInput.path,
-    toolInput.file_path,
-    toolInput.filePath,
-    toolInput.target_file,
-    toolInput.targetFile,
-    toolInput.filename,
-    toolInput.file,
-  );
-  return path ? extractSkillNameFromFilesystemPath(path) : null;
+  const path = toolInput
+    ? firstNonEmptyString(
+        toolInput.path,
+        toolInput.file_path,
+        toolInput.filePath,
+        toolInput.target_file,
+        toolInput.targetFile,
+        toolInput.filename,
+        toolInput.file,
+      )
+    : null;
+  const fromPath = path ? extractSkillNameFromFilesystemPath(path) : null;
+  if (fromPath) skills.add(fromPath);
+  return [...skills];
 }
 
-export function extractRequestedSkillFromCommandLine(command: string): string | null {
-  return extractRaviSkillShowNameFromCommand(command) ?? extractSkillNameFromFilesystemPath(command);
+// `2>&1`-style fd duplication is not a command separator.
+const SHELL_FD_DUPLICATION = /\d*>&\d+/g;
+const SHELL_SEGMENT_SEPARATOR = /\|\||&&|[;&|\r\n]/;
+const SHELL_EXPANSION_OR_REDIRECT = /[`$<>]/;
+const RAVI_SKILLS_SOURCE_COMMAND =
+  /^\s*(?:\.\/)?(?:bin\/ravi|ravi|\/[^\s"'`]+\/bin\/ravi)\s+skills\s+(?:install|list)\s[^\n]*--source\b/;
+
+/**
+ * Every skill a shell line references, scanned per `;`/`&`/`&&`/`||`/`|`/newline
+ * segment and per `SKILL.md` token. A shell line cannot be partially executed,
+ * so the gate stays line-scoped, but it names the exact skill it denies.
+ *
+ * `ravi skills install|list --source <path>` only names a source (the CLI never
+ * prints a skill body), so those paths are not skill loads — unless the segment
+ * also expands or redirects, which could read the file some other way.
+ */
+export function extractRequestedSkillsFromCommandLine(command: string): string[] {
+  const skills = new Set<string>();
+  const add = (skill: string | null) => {
+    if (skill) skills.add(skill);
+  };
+  for (const segment of command.replace(SHELL_FD_DUPLICATION, " ").split(SHELL_SEGMENT_SEPARATOR)) {
+    if (!segment.trim()) continue;
+    add(extractRaviSkillShowNameFromCommand(segment));
+    if (RAVI_SKILLS_SOURCE_COMMAND.test(segment) && !SHELL_EXPANSION_OR_REDIRECT.test(segment)) continue;
+    add(extractSkillNameFromFilesystemPath(segment));
+    for (const token of shellishTokens(segment)) {
+      if (/SKILL\.md/i.test(token)) add(extractSkillNameFromFilesystemPath(token));
+    }
+  }
+  return [...skills];
 }
 
 export function extractSkillNameFromFilesystemPath(value: string): string | null {
@@ -982,15 +1071,18 @@ function isSkillConfidence(value: string): value is RuntimeSkillVisibilityConfid
   return ["observed", "inferred", "declared", "unknown"].includes(value);
 }
 
-function isEvidenceKind(value: string): value is RuntimeSkillVisibilityEvidence["kind"] {
-  return [
-    "provider-event",
-    "tool-call",
-    "sync-manifest",
-    "system-prompt",
-    "control-api",
-    "rpc-state",
-    "plugin-bootstrap",
-    "instruction-source",
-  ].includes(value);
+const EVIDENCE_KINDS: readonly RuntimeSkillVisibilityEvidenceKind[] = [
+  "provider-event",
+  "tool-call",
+  "sync-manifest",
+  "system-prompt",
+  "control-api",
+  "rpc-state",
+  "plugin-bootstrap",
+  "instruction-source",
+  "skill-gate",
+];
+
+function isEvidenceKind(value: string): value is RuntimeSkillVisibilityEvidenceKind {
+  return (EVIDENCE_KINDS as readonly string[]).includes(value);
 }

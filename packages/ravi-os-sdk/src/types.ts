@@ -403,7 +403,7 @@ export type AgentsPermissionsReturn = {
       permission?: string;
       source?: string;
     })>;
-    profile?: "bootstrap" | "full-access";
+    profile?: "bootstrap" | "chat-only" | "full-access";
   }) | null;
   agent?: {
     allowedSessions?: string[];
@@ -458,6 +458,7 @@ export type AgentsPermissionsReturn = {
     }>;
   };
   agentId: string;
+  authorityLayer?: string;
   before?: ({
     capabilities?: Array<string | ({
       objectId?: string;
@@ -465,12 +466,19 @@ export type AgentsPermissionsReturn = {
       permission?: string;
       source?: string;
     })>;
-    profile?: "bootstrap" | "full-access";
+    profile?: "bootstrap" | "chat-only" | "full-access";
   }) | null;
+  breakGlassCommand?: string;
   changed: boolean;
+  chatOnlyCommand?: string;
   command?: string;
   defaults?: (Record<string, unknown>) | null;
+  effectiveOn?: string;
+  inspectCommand?: string;
+  leastPrivilegeExample?: string;
   profile?: string;
+  recurringAccessCommand?: string;
+  resetToBootstrapCommand?: string;
   runtimePermissions?: ({
     capabilities?: Array<string | ({
       objectId?: string;
@@ -478,7 +486,7 @@ export type AgentsPermissionsReturn = {
       permission?: string;
       source?: string;
     })>;
-    profile?: "bootstrap" | "full-access";
+    profile?: "bootstrap" | "chat-only" | "full-access";
   }) | null;
 };
 
@@ -518,6 +526,7 @@ export type AgentsSessionReturn = {
 
 /** Input shape for `agents.set`. */
 export type AgentsSetInput = {
+  force?: boolean;
   id: string;
   key: string;
   value: string;
@@ -529,10 +538,28 @@ export type AgentsSetReturn = {
   agent?: Record<string, unknown>;
   agentId: string;
   changed: boolean;
+  forcedClearedOverrides: Array<{
+    effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+    model?: string;
+    provider?: string;
+    reasons: Array<"provider_override" | "model_override" | "effort_override" | "thinking_override">;
+    sessionName: string;
+    thinking?: "off" | "normal" | "verbose";
+  }>;
   key: string;
+  rematerializedSessions: Array<{
+    clearedProviderSession: boolean;
+    previousRuntimeProvider: string | null;
+    reasons: "stale_runtime_provider"[];
+    runtimeProvider: string | null;
+    sessionKey: string;
+    sessionName: string;
+  }>;
   sessionOverrides: Array<{
     effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
     model?: string;
+    provider?: string;
+    reasons: Array<"provider_override" | "model_override" | "effort_override" | "thinking_override">;
     sessionName: string;
     thinking?: "off" | "normal" | "verbose";
   }>;
@@ -607,7 +634,7 @@ export type AgentsShowReturn = {
       permission?: string;
       source?: string;
     })>;
-    profile?: "bootstrap" | "full-access";
+    profile?: "bootstrap" | "chat-only" | "full-access";
   }) | null;
 };
 
@@ -1828,6 +1855,31 @@ export type BridgesRevokeReturn = {
   consoleUrl: string;
   revoked: boolean;
   success: true;
+};
+
+/** Input shape for `bug.comment`. */
+export type BugCommentInput = {
+  console?: string;
+  dossierFile?: string;
+  dossierJson?: string;
+  evidenceFile?: string;
+  execute?: boolean;
+  id: string;
+  idempotencyKey?: string;
+  text?: string;
+};
+
+/** Return shape for `bug.comment`. */
+export type BugCommentReturn = {
+  bug: Record<string, unknown>;
+  bugId: string;
+  comment: Record<string, unknown>;
+  consoleUrl: string;
+  id: string;
+  idempotencyKey: string;
+  reused: boolean;
+  success: true;
+  url: string;
 };
 
 /** Input shape for `bug.list`. */
@@ -4248,7 +4300,9 @@ export type ContactsActivityReturn = Record<string, unknown>;
 /** Input shape for `contacts.add`. */
 export type ContactsAddInput = {
   agent?: string;
+  channel?: string;
   identity: string;
+  instance?: string;
   kind?: string;
   name?: string;
 };
@@ -4655,8 +4709,10 @@ export type ContextCleanupAgentRuntimeReturn = {
       sessionName: string | null;
       source: ({
         accountId: string;
+        canonicalChatId?: string;
         channel: string;
         chatId: string;
+        instanceId?: string;
         threadId?: string;
       }) | null;
       status: "active" | "expired" | "revoked";
@@ -4672,7 +4728,9 @@ export type ContextCleanupAgentRuntimeReturn = {
 };
 
 /** Input shape for `context.codex-bash-hook`. */
-export type ContextCodexBashHookInput = Record<string, never>;
+export type ContextCodexBashHookInput = {
+  payload?: string;
+};
 
 /** Return shape for `context.codex-bash-hook`. */
 export type ContextCodexBashHookReturn = {
@@ -4802,8 +4860,10 @@ export type ContextInfoReturn = {
   sessionName: string | null;
   source: ({
     accountId: string;
+    canonicalChatId?: string;
     channel: string;
     chatId: string;
+    instanceId?: string;
     threadId?: string;
   }) | null;
   status: "active" | "expired" | "revoked";
@@ -4843,8 +4903,10 @@ export type ContextIssueReturn = {
   sessionName: string | null;
   source: ({
     accountId: string;
+    canonicalChatId?: string;
     channel: string;
     chatId: string;
+    instanceId?: string;
     threadId?: string;
   }) | null;
 };
@@ -4903,8 +4965,10 @@ export type ContextLineageReturn = {
     sessionName: string | null;
     source: ({
       accountId: string;
+      canonicalChatId?: string;
       channel: string;
       chatId: string;
+      instanceId?: string;
       threadId?: string;
     }) | null;
     status: "active" | "expired" | "revoked";
@@ -5057,8 +5121,10 @@ export type ContextRevokeReturn = {
     sessionName: string | null;
     source: ({
       accountId: string;
+      canonicalChatId?: string;
       channel: string;
       chatId: string;
+      instanceId?: string;
       threadId?: string;
     }) | null;
     status: "active" | "expired" | "revoked";
@@ -5086,8 +5152,13 @@ export type ContextVisibilityReturn = {
     confidence: string;
     evidence?: Array<{
       detail?: string;
+      eventId?: string;
+      eventType?: string;
       itemId?: string;
       kind: string;
+      observedAt?: number;
+      path?: string;
+      turnId?: string;
     }>;
     id: string;
     lastSeenAt: number;
@@ -5138,8 +5209,10 @@ export type ContextWhoamiReturn = {
   sessionName: string | null;
   source: ({
     accountId: string;
+    canonicalChatId?: string;
     channel: string;
     chatId: string;
+    instanceId?: string;
     threadId?: string;
   }) | null;
   status: "active" | "expired" | "revoked";
@@ -7957,6 +8030,127 @@ export type InstancesTargetInput = {
 /** Return shape for `instances.target`. */
 export type InstancesTargetReturn = Record<string, unknown>;
 
+/** Input shape for `jobs.kill`. */
+export type JobsKillInput = {
+  id: string;
+};
+
+/** Return shape for `jobs.kill`. */
+export type JobsKillReturn = {
+  id: string;
+  killed: boolean;
+  status: string;
+};
+
+/** Input shape for `jobs.list`. */
+export type JobsListInput = {
+  all?: boolean;
+  limit?: string;
+  offset?: string;
+  session?: string;
+};
+
+/** Return shape for `jobs.list`. */
+export type JobsListReturn = {
+  items: Array<{
+    agentId: string | null;
+    command: string;
+    cwd: string | null;
+    exitCode: number | null;
+    finishedAt: number | null;
+    id: string;
+    logPath: string;
+    origin: string;
+    pid: number | null;
+    sessionName: string | null;
+    signal: string | null;
+    startedAt: number | null;
+    status: string;
+  }>;
+  pagination: {
+    hasMore: boolean;
+    limit: number;
+    nextCommand: string | null;
+    nextOffset: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  total: number;
+};
+
+/** Input shape for `jobs.run`. */
+export type JobsRunInput = {
+  agent?: string;
+  command: string[];
+  cwd?: string;
+  session?: string;
+  wait?: boolean;
+};
+
+/** Return shape for `jobs.run`. */
+export type JobsRunReturn = {
+  command: string;
+  hint: string;
+  id: string;
+  logPath: string;
+  sessionName: string | null;
+  status: string;
+};
+
+/** Input shape for `jobs.show`. */
+export type JobsShowInput = {
+  id: string;
+};
+
+/** Return shape for `jobs.show`. */
+export type JobsShowReturn = {
+  job: {
+    agentId: string | null;
+    command: string;
+    cwd: string | null;
+    exitCode: number | null;
+    finishedAt: number | null;
+    id: string;
+    logPath: string;
+    origin: string;
+    pid: number | null;
+    sessionName: string | null;
+    signal: string | null;
+    startedAt: number | null;
+    status: string;
+  };
+};
+
+/** Input shape for `jobs.tail`. */
+export type JobsTailInput = {
+  id: string;
+  lines?: string;
+};
+
+/** Return shape for `jobs.tail`. */
+export type JobsTailReturn = {
+  id: string;
+  logPath: string;
+  status: string;
+  tail: string;
+};
+
+/** Input shape for `jobs.wait`. */
+export type JobsWaitInput = {
+  id: string;
+  timeout?: string;
+};
+
+/** Return shape for `jobs.wait`. */
+export type JobsWaitReturn = {
+  exitCode: number | null;
+  id: string;
+  logPath: string;
+  signal: string | null;
+  status: string;
+};
+
 /** Input shape for `mail.accounts.create`. */
 export type MailAccountsCreateInput = {
   credentialsRef?: string;
@@ -9787,11 +9981,16 @@ export type PagesUpdateInput = {
 /** Return shape for `pages.update`. */
 export type PagesUpdateReturn = {
   consoleUrl: string;
+  defaultVisibility?: string | null;
   edgeManifestRepair: unknown;
+  effectiveVisibility?: string;
+  path?: string;
   projectRef: string;
+  route?: Record<string, unknown>;
   site: Record<string, unknown>;
   siteRef: string;
   success: true;
+  target?: "site" | "route";
   url: string | null;
 };
 
@@ -9801,16 +10000,22 @@ export type PagesVisibilityInput = {
   console?: string;
   execute?: boolean;
   project?: string;
+  route?: string;
 };
 
 /** Return shape for `pages.visibility`. */
 export type PagesVisibilityReturn = {
   consoleUrl: string;
+  defaultVisibility?: string | null;
   edgeManifestRepair: unknown;
+  effectiveVisibility?: string;
+  path?: string;
   projectRef: string;
+  route?: Record<string, unknown>;
   site: Record<string, unknown>;
   siteRef: string;
   success: true;
+  target?: "site" | "route";
   url: string | null;
 };
 
@@ -9890,12 +10095,15 @@ export type PermissionsCheckReturn = {
       type: string;
     };
   };
+  diagnosticNote?: string;
   guidance?: {
     breakGlass: string;
+    candidateCapabilities?: string[];
     canonicalCapability: string;
     inspectCommands: string[];
     nextSteps: string[];
     preferredPath: {
+      allowCommand?: string;
       kind: string;
       message: string;
       suggestedTags: Array<{
@@ -9933,8 +10141,10 @@ export type PermissionsMaterializeReturn = {
   }>;
   guidance: {
     breakGlass: string;
+    chatOnly?: string;
     recurringAccess: string;
   };
+  profile?: string;
   subject: {
     id: string;
     type: string;
@@ -9970,10 +10180,12 @@ export type PermissionsResolveReturn = {
   dryRun: boolean;
   guidance?: {
     breakGlass: string;
+    candidateCapabilities?: string[];
     canonicalCapability: string;
     inspectCommands: string[];
     nextSteps: string[];
     preferredPath: {
+      allowCommand?: string;
       kind: string;
       message: string;
       suggestedTags: Array<{
@@ -12767,14 +12979,109 @@ export type SessionsSetEffortReturn = {
 export type SessionsSetModelInput = {
   model: string;
   nameOrKey: string;
+  propagate?: boolean;
 };
 
 /** Return shape for `sessions.set-model`. */
-export type SessionsSetModelReturn = Record<string, unknown>;
+export type SessionsSetModelReturn = {
+  action: "set-model";
+  after: ({
+    agentId: string;
+    effectiveModel: string | null;
+    effectiveProvider: string;
+    effortOverride?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+    ephemeral: boolean;
+    expiresAt: number | null;
+    label: string;
+    modelError: string | null;
+    modelOverride?: string;
+    modelPresetId: string | null;
+    modelPresetVersion: number | null;
+    modelSource: string | null;
+    name?: string;
+    providerSource: string;
+    runtimeOptions: {
+      effort: {
+        source: "session_override" | "agent_default" | "global_default" | "runtime_default";
+        value: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+      };
+      model: {
+        source: string | null;
+        value: string | null;
+      };
+      provider: {
+        source: string;
+        value: string;
+      };
+      thinking: {
+        source: string | null;
+        value: string | null;
+      };
+    };
+    sessionKey: string;
+  }) | null;
+  agentDefaultDiffers?: boolean;
+  agentDefaultModel?: string | null;
+  agentDefaultProvider?: string | null;
+  before: {
+    agentId: string;
+    effectiveModel: string | null;
+    effectiveProvider: string;
+    effortOverride?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+    ephemeral: boolean;
+    expiresAt: number | null;
+    label: string;
+    modelError: string | null;
+    modelOverride?: string;
+    modelPresetId: string | null;
+    modelPresetVersion: number | null;
+    modelSource: string | null;
+    name?: string;
+    providerSource: string;
+    runtimeOptions: {
+      effort: {
+        source: "session_override" | "agent_default" | "global_default" | "runtime_default";
+        value: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+      };
+      model: {
+        source: string | null;
+        value: string | null;
+      };
+      provider: {
+        source: string;
+        value: string;
+      };
+      thinking: {
+        source: string | null;
+        value: string | null;
+      };
+    };
+    sessionKey: string;
+  };
+  changed: boolean;
+  effectiveModel: string;
+  event?: Record<string, unknown>;
+  hint?: string | null;
+  modelOverride: string | null;
+  notification?: Record<string, unknown>;
+  propagateCommand?: string | null;
+  propagated?: boolean;
+  rematerializedSessions?: Array<{
+    clearedProviderSession: boolean;
+    previousRuntimeProvider: string | null;
+    reasons: "stale_runtime_provider"[];
+    runtimeProvider: string | null;
+    sessionKey: string;
+    sessionName: string;
+  }>;
+  sessionKey: string;
+  sessionName: string | null;
+};
 
 /** Input shape for `sessions.set-provider`. */
 export type SessionsSetProviderInput = {
   nameOrKey: string;
+  propagate?: boolean;
   provider: string;
 };
 
@@ -12816,6 +13123,9 @@ export type SessionsSetProviderReturn = {
     };
     sessionKey: string;
   }) | null;
+  agentDefaultDiffers?: boolean;
+  agentDefaultModel?: string | null;
+  agentDefaultProvider?: string | null;
   appliesOn: "next-turn-runtime-restart";
   before: {
     agentId: string;
@@ -12854,7 +13164,18 @@ export type SessionsSetProviderReturn = {
   };
   changed: boolean;
   effectiveProvider: string;
+  hint?: string | null;
+  propagateCommand?: string | null;
+  propagated?: boolean;
   providerSource: string;
+  rematerializedSessions?: Array<{
+    clearedProviderSession: boolean;
+    previousRuntimeProvider: string | null;
+    reasons: "stale_runtime_provider"[];
+    runtimeProvider: string | null;
+    sessionKey: string;
+    sessionName: string;
+  }>;
   runtimeProviderOverride: string | null;
   sessionKey: string;
   sessionName: string | null;

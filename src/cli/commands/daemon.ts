@@ -18,6 +18,7 @@ import {
   daemonMutationReturnSchema,
   daemonStatusReturnSchema,
 } from "./operational-return-schemas.js";
+import { buildDaemonPm2StartArgs, ensurePm2InertStdinWrapper, maybeNeuterDaemonStdin } from "../../daemon-stdin.js";
 import { isPm2Available, runPm2, isRaviRunning, getRaviPid, getPm2Processes, PM2_PROCESS_NAME } from "../../pm2.js";
 import { buildManagedRuntimeIdentity } from "../../managed-runtime.js";
 import {
@@ -41,6 +42,12 @@ import {
 const RAVI_DIR = join(homedir(), ".ravi");
 const ENV_FILE = join(RAVI_DIR, ".env");
 const RESTART_REASON_FILE = join(RAVI_DIR, "restart-reason.txt");
+/**
+ * Marker set on the detached process that performs the actual restart. Without
+ * it the handoff child could decide it also lives inside the daemon tree -- the
+ * parent only exits a moment later -- and hand off again, fanning out.
+ */
+const RESTART_HANDOFF_ENV = "RAVI_DAEMON_RESTART_HANDOFF";
 
 type RestartReasonFile = {
   reason?: string;
@@ -51,6 +58,49 @@ type RestartReasonFile = {
 
 function newRestartEpoch(createdAt = Date.now()): string {
   return `restart_${createdAt}_${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+}
+
+function nativeParentPid(pid: number): number | null {
+  try {
+    const out = execSync(`ps -o ppid= -p ${pid}`, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const parsed = Number.parseInt(out, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when this process lives inside the daemon's own process tree -- cron
+ * shell jobs, agent bash tools and hook scripts all do.
+ *
+ * Those callers cannot run the inline restart sequence: it starts with
+ * `pm2 delete ravi`, which kills the daemon, and pm2's treekill takes the caller
+ * with it. The following `pm2 start` never runs and the daemon stays offline.
+ */
+export function isInsideDaemonProcessTree(
+  options: { daemonPid?: number | null; startPid?: number; readParentPid?: (pid: number) => number | null } = {},
+): boolean {
+  const daemonPid = options.daemonPid === undefined ? getRaviPid() : options.daemonPid;
+  if (!daemonPid) return false;
+
+  const readParentPid = options.readParentPid ?? nativeParentPid;
+  const seen = new Set<number>();
+  let pid = options.startPid ?? process.ppid;
+
+  for (let depth = 0; depth < 24; depth += 1) {
+    if (!pid || pid <= 1 || seen.has(pid)) return false;
+    if (pid === daemonPid) return true;
+    seen.add(pid);
+    const parent = readParentPid(pid);
+    if (parent === null) return false;
+    pid = parent;
+  }
+
+  return false;
 }
 
 function readRestartReason(): RestartReasonFile | null {
@@ -311,6 +361,14 @@ function requirePm2() {
   }
 }
 
+function startDaemonPm2Args(bundlePath: string, bunPath = "bun"): string[] {
+  return buildDaemonPm2StartArgs({
+    bundlePath,
+    bunPath,
+    stdinWrapperPath: ensurePm2InertStdinWrapper(bundlePath),
+  });
+}
+
 @Group({
   name: "daemon",
   description: "Manage ravi via PM2",
@@ -344,17 +402,7 @@ export class DaemonCommands {
 
     const target = this.requireRuntimeTarget();
 
-    const args = [
-      "start",
-      target.bundlePath,
-      "--name",
-      PM2_PROCESS_NAME,
-      "--interpreter",
-      "bun",
-      "--",
-      "daemon",
-      "run",
-    ];
+    const args = startDaemonPm2Args(target.bundlePath);
     const { status } = asJson ? runPm2Quiet(args, { cwd: target.cwd }) : runPm2(args, undefined, { cwd: target.cwd });
 
     const payload = {
@@ -435,8 +483,15 @@ export class DaemonCommands {
       fail('Flag -m é obrigatória. Use: ravi daemon restart -m "motivo"');
     }
 
-    // Runtime callers hand off so the daemon can stop after the current command returns.
-    if (hasRuntimeInvocationContext()) {
+    // Runtime callers and callers that live inside the daemon's own process tree
+    // (cron shell jobs, agent bash tools, hook scripts) must hand the restart off
+    // to a detached orchestrator. The inline path starts with `pm2 delete ravi`,
+    // which kills the daemon -- and pm2's treekill takes the caller down with it,
+    // so the following `pm2 start` never runs and the daemon stays offline until
+    // something external starts it again. The detached child is reparented to
+    // launchd as soon as this process exits, so it survives the kill.
+    const insideDaemonTree = process.env[RESTART_HANDOFF_ENV] === "1" ? false : isInsideDaemonProcessTree();
+    if (hasRuntimeInvocationContext() || insideDaemonTree) {
       const target = this.requireRuntimeTarget({ build });
 
       // Save restart reason with session context
@@ -453,6 +508,7 @@ export class DaemonCommands {
       }
       cleanEnv.RAVI_BUNDLE = target.bundlePath;
       cleanEnv.RAVI_DAEMON_CWD = target.cwd;
+      cleanEnv[RESTART_HANDOFF_ENV] = "1";
 
       const child = spawn(process.execPath, args, {
         detached: true,
@@ -465,6 +521,7 @@ export class DaemonCommands {
       const payload = {
         action: "restart" as const,
         mode: "handoff" as const,
+        handoffReason: insideDaemonTree ? ("daemon-process-tree" as const) : ("runtime-invocation" as const),
         changed: true,
         message,
         build: Boolean(build),
@@ -520,17 +577,7 @@ export class DaemonCommands {
         fail("Failed to stop daemon before restart");
       }
 
-      const args = [
-        "start",
-        target.bundlePath,
-        "--name",
-        PM2_PROCESS_NAME,
-        "--interpreter",
-        "bun",
-        "--",
-        "daemon",
-        "run",
-      ];
+      const args = startDaemonPm2Args(target.bundlePath);
       const { status } = asJson ? runPm2Quiet(args, { cwd: target.cwd }) : runPm2(args, undefined, { cwd: target.cwd });
       pm2Status = status;
       const saveStatus = status === 0 ? persistPm2ProcessList() : null;
@@ -556,17 +603,7 @@ export class DaemonCommands {
       console.log("Daemon restarted and PM2 startup state saved");
       return payload;
     } else {
-      const args = [
-        "start",
-        target.bundlePath,
-        "--name",
-        PM2_PROCESS_NAME,
-        "--interpreter",
-        "bun",
-        "--",
-        "daemon",
-        "run",
-      ];
+      const args = startDaemonPm2Args(target.bundlePath);
       if (asJson) {
         const { status } = runPm2Quiet(args, { cwd: target.cwd });
         const saveStatus = status === 0 ? persistPm2ProcessList() : null;
@@ -898,6 +935,7 @@ export class DaemonCommands {
   @CommandAccess({ kind: "mutate", resource: "daemon", action: "run", risk: "high" })
   @CliOnly()
   async run() {
+    maybeNeuterDaemonStdin();
     const { startDaemon } = await import("../../daemon.js");
     await startDaemon();
   }

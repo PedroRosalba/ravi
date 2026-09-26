@@ -1,9 +1,13 @@
 import { describe, expect, it } from "bun:test";
+import { SQLITE_CAPACITY_USER_MESSAGE } from "../db/write-retry.js";
 import {
   formatUserFacingTurnFailure,
+  isOpenToolsTurnFailure,
+  isRecoverableOpenToolsOrInterruptFailure,
   PROVIDER_ENDED_AFTER_TOOLS_USER_MESSAGE,
   PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE,
   publicRuntimeFailureDetail,
+  shouldEmitUserFacingTurnFailure,
 } from "./public-failure.js";
 
 describe("public runtime failures", () => {
@@ -51,10 +55,40 @@ describe("public runtime failures", () => {
     'Config invalid: {"token":"secret-token-value"}',
     'Config invalid: {"apiKey":"secret-api-key-value"}',
     "Request failed with Authorization: Basic dXNlcjpzdXBlcnNlY3JldA==",
+    "SQLiteError: out of memory",
+    "out of memory",
+    "SQLITE_NOMEM",
+    "SQLITE_FULL: database or disk is full",
+    "database or disk is full",
+    "disk I/O error",
+    "database is locked",
+    "database disk image is malformed",
+    "unable to open database file",
+    "no such table: session_goals",
+    "UNIQUE constraint failed: session_goals.session_key",
   ])("hides technical or sensitive detail: %s", (raw) => {
     expect(publicRuntimeFailureDetail(raw)).toBe(
       "The agent could not complete this request because of an internal runtime error. Please try again.",
     );
+  });
+
+  it("never forwards raw bun:sqlite errors (SQLITE_NOMEM) to chat", () => {
+    const sqliteError = Object.assign(new Error("out of memory"), {
+      name: "SQLiteError",
+      code: "SQLITE_NOMEM",
+      errno: 7,
+    });
+    const formatted = formatUserFacingTurnFailure(sqliteError);
+
+    expect(formatted).toBe(
+      "Error: The agent could not complete this request because of an internal runtime error. Please try again.",
+    );
+    expect(formatted).not.toContain("SQLite");
+    expect(formatted).not.toContain("out of memory");
+  });
+
+  it("keeps the curated sqlite capacity message user-visible", () => {
+    expect(formatUserFacingTurnFailure(SQLITE_CAPACITY_USER_MESSAGE)).toBe(`Error: ${SQLITE_CAPACITY_USER_MESSAGE}`);
   });
 
   it("preserves actionable provider errors", () => {
@@ -115,5 +149,109 @@ describe("public runtime failures", () => {
     expect(formatUserFacingTurnFailure(PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE)).toBe(
       `Error: ${PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE}`,
     );
+  });
+
+  it("classifies the open-tools recovery string without changing the formatter", () => {
+    expect(isOpenToolsTurnFailure(PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE)).toBe(true);
+    expect(isOpenToolsTurnFailure(`Error: ${PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE}`)).toBe(true);
+    expect(isOpenToolsTurnFailure(PROVIDER_ENDED_AFTER_TOOLS_USER_MESSAGE)).toBe(false);
+    expect(isOpenToolsTurnFailure("Usage limit reached. Try again later.")).toBe(false);
+  });
+
+  it("classifies recoverable open-tools and interrupt-class failures for auto-recovery", () => {
+    expect(
+      isRecoverableOpenToolsOrInterruptFailure({
+        error: PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE,
+        recoverable: true,
+      }),
+    ).toBe(true);
+    expect(
+      isRecoverableOpenToolsOrInterruptFailure({
+        error: "Codex turn failed: item.started without item.completed",
+        recoverable: true,
+        interrupted: true,
+      }),
+    ).toBe(true);
+    expect(
+      isRecoverableOpenToolsOrInterruptFailure({
+        error: "request was aborted",
+        recoverable: true,
+        internalAbortReason: "recoverable_interrupt_failure",
+      }),
+    ).toBe(true);
+    expect(
+      isRecoverableOpenToolsOrInterruptFailure({
+        error: PROVIDER_ENDED_AFTER_TOOLS_USER_MESSAGE,
+        recoverable: true,
+      }),
+    ).toBe(false);
+    expect(
+      isRecoverableOpenToolsOrInterruptFailure({
+        error: PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE,
+        recoverable: false,
+      }),
+    ).toBe(false);
+    expect(
+      isRecoverableOpenToolsOrInterruptFailure({
+        error: "model unavailable",
+        recoverable: false,
+        interrupted: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("omits recoverable open-tools and interrupt-class failures from chat delivery", () => {
+    expect(
+      shouldEmitUserFacingTurnFailure({
+        error: PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE,
+        recoverable: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldEmitUserFacingTurnFailure({
+        error: "Codex turn failed: item.started without item.completed",
+        recoverable: true,
+        interrupted: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldEmitUserFacingTurnFailure({
+        error: "request was aborted",
+        recoverable: true,
+        internalAbortReason: "recoverable_interrupt_failure",
+      }),
+    ).toBe(false);
+    expect(
+      shouldEmitUserFacingTurnFailure({
+        error: PROVIDER_ENDED_AFTER_TOOLS_USER_MESSAGE,
+        recoverable: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldEmitUserFacingTurnFailure({
+        error: "Usage limit reached. Try again later.",
+        recoverable: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldEmitUserFacingTurnFailure({
+        error: PROVIDER_ENDED_WITH_OPEN_TOOLS_USER_MESSAGE,
+        recoverable: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldEmitUserFacingTurnFailure({
+        error: "model unavailable",
+        recoverable: false,
+        interrupted: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldEmitUserFacingTurnFailure({
+        error: "request was aborted",
+        recoverable: true,
+        suppressedRecoverable: true,
+      }),
+    ).toBe(false);
   });
 });

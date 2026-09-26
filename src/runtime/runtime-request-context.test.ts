@@ -9,7 +9,7 @@ import { dbCreateTask, dbDispatchTask } from "../tasks/task-db.js";
 import type { AgentConfig } from "../router/index.js";
 import type { TaskRuntimeResolution } from "../tasks/types.js";
 import type { RuntimeLaunchPrompt } from "./message-types.js";
-import { resolveRuntimeContext } from "./context-registry.js";
+import { createRuntimeContext, resolveRuntimeContext } from "./context-registry.js";
 import { buildRuntimeRequestContext, refreshRuntimeRequestContextForTurn } from "./runtime-request-context.js";
 import { getRuntimeToolAccessMode } from "./host-services.js";
 import { resolveRuntimePromptSource } from "./runtime-request-builder.js";
@@ -72,6 +72,36 @@ describe("runtime request context authority", () => {
     } else {
       process.env.RAVI_TURN_SCOPED_AUTHORITY = previous;
     }
+  });
+
+  it("reclaims stale turn-scoped contexts when a fresh runtime launches for the session", () => {
+    dbCreateAgent({ id: agent.id, cwd: agent.cwd });
+    getOrCreateSession(sessionKey, agent.id, agent.cwd, { name: sessionName });
+    // A previous runtime for this session died without rotating its last context.
+    const stale = createRuntimeContext({
+      kind: "turn-runtime",
+      agentId: agent.id,
+      sessionKey,
+      sessionName,
+      capabilities: [],
+      ttlMs: 60_000,
+    });
+
+    const { runtimeContext } = buildRuntimeRequestContext({
+      dbSessionKey: sessionKey,
+      sessionName,
+      sessionCwd: "/tmp/provider-agent",
+      agent,
+      prompt: { prompt: "novo turno" },
+      runtimeProviderId: "codex",
+      model: "gpt-5",
+      runtimeResolution,
+    });
+
+    expect(runtimeContext.contextId).not.toBe(stale.contextId);
+    expect(dbGetContext(stale.contextId)?.metadata?.revocationReason).toBe("stale_turn_context_reclaimed");
+    expect(resolveRuntimeContext(stale.contextKey, { touch: false })).toBeNull();
+    expect(resolveRuntimeContext(runtimeContext.contextKey, { touch: false })).not.toBeNull();
   });
 
   it("ignores the retired turn-scoped env flag and still issues workspace agent identity contexts", () => {
@@ -220,6 +250,38 @@ describe("runtime request context authority", () => {
     expect(canWithCapabilities(runtimeContext.capabilities, "use", "tool", "Bash")).toBe(true);
     expect(canWithCapabilities(runtimeContext.capabilities, "admin", "system", "*")).toBe(false);
     expect(canWithCapabilities(runtimeContext.capabilities, "access", "session", "main")).toBe(false);
+  });
+
+  it("sets consoleUserId on turn metadata when the contact has a cached binding", async () => {
+    const { writeCachedActorBinding } = await import("../cloud-auth/actor-bindings.js");
+    writeCachedActorBinding({
+      contactId: "luis",
+      actorPrincipal: "contact:luis",
+      consoleUserId: "user_alice",
+      orgId: "org_123",
+      installationId: "ins_123",
+    });
+    dbCreateAgent({ id: agent.id, cwd: agent.cwd });
+    getOrCreateSession(sessionKey, agent.id, agent.cwd, { name: sessionName });
+
+    const prompt = promptForContact("luis", "audit");
+    const { runtimeContext } = buildRuntimeRequestContext({
+      dbSessionKey: sessionKey,
+      sessionName,
+      sessionCwd: "/tmp/provider-agent",
+      agent,
+      prompt,
+      runtimeProviderId: "codex",
+      model: "gpt-5",
+      runtimeResolution,
+      resolvedSource: prompt.source,
+    });
+
+    expect(runtimeContext.metadata).toMatchObject({
+      actorPrincipal: "contact:luis",
+      consoleUserId: "user_alice",
+      consoleOrgId: "org_123",
+    });
   });
 
   it("does not materialize role authority without a provider-owned runtime config", () => {
@@ -1461,6 +1523,61 @@ describe("runtime request context authority", () => {
     );
     expect(canWithCapabilities(runtimeContext.capabilities, "use", "tool", "Read")).toBe(true);
     expect(canWithCapabilities(runtimeContext.capabilities, "admin", "system", "*")).toBe(false);
+  });
+});
+
+describe("runtime request context source persistence", () => {
+  beforeEach(async () => {
+    stateDir = await createIsolatedRaviState("ravi-runtime-source-test-");
+  });
+
+  afterEach(async () => {
+    await cleanupIsolatedRaviState(stateDir);
+    stateDir = null;
+  });
+
+  it("persists native Slack instanceId and canonicalChatId onto the runtime context source and env", () => {
+    dbCreateAgent({ id: agent.id, cwd: agent.cwd });
+    getOrCreateSession("agent:provider-agent:slack:hana-slack:C123", agent.id, agent.cwd, { name: "hana-slack" });
+
+    const prompt: RuntimeLaunchPrompt = {
+      prompt: "hello slack",
+      source: {
+        channel: "slack",
+        accountId: "hana-slack",
+        instanceId: "hana-slack",
+        chatId: "C123",
+        canonicalChatId: "chat_slack_C123",
+      },
+    };
+
+    const { runtimeContext, raviEnv } = buildRuntimeRequestContext({
+      dbSessionKey: "agent:provider-agent:slack:hana-slack:C123",
+      sessionName: "hana-slack",
+      sessionCwd: agent.cwd,
+      agent,
+      prompt,
+      runtimeProviderId: "codex",
+      model: "gpt-5",
+      runtimeResolution,
+      resolvedSource: prompt.source,
+    });
+
+    expect(runtimeContext.source).toEqual({
+      channel: "slack",
+      accountId: "hana-slack",
+      instanceId: "hana-slack",
+      chatId: "C123",
+      canonicalChatId: "chat_slack_C123",
+    });
+    expect(raviEnv).toMatchObject({
+      RAVI_CHANNEL: "slack",
+      RAVI_ACCOUNT_ID: "hana-slack",
+      RAVI_INSTANCE_ID: "hana-slack",
+      RAVI_CHAT_ID: "C123",
+      RAVI_CANONICAL_CHAT_ID: "chat_slack_C123",
+    });
+    expect(dbGetContext(runtimeContext.contextId)?.source).toEqual(runtimeContext.source);
   });
 });
 

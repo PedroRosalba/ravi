@@ -50,7 +50,7 @@ The MVP MUST use RPC JSONL. The SDK path MAY replace or complement RPC after the
 - Process boundary: one Pi RPC process per Ravi runtime session handle.
 - Prompt submission: `prompt` for normal Ravi prompt delivery; `steer` for active runs and the pre-first-turn bootstrap gap through explicit runtime control; `follow_up` for active runs only.
 - Steering queue mode: Ravi MUST set Pi `steeringMode=all` at session bootstrap so multiple channel messages steered during one active turn are drained together by Pi instead of becoming one assistant turn per queued message. This is not Ravi debounce; every incoming message is still sent to Pi.
-- Host queue bypass: once a Ravi Pi session handle exists, interactive `after_tool` messages MUST prefer Pi native `steer` over Ravi `pendingMessages` whenever the Pi turn is active or the first prompt is still waiting to be yielded. This prevents Ravi's generator from concatenating pending human messages before Pi can apply its native steering queue.
+- Host queue bypass: once a Ravi Pi session handle exists, interactive `after_tool` messages MUST prefer Pi native `steer` over Ravi `pendingMessages` whenever the Pi turn is active or the first prompt is still waiting to be yielded. This prevents Ravi's generator from concatenating pending human messages before Pi can apply its native steering queue. Steer MUST be refused when the published `RAVI_CONTEXT_KEY` no longer resolves, so the host yields a new turn that remints authority and respawns Pi. #489 only compared env at the next yielded prompt and committed the new signature even when respawn failed; #490 only kept the first-turn key live. Long-lived native-steer sessions could keep a revoked key in the Pi process env until a manual kill.
 - Session state: Pi `sessionFile`, `sessionId`, `sessionName`, cwd, model provider/id, thinking level, agent dir, and integration mode stored in `RuntimeSessionState.params`.
 - Display id: `sessionName` when available, otherwise `sessionId`.
 - System prompt mode: append Ravi instructions to Pi's coding-agent prompt; do not replace Pi's base prompt in the MVP.
@@ -92,6 +92,9 @@ Pi can execute tools in parallel natively, but Ravi MUST NOT advertise parallel 
 - `get_state` reads session file/id/name, streaming state, model, thinking level, and queue state.
 - `set_steering_mode all` is sent during bootstrap unless `get_state` already reports `steeringMode=all`.
 - `set_model` backs `setModel` and must affect the next request even if no active request exists.
+- `setModel` before RPC start records the requested model and MUST apply it on spawn (`--model`) without reporting success for a command that was never sent.
+- After resume/`switch_session`, the adapter MUST send `set_model` before the next `prompt` when `get_state` omits the model or reports a model that differs from the requested session override.
+- A failed `set_model` RPC MUST throw. Hosts MUST NOT record `session.model_changed` as `applied` for that failure.
 - `set_thinking_level` maps Ravi effort/thinking into Pi thinking levels.
 - `compact` is provider-native compaction and MUST emit `status: compacting` while active.
 - `switch_session`, `new_session`, `fork`, and `clone` are provider-native controls but MUST NOT be exposed as Ravi fork/resume until session semantics are tested and mapped to `runtime/session-continuity/forks`.
@@ -127,6 +130,17 @@ Important: Pi `turn_end` is an internal LLM/tool-cycle boundary, not always a Ra
   prompt. Unauthorized skill use MUST still be denied on the permission
   extension authorize path (`SKILL_NOT_AUTHORIZED`) even if the model
   bypasses that catalog via Read, Skill, or a raw `skills show`.
+- Pi also discovers skills on disk by itself (`~/.agents/skills`,
+  `~/.pi/agent/skills`, project `.agents/skills`/`.pi/skills`) and lists them
+  to the model as `available_skills`. When Ravi enforces an allowlist
+  (`allowedSkills` non-empty), the adapter MUST spawn Pi with `--no-skills` so
+  Ravi's filtered catalog is the only skill advertisement; otherwise the model
+  is told about skills the gate denies (bug `2b7fcc09`). Explicit `--skill`
+  paths would still load, and Ravi passes none. Agents without an allowlist
+  (grandfathered, Invariant F) keep Pi native discovery unchanged. Disk-only
+  skills are never auto-granted: the supported path is
+  `ravi skills install --source <skill-dir>` followed by
+  `ravi skills grant <agent> <skill>`.
 - Current Pi state and event payloads do not expose a skill list, skill request, skill load, or skill unload event.
 - Pi sessions MUST report an empty `loadedSkills` vector unless Ravi owns an explicit skill injection flow and observes completion.
 - Allowlisted catalog records MUST be reported as `advertised` with declared
@@ -213,7 +227,7 @@ Implement these generic Ravi changes before building the Pi adapter:
 
 This slice keeps the RPC JSONL execution path (prompt, steer, interrupt, resume). It does not migrate sessions onto `createAgentSession`.
 
-Ravi MUST materialize a Pi extension and spawn RPC with `--extension <path>`. That extension:
+Ravi MUST materialize a Pi extension and spawn RPC with `--extension <path>`. The extension file MUST be rewritten on every start/respawn under the durable Ravi state directory (`$RAVI_STATE_DIR/pi-hooks`). A one-shot path under `/tmp/ravi-pi-hooks` is forbidden: tmp cleaners delete it and the next spawn exits 1. That extension:
 
 - emits `ctx.ui.notify("ravi.permission.hooks.ready", "info")` on `session_start` so the host can prove the bridge is live;
 - listens for `tool_call` (blocking, before execution) and `tool_result` (observational after);

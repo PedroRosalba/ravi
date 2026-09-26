@@ -70,6 +70,17 @@ ravi pages publish <project-ref> <site-slug> <artifact-id> --route / --visibilit
 those ops is ignored. Domain binding, password changes, and switching a site
 to public visibility are dry-run by default (exit 3): re-run with `--execute`.
 
+Change who can reach an already-published route without re-uploading files:
+
+```bash
+ravi pages visibility <site-slug> public --execute
+ravi pages visibility <site-slug> public --route / --execute
+```
+
+Without `--route`, only site `defaultVisibility` changes. With `--route /`
+(or `/foo`), only that route's policy changes. Success output reports the
+effective visibility.
+
 Protect an active route with a password without republishing its bytes:
 
 ```bash
@@ -232,6 +243,7 @@ ravi cron rm <id> --execute
 3. For isolated sessions, agent can use `cross_send` to deliver responses
 4. Next run time is calculated (with anti-drift for intervals)
 5. One-shot jobs (`--at`) are deleted after execution
+6. `lastStatus`/`lastError` are recorded from the agent turn outcome (`turn.complete` → `ok`, `turn.failed`/`turn.interrupted` → `error`), not from the prompt dispatch
 
 ## Event Triggers
 
@@ -377,7 +389,8 @@ defaults:
 ```bash
 ravi agents permissions dev             # Show runtime profile
 ravi agents permissions dev full-access --execute # Full Ravi permissions (sem --execute e dry-run, exit 3)
-ravi agents permissions dev none                  # Reduce to bootstrap defaults immediately
+ravi agents permissions dev chat-only             # Reception agent: conversation only, no tools/shell/CLI groups
+ravi agents permissions dev none                  # Reset to bootstrap minimum immediately (not zero-authority)
 ```
 
 The legacy relation ledger remains available for audit/migration:
@@ -408,6 +421,7 @@ ravi permissions clear                           # Clear manual relations
 - `defaultTimezone` - Default timezone for cron jobs (e.g., `America/Sao_Paulo`)
 - `whatsapp.groupPolicy` - Group policy: `open`, `allowlist`, `closed`
 - `whatsapp.dmPolicy` - DM policy: `open`, `pairing`, `closed`
+- `announceCompaction` - Post compacting/compacted notices to the conversation channel (`true` / `false`, default: `false`)
 
 **Agent Resolution:**
 
@@ -646,6 +660,8 @@ ravi permissions grant agent:main use tool:Bash          # Allow SDK tool
 ravi permissions grant agent:main execute executable:git  # Allow CLI executable
 ravi permissions grant agent:main execute group:contacts  # Allow CLI command group
 ravi agents permissions main full-access --execute        # Full Ravi runtime profile (dry-run sem --execute)
+ravi agents permissions main chat-only                    # Reception agent (conversation only)
+ravi agents permissions main none                         # Reset overlay to bootstrap minimum
 ```
 
 ## Emoji Reactions

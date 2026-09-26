@@ -1,5 +1,5 @@
 import "reflect-metadata";
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Command as CommanderCommand } from "commander";
 import { z } from "zod";
 import { CloudAuthError } from "../cloud-auth/errors.js";
@@ -10,6 +10,8 @@ import {
   contractDryRun,
   contractFailureOutcome,
   expectedErrorToContractError,
+  mapExecutionErrorToContractError,
+  runtimeContextErrorToContractError,
   sqliteCapacityToContractError,
 } from "./agent-contract.js";
 import { runWithCliAudit, wasContractErrorAudited } from "./audit.js";
@@ -19,6 +21,7 @@ import { CliExpectedError } from "./expected-error.js";
 import { registerCommands } from "./registry.js";
 import { buildRegistry } from "./registry-snapshot.js";
 import { extractTools } from "./tools-export.js";
+import { identityDelegationRequiresAdminError } from "../runtime/context-errors.js";
 
 @Group({ name: "cloud.fixture", description: "Cross-transport contract fixture", scope: "open" })
 class CloudFailureCommands {
@@ -34,6 +37,25 @@ class CloudFailureCommands {
   @Returns(z.object({ ok: z.literal(true) }))
   expected(@Option({ flags: "--json", description: "Print raw JSON result" }) _asJson?: boolean) {
     throw new CliExpectedError("PRIVATE_EXPECTED_MESSAGE_7M4Q");
+  }
+
+  @Command({ name: "safe-expected", description: "Raise a safe expected failure" })
+  @CommandAccess({ kind: "read", resource: "cloud.fixture", action: "safe-expected", risk: "low" })
+  @Returns(z.object({ ok: z.literal(true) }))
+  safeExpected(@Option({ flags: "--json", description: "Print raw JSON result" }) _asJson?: boolean) {
+    throw new CliExpectedError(
+      "CLI/runtime mismatch detected. Pass --allow-runtime-mismatch if you really mean it.",
+      "COMMAND_FAILED",
+      1,
+      "Pass --allow-runtime-mismatch if you really mean it.",
+    );
+  }
+
+  @Command({ name: "delegate", description: "Raise a delegated-context policy denial" })
+  @CommandAccess({ kind: "read", resource: "cloud.fixture", action: "delegate", risk: "low" })
+  @Returns(z.object({ ok: z.literal(true) }))
+  delegate(@Option({ flags: "--json", description: "Print raw JSON result" }) _asJson?: boolean) {
+    throw identityDelegationRequiresAdminError();
   }
 
   @Command({ name: "confirm", description: "Return a sentinel-rich policy brake" })
@@ -61,6 +83,8 @@ const runtimeContext: ContextRecord = {
   capabilities: [
     { permission: "read", objectType: "cloud.fixture", objectId: "fail", source: "test" },
     { permission: "read", objectType: "cloud.fixture", objectId: "expected", source: "test" },
+    { permission: "read", objectType: "cloud.fixture", objectId: "safe-expected", source: "test" },
+    { permission: "read", objectType: "cloud.fixture", objectId: "delegate", source: "test" },
     { permission: "mutate", objectType: "cloud.fixture", objectId: "confirm", source: "test" },
   ],
   createdAt: Date.now(),
@@ -75,8 +99,24 @@ const deniedContext: ContextRecord = {
   createdAt: Date.now(),
 };
 
+const previousHostCliGateway = process.env.RAVI_HOST_CLI_GATEWAY;
+
+// This suite asserts *local* transport behavior. When a Ravi daemon runs on the
+// same machine it exposes the host CLI gateway socket, and any CLI invocation
+// carrying RAVI_CONTEXT_KEY is routed to that daemon instead of executing
+// locally -- which turned the PERMISSION_DENIED case into a transport failure
+// and made the suite fail only on developer machines with a live daemon.
+beforeAll(() => {
+  process.env.RAVI_HOST_CLI_GATEWAY = "0";
+});
+
+afterAll(() => {
+  if (previousHostCliGateway === undefined) delete process.env.RAVI_HOST_CLI_GATEWAY;
+  else process.env.RAVI_HOST_CLI_GATEWAY = previousHostCliGateway;
+});
+
 describe("global cloud failure contract", () => {
-  it("keeps custom CliExpectedError messages out of the internal contract error", () => {
+  it("keeps unsafe CliExpectedError dumps out of the internal contract error", () => {
     const contract = expectedErrorToContractError(
       "cloud fixture custom",
       new CliExpectedError("PRIVATE_CUSTOM_EXPECTED_4N7K", "CUSTOM_EXPECTED", 1),
@@ -88,6 +128,46 @@ describe("global cloud failure contract", () => {
       exitCode: 1,
     });
     expect(JSON.stringify(contract)).not.toContain("PRIVATE_CUSTOM_EXPECTED_4N7K");
+  });
+
+  it("preserves a safe CliExpectedError cause and throw-site suggestedAction", () => {
+    const suggestedAction =
+      "Re-run with the repo CLI/runtime or pass --allow-runtime-mismatch if you really mean it.";
+    const contract = expectedErrorToContractError(
+      "instances routes add",
+      new CliExpectedError(
+        `CLI/runtime mismatch detected.\n${suggestedAction}`,
+        "COMMAND_FAILED",
+        1,
+        suggestedAction,
+      ),
+    );
+
+    expect(contract).toMatchObject({
+      code: "COMMAND_FAILED",
+      message: `CLI/runtime mismatch detected.\n${suggestedAction}`,
+      exitCode: 1,
+    });
+    expect(contract?.envelope().error.suggestedAction).toBe(suggestedAction);
+    expect(contract?.envelope().error.message).toContain("--allow-runtime-mismatch");
+  });
+
+  it("maps RuntimeContextError to a public PERMISSION_DENIED contract", () => {
+    const denial = identityDelegationRequiresAdminError();
+    const contract = runtimeContextErrorToContractError("context issue", denial);
+    expect(contract).toMatchObject({
+      op: "context issue",
+      code: "PERMISSION_DENIED",
+      message: denial.message,
+      exitCode: 1,
+    });
+    expect(contract?.envelope().error.suggestedAction).toBe(denial.suggestedAction);
+    expect(contract?.envelope().error.requiredCapability).toBe("admin:system:*");
+    expect(mapExecutionErrorToContractError("context issue", denial)).toMatchObject({
+      code: "PERMISSION_DENIED",
+      message: denial.message,
+    });
+    expect(JSON.stringify(contract)).not.toMatch(/rctx_[A-Za-z0-9]{8,}/);
   });
 
   it("maps sqlite capacity errors to SQLITE_CAPACITY instead of UNHANDLED_ERROR", () => {
@@ -323,7 +403,7 @@ describe("global cloud failure contract", () => {
     expect(JSON.stringify(cliEnvelope)).not.toContain("PRIVATE_PROVIDER_BODY_8K2R");
   });
 
-  it("keeps CliExpectedError messages private across CLI, tool and gateway", async () => {
+  it("keeps unsafe CliExpectedError dumps private across CLI, tool and gateway", async () => {
     const previousSuppressAudit = process.env.RAVI_SUPPRESS_AUDIT_EVENTS;
     const originalExit = process.exit;
     const originalLog = console.log;
@@ -384,6 +464,71 @@ describe("global cloud failure contract", () => {
       },
     });
     expect(JSON.stringify(cliEnvelope)).not.toContain("PRIVATE_EXPECTED_MESSAGE_7M4Q");
+  });
+
+  it("preserves a safe CliExpectedError cause across CLI, tool and gateway", async () => {
+    const previousSuppressAudit = process.env.RAVI_SUPPRESS_AUDIT_EVENTS;
+    const originalExit = process.exit;
+    const originalLog = console.log;
+    const cliOutput: string[] = [];
+    let cliExitCode: number | undefined;
+    process.env.RAVI_SUPPRESS_AUDIT_EVENTS = "1";
+    console.log = (...args: unknown[]) => cliOutput.push(args.map(String).join(" "));
+    process.exit = ((code?: number) => {
+      cliExitCode = code;
+      throw new Error("__expected_exit__");
+    }) as typeof process.exit;
+
+    try {
+      const program = new CommanderCommand();
+      program.exitOverride();
+      registerCommands(program, [CloudFailureCommands]);
+      await expect(
+        runWithContext({}, () => program.parseAsync(["node", "test", "cloud", "fixture", "safe-expected", "--json"])),
+      ).rejects.toThrow("__expected_exit__");
+    } finally {
+      process.exit = originalExit;
+      console.log = originalLog;
+      if (previousSuppressAudit === undefined) delete process.env.RAVI_SUPPRESS_AUDIT_EVENTS;
+      else process.env.RAVI_SUPPRESS_AUDIT_EVENTS = previousSuppressAudit;
+    }
+
+    expect(cliExitCode).toBe(1);
+    expect(cliOutput).toHaveLength(1);
+    const cliEnvelope = JSON.parse(cliOutput[0] ?? "{}");
+
+    const tool = extractTools([CloudFailureCommands]).find(
+      (candidate) => candidate.name === "cloud_fixture_safe-expected",
+    );
+    expect(tool).toBeDefined();
+    const toolResult = await runWithContext({ agentId: runtimeContext.agentId, context: runtimeContext }, () =>
+      tool!.handler({}),
+    );
+    expect(toolResult).toMatchObject({ isError: true, outcome: "failed", exitCode: 1 });
+    const toolEnvelope = JSON.parse(toolResult.content[0]?.text ?? "{}");
+
+    const registry = buildRegistry([CloudFailureCommands]);
+    const command = registry.commands.find((candidate) => candidate.fullName === "cloud.fixture.safe-expected");
+    expect(command).toBeDefined();
+    const gatewayResult = await dispatch(command!, {}, {}, { contextRecord: runtimeContext, emitAudit: () => {} });
+    expect(gatewayResult.response.status).toBe(422);
+    const gatewayBody = (await gatewayResult.response.json()) as Record<string, unknown>;
+    const { exitCode, outcome, ...gatewayEnvelope } = gatewayBody;
+
+    expect(exitCode).toBe(1);
+    expect(outcome).toBe("failed");
+    expect(toolEnvelope).toEqual(cliEnvelope);
+    expect(gatewayEnvelope).toEqual(cliEnvelope);
+    expect(cliEnvelope).toMatchObject({
+      success: false,
+      op: "cloud fixture safe-expected",
+      error: {
+        code: "COMMAND_FAILED",
+        message: "CLI/runtime mismatch detected. Pass --allow-runtime-mismatch if you really mean it.",
+        retryable: false,
+        suggestedAction: "Pass --allow-runtime-mismatch if you really mean it.",
+      },
+    });
   });
 
   it("marks root contract failures after their semantic audit is emitted", async () => {
@@ -471,5 +616,70 @@ describe("global cloud failure contract", () => {
       op: "cloud fixture fail",
       error: { code: "PERMISSION_DENIED" },
     });
+  });
+
+  it("preserves RuntimeContextError as PERMISSION_DENIED across CLI, tool and gateway", async () => {
+    const previousSuppressAudit = process.env.RAVI_SUPPRESS_AUDIT_EVENTS;
+    const originalExit = process.exit;
+    const originalLog = console.log;
+    const cliOutput: string[] = [];
+    let cliExitCode: number | undefined;
+    process.env.RAVI_SUPPRESS_AUDIT_EVENTS = "1";
+    console.log = (...args: unknown[]) => cliOutput.push(args.map(String).join(" "));
+    process.exit = ((code?: number) => {
+      cliExitCode = code;
+      throw new Error("__expected_exit__");
+    }) as typeof process.exit;
+
+    try {
+      const program = new CommanderCommand();
+      program.exitOverride();
+      registerCommands(program, [CloudFailureCommands]);
+      await expect(
+        runWithContext({}, () => program.parseAsync(["node", "test", "cloud", "fixture", "delegate", "--json"])),
+      ).rejects.toThrow("__expected_exit__");
+    } finally {
+      process.exit = originalExit;
+      console.log = originalLog;
+      if (previousSuppressAudit === undefined) delete process.env.RAVI_SUPPRESS_AUDIT_EVENTS;
+      else process.env.RAVI_SUPPRESS_AUDIT_EVENTS = previousSuppressAudit;
+    }
+
+    expect(cliExitCode).toBe(1);
+    expect(cliOutput).toHaveLength(1);
+    const cliEnvelope = JSON.parse(cliOutput[0] ?? "{}");
+    const denial = identityDelegationRequiresAdminError();
+
+    const tool = extractTools([CloudFailureCommands]).find((candidate) => candidate.name === "cloud_fixture_delegate");
+    expect(tool).toBeDefined();
+    const toolResult = await runWithContext({ agentId: runtimeContext.agentId, context: runtimeContext }, () =>
+      tool!.handler({ json: true }),
+    );
+    expect(toolResult).toMatchObject({ isError: true, outcome: "denied", exitCode: 1 });
+    const toolEnvelope = JSON.parse(toolResult.content[0]?.text ?? "{}");
+
+    const registry = buildRegistry([CloudFailureCommands]);
+    const command = registry.commands.find((candidate) => candidate.fullName === "cloud.fixture.delegate");
+    expect(command).toBeDefined();
+    const gatewayResult = await dispatch(command!, {}, {}, { contextRecord: runtimeContext, emitAudit: () => {} });
+    expect(gatewayResult.response.status).toBe(403);
+    const gatewayBody = (await gatewayResult.response.json()) as Record<string, unknown>;
+    const { exitCode, outcome, ...gatewayEnvelope } = gatewayBody;
+
+    expect(exitCode).toBe(1);
+    expect(outcome).toBe("denied");
+    expect(toolEnvelope).toEqual(cliEnvelope);
+    expect(gatewayEnvelope).toEqual(cliEnvelope);
+    expect(cliEnvelope).toMatchObject({
+      success: false,
+      op: "cloud fixture delegate",
+      error: {
+        code: "PERMISSION_DENIED",
+        message: denial.message,
+        suggestedAction: denial.suggestedAction,
+        requiredCapability: "admin:system:*",
+      },
+    });
+    expect(JSON.stringify(cliEnvelope)).not.toMatch(/rctx_[A-Za-z0-9]{8,}/);
   });
 });

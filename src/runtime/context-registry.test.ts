@@ -3,6 +3,11 @@ import { dbCreateAgent, dbDeleteAgent, dbGetContext, getDb } from "../router/rou
 import { getOrCreateSession } from "../router/sessions.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
 import {
+  DELEGATED_SESSION_BINDINGS_MUST_BE_PAIRED,
+  IDENTITY_DELEGATION_REQUIRES_ADMIN,
+  RuntimeContextError,
+} from "./context-errors.js";
+import {
   ADMIN_BOOTSTRAP_KIND,
   createRuntimeContext,
   getOrCreateAgentRuntimeContext,
@@ -172,6 +177,40 @@ describe("runtime context registry", () => {
     expect(resolveRuntimeContext(first.contextKey, { touch: false })).toBeNull();
     expect(resolveRuntimeContext(child.contextKey, { touch: false })).toBeNull();
     expect(dbGetContext(first.contextId)?.metadata?.revocationReason).toBe("session_reset_test");
+  });
+
+  it("revokes live turn-runtime contexts for a session without touching other sessions", () => {
+    const sessionKey = "agent:test-context-agent:turn-reset";
+    const otherSessionKey = "agent:test-context-agent:turn-other";
+    createTestSession(sessionKey);
+    createTestSession(otherSessionKey);
+    const turnContext = createRuntimeContext({
+      kind: "turn-runtime",
+      agentId: TEST_AGENT_ID,
+      sessionKey,
+      sessionName: "test-turn-reset",
+      capabilities: [],
+    });
+    const child = issueRuntimeContext({
+      parent: turnContext,
+      cliName: "child-cli",
+      capabilities: [],
+    });
+    const otherSession = createRuntimeContext({
+      kind: "turn-runtime",
+      agentId: TEST_AGENT_ID,
+      sessionKey: otherSessionKey,
+      sessionName: "test-turn-other",
+      capabilities: [],
+    });
+
+    const result = revokeAgentRuntimeContextsForSession(sessionKey, { reason: "turn_reset_test" });
+
+    expect(result.map((entry) => entry.context.contextId)).toEqual([turnContext.contextId]);
+    expect(resolveRuntimeContext(turnContext.contextKey, { touch: false })).toBeNull();
+    expect(resolveRuntimeContext(child.contextKey, { touch: false })).toBeNull();
+    expect(dbGetContext(turnContext.contextId)?.metadata?.revocationReason).toBe("turn_reset_test");
+    expect(resolveRuntimeContext(otherSession.contextKey, { touch: false })).not.toBeNull();
   });
 
   it("revokes every live authority snapshot when agent permissions change", () => {
@@ -350,7 +389,54 @@ describe("runtime context registry", () => {
         capabilities: [{ permission: "access", objectType: "session", objectId: "main" }],
         identity: { agentId: "main" },
       }),
-    ).toThrow("Identity delegation requires admin:system:*");
+    ).toThrow(RuntimeContextError);
+    try {
+      issueRuntimeContext({
+        parent,
+        cliName: "hub-client-issuer",
+        capabilities: [{ permission: "access", objectType: "session", objectId: "main" }],
+        identity: { agentId: "main" },
+      });
+      throw new Error("expected identity delegation to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RuntimeContextError);
+      expect(error).toMatchObject({
+        code: "PERMISSION_DENIED",
+        message: IDENTITY_DELEGATION_REQUIRES_ADMIN,
+        details: { requiredCapability: "admin:system:*" },
+      });
+    }
+  });
+
+  it("rejects unpaired delegated session bindings", () => {
+    const parent = createRuntimeContext({
+      kind: ADMIN_BOOTSTRAP_KIND,
+      agentId: TEST_AGENT_ID,
+      capabilities: [{ permission: "admin", objectType: "system", objectId: "*" }],
+    });
+
+    expect(() =>
+      issueRuntimeContext({
+        parent,
+        cliName: "hub-client-issuer",
+        identity: { agentId: "main", sessionKey: "agent:main:main" },
+      }),
+    ).toThrow(DELEGATED_SESSION_BINDINGS_MUST_BE_PAIRED);
+    try {
+      issueRuntimeContext({
+        parent,
+        cliName: "hub-client-issuer",
+        identity: { agentId: "main", sessionKey: "agent:main:main" },
+      });
+      throw new Error("expected unpaired session bindings to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RuntimeContextError);
+      expect(error).toMatchObject({
+        code: "USAGE_ERROR",
+        exitCode: 2,
+        message: DELEGATED_SESSION_BINDINGS_MUST_BE_PAIRED,
+      });
+    }
   });
 
   it("cascades revocation to descendants with a single shared revokedAt", () => {

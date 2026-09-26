@@ -4,6 +4,7 @@ import type { TurnProvenance } from "./turn-provenance.js";
 import type { RuntimeCrashRecoveryCoordinator } from "./crash-recovery.js";
 import { hasRuntimeTurnAttemptInputMutation, type RuntimeTurnAttemptTerminalStatus } from "./crash-recovery-store.js";
 import type { RuntimeCredentialAttemptBinding } from "./credential-types.js";
+import type { SkillGatePersistedListener } from "./skill-gate.js";
 import type {
   ChannelBackendPromptMetadata,
   MessageActorMetadata,
@@ -126,6 +127,8 @@ export interface RuntimeHostStreamingSession {
     toolName?: string;
     output?: unknown;
     metadata?: RuntimeEventMetadata;
+    fatal?: boolean;
+    fatalReason?: string;
   };
   /** Activity tracking */
   lastActivity: number;
@@ -148,13 +151,17 @@ export interface RuntimeHostStreamingSession {
   /**
    * Whether external compaction announcements may be externalized for the turn
    * effectively executing. Snapshotted per turn from the turn's origin so that
-   * automation-originated turns compact silently while human/channel turns keep
-   * announcements. Internal compaction observability is unaffected.
+   * automation-originated turns compact silently while human/channel turns may
+   * keep announcements when `announceCompaction` is enabled. Internal
+   * compaction observability is unaffected.
    */
   currentTurnProvenance?: TurnProvenance;
-  /** Tool safety classification - "safe" tools can be interrupted, "unsafe" cannot */
+  /**
+   * Tool safety classification. Prompt-lane interrupts (steer/immediate) wait
+   * for "unsafe" tools to finish; an explicit abort cancels either kind.
+   */
   currentToolSafety: "safe" | "unsafe" | null;
-  /** Pending abort - set when abort is requested during an unsafe tool call */
+  /** Pending abort - set when abort is requested while a completed tool result is still being delivered */
   pendingAbort: boolean;
   /** Agent mode (e.g. "sentinel") - controls compaction announcements and system commands */
   agentMode?: string;
@@ -193,10 +200,21 @@ export interface RuntimeHostStreamingSession {
   durableTurnPreparationFailed?: boolean;
   /** Managed runtime credential selected for this provider process, if any. */
   currentRuntimeCredential?: RuntimeCredentialAttemptBinding;
+  /**
+   * Live `RAVI_CONTEXT_KEY` published into the provider spawn/tool env.
+   * Native Pi steer must not keep a long-lived turn on a revoked/expired key.
+   */
+  currentRuntimeContextKey?: string;
   /** Recovery timer for the narrow state where a provider is alive but not accepting queued input. */
   idleGapRecoveryTimer?: ReturnType<typeof setTimeout>;
   /** Timer that evicts an idle provider process from the runtime pool. */
   idleSessionEvictionTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Host-loop observer for skill-gate deliveries persisted in-process by the
+   * authorize path. Set while the event loop owns this stream so live state
+   * and `skill.visibility.loaded` telemetry reflect the load inside the turn.
+   */
+  onSkillGatePersisted?: SkillGatePersistedListener;
 }
 
 async function* emptyRuntimeEvents(): AsyncGenerator<never> {}
@@ -473,11 +491,19 @@ export function getCrashRecoveryReplayablePendingRuntimeMessages(
 }
 
 export function getPendingRuntimeTurnSuccessors(session: RuntimeHostStreamingSession): RuntimeUserMessage[] {
+  const pendingMessages = session.pendingMessages ?? [];
   const currentTurnPendingIds = new Set(session.currentTurnPendingIds ?? []);
   if (currentTurnPendingIds.size === 0) {
-    return [];
+    // Without named current-turn ids, only treat later queued atoms as
+    // successors once a yield is proven: some pending message already has a
+    // provider clientMessageId. If nothing was yielded, fail closed — the
+    // remaining atoms may still be the current physical turn.
+    if (!pendingMessages.some((message) => Boolean(message.clientMessageId))) {
+      return [];
+    }
+    return pendingMessages.filter((message) => typeof message.pendingId === "string" && !message.clientMessageId);
   }
-  return session.pendingMessages.filter(
+  return pendingMessages.filter(
     (message) => typeof message.pendingId === "string" && !currentTurnPendingIds.has(message.pendingId),
   );
 }

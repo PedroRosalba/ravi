@@ -28,6 +28,8 @@ export interface ToolContext {
   sessionName?: string;
   /** Agent ID */
   agentId?: string;
+  /** Caller working directory for resolving relative file arguments. */
+  cwd?: string;
   /** Channel info for response routing */
   source?: {
     channel: string;
@@ -99,13 +101,15 @@ export function getContext(options: { localOnly?: boolean } = {}): ToolContext |
 
     const source = resolvedContext.source;
     if (source) {
+      const instanceId = source.instanceId ?? env.RAVI_INSTANCE_ID;
+      const canonicalChatId = source.canonicalChatId ?? env.RAVI_CANONICAL_CHAT_ID;
       ctx.source = {
         channel: source.channel,
         accountId: source.accountId,
-        ...(env.RAVI_INSTANCE_ID ? { instanceId: env.RAVI_INSTANCE_ID } : {}),
+        ...(instanceId ? { instanceId } : {}),
         chatId: source.chatId,
         ...(source.threadId ? { threadId: source.threadId } : {}),
-        ...(env.RAVI_CANONICAL_CHAT_ID ? { canonicalChatId: env.RAVI_CANONICAL_CHAT_ID } : {}),
+        ...(canonicalChatId ? { canonicalChatId } : {}),
       };
     } else if (env.RAVI_CHANNEL && env.RAVI_ACCOUNT_ID && env.RAVI_CHAT_ID) {
       ctx.source = {
@@ -213,9 +217,9 @@ function installContextualConsoleGate(): void {
  * Fail with error. Throws if running inside daemon context,
  * otherwise logs error and exits.
  */
-export function fail(message: string): never {
+export function fail(message: string, suggestedAction?: string): never {
   if (hasContext()) {
-    throw new CliExpectedError(message);
+    throw new CliExpectedError(message, "COMMAND_FAILED", 1, suggestedAction);
   }
   console.error(message);
   process.exit(1);
