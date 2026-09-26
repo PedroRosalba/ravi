@@ -233,7 +233,11 @@ export async function performSupervisedDaemonRestart(
   }
 
   const successorPmId = successor.pmId;
-  const stillSupervised = (): boolean => isSupervised(named().find((process) => process.pmId === successorPmId), deps.pidAlive);
+  const stillSupervised = (): boolean =>
+    isSupervised(
+      named().find((process) => process.pmId === successorPmId),
+      deps.pidAlive,
+    );
 
   if (!stillSupervised()) {
     cleanupUnsupervisedArrivals();

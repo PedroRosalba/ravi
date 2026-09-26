@@ -5,7 +5,16 @@
 import "reflect-metadata";
 import { execSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, writeFileSync, readFileSync, mkdirSync, realpathSync, statSync, openSync, closeSync } from "node:fs";
+import {
+  existsSync,
+  writeFileSync,
+  readFileSync,
+  mkdirSync,
+  realpathSync,
+  statSync,
+  openSync,
+  closeSync,
+} from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { Group, Command, CommandAccess, CliOnly, Option, Returns } from "../decorators.js";
@@ -27,7 +36,6 @@ import {
   formatDaemonRestartOutcome,
   performSupervisedDaemonRestart,
   shouldHandoffDaemonRestart,
-  type SupervisedDaemonRestartResult,
 } from "./daemon-restart-supervision.js";
 import { isPm2Available, runPm2, isRaviRunning, getRaviPid, getPm2Processes, PM2_PROCESS_NAME } from "../../pm2.js";
 import { buildManagedRuntimeIdentity } from "../../managed-runtime.js";
