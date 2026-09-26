@@ -1383,22 +1383,33 @@ function buildDenyHints(input: {
       hints.push(`${scope.label} is not a known chat; only an exact stored grant on that id can be revoked.`);
     }
     if (scope.type !== "chat") continue;
+    const revokedHere = (grant: ContactProfileGrant) =>
+      grant.profile === input.tagSlug &&
+      grant.scope.type === "chat" &&
+      grant.scope.chatId === scope.chatId &&
+      input.contacts.some((contact) => contact.id === grant.contactId);
+    const governedAfter = input.apply
+      ? isUserOverlayActiveForChat(scope)
+      : listContactProfileGrantsCoveringChat(scope).some((grant) => !revokedHere(grant));
     for (const contact of input.contacts) {
       const remaining = [
         ...listContactProfileGrantsCoveringChat(scope, contact.id),
         ...listContactGlobalProfileGrants(contact.id),
-      ].filter(
-        (grant) =>
-          grant.profile === input.tagSlug && !(grant.scope.type === "chat" && grant.scope.chatId === scope.chatId),
-      );
+      ].filter((grant) => grant.profile === input.tagSlug && !revokedHere(grant));
       for (const grant of remaining) {
         hints.push(
-          `contact:${contact.id} still receives ${input.tagSlug} in ${scope.label} through ${formatContactGrantScope(grant.scope)}.`,
+          grant.scope.type === "global" && !governedAfter
+            ? `contact:${contact.id} keeps a global ${input.tagSlug} grant; it only applies in chats governed by a chat or chat-tag grant.`
+            : `contact:${contact.id} still receives ${input.tagSlug} in ${scope.label} through ${formatContactGrantScope(grant.scope)}.`,
         );
       }
     }
-    if (input.apply && input.governedBefore.get(scope.label) && !isUserOverlayActiveForChat(scope)) {
-      hints.push(`${scope.label} is no longer governed by contact grants; turns there use the agent identity again.`);
+    if (input.governedBefore.get(scope.label) && !governedAfter) {
+      hints.push(
+        input.apply
+          ? `${scope.label} is no longer governed by contact grants; turns there use the agent identity again.`
+          : `${scope.label} would no longer be governed by contact grants; turns there would use the agent identity again.`,
+      );
     }
   }
   return hints;

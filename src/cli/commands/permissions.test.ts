@@ -527,6 +527,9 @@ describe("PermissionsCommands provider-runtime surface", () => {
       confirmation: { action: "deny", dryRun: true, scopes: [`chat:${chat.id}`], global: false, force: false },
       nextCommand: `ravi permissions deny "image workflow" --to contact:${contact.id} --chat ${chat.id} --apply`,
     });
+    expect(plan.hints).toContain(
+      `chat:${chat.id} would no longer be governed by contact grants; turns there would use the agent identity again.`,
+    );
     expect(dbListContactChatGrants({ contactId: contact.id })).toHaveLength(1);
 
     const applied = commands.deny("image workflow", `contact:${contact.id}`, chat.id, undefined, undefined, true, true);
@@ -535,7 +538,7 @@ describe("PermissionsCommands provider-runtime surface", () => {
       `Revoked permission-image-workflow from contact:${contact.id} only in chat:${chat.id} (not global).`,
     );
     expect(applied.hints).toContain(
-      `contact:${contact.id} still receives permission-image-workflow in chat:${chat.id} through global.`,
+      `contact:${contact.id} keeps a global permission-image-workflow grant; it only applies in chats governed by a chat or chat-tag grant.`,
     );
     expect(applied.hints).toContain(
       `chat:${chat.id} is no longer governed by contact grants; turns there use the agent identity again.`,
@@ -551,6 +554,46 @@ describe("PermissionsCommands provider-runtime surface", () => {
       commands.deny("image workflow", "agent:main", chat.id, undefined, undefined, true, true),
     );
     expect(agentTarget.code).toBe("USAGE_ERROR");
+  });
+
+  it("reports remaining coverage when a revoked chat stays governed", () => {
+    const contact = createContact({ phone: "+15550000020", name: "Covered User" });
+    const chat = groupChat("120363400000000020@g.us");
+    attachTagSlugsToAsset({ assetType: "chat", assetId: chat.id, tags: ["vip"], source: "test" });
+    const commands = new PermissionsCommands();
+    const subject = `contact:${contact.id}`;
+    commands.allow(
+      "image workflow",
+      subject,
+      undefined,
+      "mutate:image:generate",
+      undefined,
+      undefined,
+      true,
+      true,
+      chat.id,
+    );
+    commands.allow("image workflow", subject, undefined, undefined, undefined, undefined, true, true, undefined, "vip");
+    commands.allow(
+      "image workflow",
+      subject,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      true,
+      undefined,
+      undefined,
+      true,
+    );
+
+    const applied = commands.deny("image workflow", subject, chat.id, undefined, undefined, true, true);
+
+    expect(applied.hints).toEqual([
+      `${subject} still receives permission-image-workflow in chat:${chat.id} through chat-tag:vip.`,
+      `${subject} still receives permission-image-workflow in chat:${chat.id} through global.`,
+    ]);
   });
 
   it("revokes live turn contexts that used a revoked contact grant", () => {
