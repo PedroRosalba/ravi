@@ -36,7 +36,7 @@ import {
   formatDaemonRestartOutcome,
   performSupervisedDaemonRestart,
   shouldHandoffDaemonRestart,
-} from "./daemon-restart-supervision.js";
+} from "../daemon-restart-supervision.js";
 import { isPm2Available, runPm2, isRaviRunning, getRaviPid, getPm2Processes, PM2_PROCESS_NAME } from "../../pm2.js";
 import { buildManagedRuntimeIdentity } from "../../managed-runtime.js";
 import {

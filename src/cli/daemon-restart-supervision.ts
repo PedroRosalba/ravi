@@ -11,7 +11,7 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { getRaviStateDir } from "../../utils/paths.js";
+import { getRaviStateDir } from "../utils/paths.js";
 
 /** Set on every detached restart process so it cannot hand off again. */
 export const DAEMON_RESTART_HANDOFF_ENV = "RAVI_DAEMON_RESTART_HANDOFF";

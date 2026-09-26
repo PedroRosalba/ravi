@@ -3,7 +3,7 @@ import {
   performSupervisedDaemonRestart,
   shouldHandoffDaemonRestart,
   type ManagedDaemonProcess,
-} from "./daemon-restart-supervision.js";
+} from "../daemon-restart-supervision.js";
 
 function clock() {
   let time = 0;
