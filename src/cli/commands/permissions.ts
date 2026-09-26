@@ -24,6 +24,7 @@ import {
   type ContactProfileGrant,
 } from "../../permissions/contact-policy-permissions-provider.js";
 import { dbGetChat, dbGetThreadParentChat, dbListChatsByRef, type ChatRecord } from "../../router/router-db.js";
+import { revokeLiveRuntimeContextsForContactGrant } from "../../runtime/context-registry.js";
 import { canonicalAssetIdsForTag, canonicalTagSlugsForAsset, tryNormalizeTagSlug } from "../../tags/index.js";
 import { CONTRACT_EXIT_USAGE, contractFail } from "../agent-contract.js";
 import { getContext } from "../context.js";
@@ -1613,11 +1614,12 @@ function planContactProfileRevokeOperation(input: {
   }
   if (input.apply) {
     removeContactTag(input.contact.id, input.tagSlug);
+    const revoked = revokeLiveRuntimeContextsForContactGrant(input.contact.id, `${input.tagSlug}@global`);
     input.operations.push({
       kind: "contact-profile-global",
       status: "applied",
       target,
-      message: "Removed global permission profile tag from contact policy (--force).",
+      message: `Removed global permission profile tag from contact policy (--force).${liveContextsRevokedSuffix(revoked.length)}`,
     });
     return;
   }
@@ -1685,11 +1687,12 @@ function planContactChatGrantRevokeOperation(input: {
   }
   if (input.apply) {
     dbDeleteContactChatGrant(key);
+    const revoked = revokeLiveRuntimeContextsForContactGrant(input.contact.id, `${input.tagSlug}@${input.scope.label}`);
     input.operations.push({
       kind: "contact-chat-grant",
       status: "applied",
       target,
-      message: `Revoked the permission profile from the contact in ${input.scope.label}.`,
+      message: `Revoked the permission profile from the contact in ${input.scope.label}.${liveContextsRevokedSuffix(revoked.length)}`,
     });
     return;
   }
@@ -1699,6 +1702,10 @@ function planContactChatGrantRevokeOperation(input: {
     target,
     message: `Would revoke the permission profile from the contact in ${input.scope.label}.`,
   });
+}
+
+function liveContextsRevokedSuffix(count: number): string {
+  return count > 0 ? ` Revoked ${count} live turn context(s) that used this grant.` : "";
 }
 
 function contactChatGrantKey(

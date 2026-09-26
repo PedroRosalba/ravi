@@ -17,6 +17,7 @@ import {
   resolveRuntimeContextOrThrow,
   revokeAgentRuntimeContextsForSession,
   revokeLiveRuntimeContextsForAgent,
+  revokeLiveRuntimeContextsForContactGrant,
   revokeRuntimeContext,
   snapshotAgentCapabilities,
 } from "./context-registry.js";
@@ -241,6 +242,43 @@ describe("runtime context registry", () => {
     expect(resolveRuntimeContext(child.contextKey, { touch: false })).toBeNull();
     expect(resolveRuntimeContext(unrelated.contextKey, { touch: false })).not.toBeNull();
     expect(dbGetContext(turnRuntime.contextId)?.metadata?.revocationReason).toBe("agent_permissions_changed");
+  });
+
+  it("revokes only live snapshots whose user overlay used a revoked contact grant", () => {
+    const overlayMetadata = (actor: string, grants: string[]) => ({
+      actorPrincipal: actor,
+      actorAuthorizationMode: "user-overlay",
+      userOverlay: "active",
+      userOverlayGrants: grants,
+    });
+    const usesGrant = createRuntimeContext({
+      kind: "turn-runtime",
+      agentId: TEST_AGENT_ID,
+      capabilities: [{ permission: "mutate", objectType: "image", objectId: "generate" }],
+      metadata: overlayMetadata("contact:ana", ["permission-image@chat:chat-1"]),
+    });
+    const child = issueRuntimeContext({ parent: usesGrant, cliName: "child-cli", inheritCapabilities: true });
+    const otherChat = createRuntimeContext({
+      kind: "turn-runtime",
+      agentId: TEST_AGENT_ID,
+      capabilities: [],
+      metadata: overlayMetadata("contact:ana", ["permission-image@chat:chat-2"]),
+    });
+    const otherContact = createRuntimeContext({
+      kind: "turn-runtime",
+      agentId: TEST_AGENT_ID,
+      capabilities: [],
+      metadata: overlayMetadata("contact:bruno", ["permission-image@chat:chat-1"]),
+    });
+
+    const result = revokeLiveRuntimeContextsForContactGrant("ana", "permission-image@chat:chat-1");
+
+    expect(result.map((entry) => entry.context.contextId)).toEqual([usesGrant.contextId]);
+    expect(resolveRuntimeContext(usesGrant.contextKey, { touch: false })).toBeNull();
+    expect(resolveRuntimeContext(child.contextKey, { touch: false })).toBeNull();
+    expect(resolveRuntimeContext(otherChat.contextKey, { touch: false })).not.toBeNull();
+    expect(resolveRuntimeContext(otherContact.contextKey, { touch: false })).not.toBeNull();
+    expect(dbGetContext(usesGrant.contextId)?.metadata?.revocationReason).toBe("contact_grant_revoked");
   });
 
   it("snapshots provider materialized capabilities only", () => {

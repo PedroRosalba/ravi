@@ -212,6 +212,38 @@ export function revokeLiveRuntimeContextsForAgent(
   );
 }
 
+/**
+ * Revoke live authority snapshots whose user overlay used one contact grant.
+ *
+ * `grantRef` is the `<profile>@<scope>` entry recorded in `userOverlayGrants`.
+ * Like agent permission reductions, a revoked grant must stop authorizing
+ * immediately instead of lasting until the turn ends.
+ */
+export function revokeLiveRuntimeContextsForContactGrant(
+  contactId: string,
+  grantRef: string,
+  options: RevokeRuntimeContextOptions = {},
+): RevokeContextResult[] {
+  const actorPrincipal = `contact:${contactId}`;
+  const contexts = dbListContexts({ includeInactive: false }).filter((context) => {
+    const grants = context.metadata?.userOverlayGrants;
+    return context.metadata?.actorPrincipal === actorPrincipal && Array.isArray(grants) && grants.includes(grantRef);
+  });
+  const matchingIds = new Set(contexts.map((context) => context.contextId));
+  const roots = contexts.filter((context) => {
+    const parentContextId = context.metadata?.parentContextId;
+    return typeof parentContextId !== "string" || !matchingIds.has(parentContextId);
+  });
+
+  return roots.map((context) =>
+    revokeRuntimeContext(context.contextId, {
+      cascade: options.cascade,
+      reason: options.reason ?? "contact_grant_revoked",
+      revokedAt: options.revokedAt,
+    }),
+  );
+}
+
 export function snapshotAgentCapabilities(agentId: string): ContextCapability[] {
   return dedupeCapabilities(materializeSubjectCapabilities("agent", agentId));
 }

@@ -5,6 +5,7 @@ import { dbListContactChatGrants } from "../../permissions/contact-chat-grants.j
 import { recordPermissionDenial } from "../../permissions/denials.js";
 import { readAgentRuntimePermissionsConfig } from "../../permissions/agent-default-capabilities-provider.js";
 import { dbCreateAgent, dbUpsertChat } from "../../router/router-db.js";
+import { createRuntimeContext, resolveRuntimeContext } from "../../runtime/context-registry.js";
 import { attachTagSlugsToAsset, dbCreateTagDefinition, dbGetTagDefinition } from "../../tags/index.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../../test/ravi-state.js";
 import { ContractError } from "../agent-contract.js";
@@ -550,6 +551,44 @@ describe("PermissionsCommands provider-runtime surface", () => {
       commands.deny("image workflow", "agent:main", chat.id, undefined, undefined, true, true),
     );
     expect(agentTarget.code).toBe("USAGE_ERROR");
+  });
+
+  it("revokes live turn contexts that used a revoked contact grant", () => {
+    const contact = createContact({ phone: "+15550000019", name: "Live User" });
+    const chat = groupChat("120363400000000019@g.us");
+    const commands = new PermissionsCommands();
+    commands.allow(
+      "image workflow",
+      `contact:${contact.id}`,
+      undefined,
+      "mutate:image:generate",
+      undefined,
+      undefined,
+      true,
+      true,
+      chat.id,
+    );
+    const live = createRuntimeContext({
+      kind: "turn-runtime",
+      capabilities: [{ permission: "mutate", objectType: "image", objectId: "generate" }],
+      metadata: {
+        actorPrincipal: `contact:${contact.id}`,
+        actorAuthorizationMode: "user-overlay",
+        userOverlay: "active",
+        userOverlayGrants: [`permission-image-workflow@chat:${chat.id}`],
+      },
+    });
+
+    const applied = commands.deny("image workflow", `contact:${contact.id}`, chat.id, undefined, undefined, true, true);
+
+    expect(applied.operations).toContainEqual(
+      expect.objectContaining({
+        kind: "contact-chat-grant",
+        status: "applied",
+        message: expect.stringContaining("Revoked 1 live turn context(s) that used this grant."),
+      }),
+    );
+    expect(resolveRuntimeContext(live.contextKey, { touch: false })).toBeNull();
   });
 
   it("lists contact grants for a chat with the effective contact caps", () => {
