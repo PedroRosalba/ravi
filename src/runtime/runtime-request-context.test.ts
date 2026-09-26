@@ -1779,6 +1779,29 @@ describe("runtime request context chat-scoped user overlay", () => {
     expect(canWithCapabilities(inOther.capabilities, "execute", "executable", "curl")).toBe(true);
   });
 
+  it("requires an allowed contact for global tags but not for explicit chat grants", () => {
+    const chat = groupChat("120363400000000010@g.us");
+    const taggedPending = createContact({
+      phone: "5511900000010",
+      name: "Pending tagged",
+      status: "pending",
+      tags: ["permission-image"],
+    });
+    const grantedPending = createContact({ phone: "5511900000011", name: "Pending granted", status: "pending" });
+    grant(grantedPending.id, "chat", chat.id);
+
+    const tagged = contextFor(taggedPending.id, chat);
+    const granted = contextFor(grantedPending.id, chat);
+
+    expect(tagged.metadata).toMatchObject({ userOverlay: "active", userOverlayGrants: [] });
+    expect(tagged.capabilities).toEqual([]);
+    expect(granted.metadata).toMatchObject({
+      userOverlay: "active",
+      userOverlayGrants: [`permission-image@chat:${chat.id}`],
+    });
+    expect(canWithCapabilities(granted.capabilities, "mutate", "image", "generate")).toBe(true);
+  });
+
   it("drops blocked contacts to zero capabilities in a governed chat", () => {
     const chat = groupChat("120363400000000009@g.us");
     const blocked = createContact({ phone: "5511900000009", name: "Blocked", status: "blocked" });

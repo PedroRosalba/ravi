@@ -142,7 +142,8 @@ export function resolveContactChatOverlay(input: {
     chatTags: scope.chatTags,
     contactId,
   }).map(toContactProfileGrant);
-  const globalGrants = globalProfileGrantsFromTags(contactId, policy?.tags ?? []);
+  // Global permission tags keep the legacy tag-policy gate; explicit chat grants only need eligibility.
+  const globalGrants = policy?.status === "allowed" ? globalProfileGrantsFromTags(contactId, policy.tags) : [];
   const grants = [...scopedGrants, ...globalGrants];
   const capabilities = grants.flatMap((grant) =>
     grant.capabilities.flatMap((value) => {
