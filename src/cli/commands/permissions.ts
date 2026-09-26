@@ -762,13 +762,8 @@ function buildPermissionAllowPlan(input: PermissionAllowInput): PermissionAllowP
   const op = input.op ?? "permissions allow";
   const profile = requiredOption(input.profile, "profile");
   const tagSlug = normalizePermissionTagSlug(profile);
-  const existingTag = dbGetTagDefinition(tagSlug);
-  const explicitCapabilities = parseCapabilityList(input.capabilities);
-  const capabilities = resolveProfileCapabilities(existingTag, explicitCapabilities);
   const targets = parseSubjectRefs(input.subjects);
   const agentCeilings = parseCsv(input.agentIds);
-  const label = input.label?.trim() || existingTag?.label || labelFromProfile(tagSlug);
-  const description = input.description?.trim() || existingTag?.description;
   const operations: PermissionAllowOperation[] = [];
   const force = input.force === true;
 
@@ -778,6 +773,11 @@ function buildPermissionAllowPlan(input: PermissionAllowInput): PermissionAllowP
     contacts.length > 0
       ? resolveContactScopes(op, { ...input, force }, { requireKnownChat: true, suggest: allowScopeSuggester(input) })
       : rejectScopeWithoutContacts(op, { ...input, force });
+  const existingTag = dbGetTagDefinition(tagSlug);
+  const explicitCapabilities = parseCapabilityList(input.capabilities);
+  const capabilities = resolveProfileCapabilities(op, existingTag, explicitCapabilities, input.asJson);
+  const label = input.label?.trim() || existingTag?.label || labelFromProfile(tagSlug);
+  const description = input.description?.trim() || existingTag?.description;
   const governedBefore = new Map(scopes.map((scope) => [scope.label, isScopeGoverned(scope)]));
 
   planPermissionTagOperation({
@@ -1521,14 +1521,23 @@ function buildListCommand(input: PermissionListInput, scopeFlags: string[]): str
 }
 
 function resolveProfileCapabilities(
+  op: string,
   existingTag: TagDefinition | null,
   explicitCapabilities: AuthorizationCapability[] | undefined,
+  asJson?: boolean,
 ): AuthorizationCapability[] {
   const existingCapabilities = existingTag ? readPermissionTagCapabilities(existingTag) : [];
   const capabilities = dedupeCapabilities([...(existingCapabilities ?? []), ...(explicitCapabilities ?? [])]);
   if (capabilities.length === 0) {
-    throw new Error(
+    contractFail(
+      op,
+      "USAGE_ERROR",
       "No capabilities found for this profile. Provide --capabilities <permission>:<objectType>:<objectId> to create or bootstrap it.",
+      {
+        asJson,
+        exitCode: CONTRACT_EXIT_USAGE,
+        details: { suggestedAction: "Re-run with --capabilities <permission>:<objectType>:<objectId>." },
+      },
     );
   }
   return capabilities;

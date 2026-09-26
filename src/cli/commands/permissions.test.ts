@@ -243,6 +243,39 @@ describe("PermissionsCommands provider-runtime surface", () => {
     expect(error.details.suggestions?.[0]).toEndWith(`--chat ${chat.id}`);
   });
 
+  it("checks contact scope before resolving a new profile without capabilities", () => {
+    const contact = createContact({ phone: "+15550000013", name: "New Profile User" });
+    const chat = groupChat("120363400000000013@g.us");
+    const commands = new PermissionsCommands();
+    const allowNewProfile = (chatId?: string, force?: boolean) =>
+      captureContractError(() =>
+        commands.allow(
+          "brand new",
+          `contact:${contact.id}`,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          true,
+          true,
+          chatId,
+          undefined,
+          force,
+        ),
+      );
+
+    expect(allowNewProfile().code).toBe("CHAT_SCOPE_REQUIRED");
+    const conflict = allowNewProfile(chat.id, true);
+    expect(conflict.code).toBe("USAGE_ERROR");
+    expect(conflict.message).toContain("cannot be combined with --chat/--chat-tag");
+    const missingCapabilities = allowNewProfile(chat.id);
+    expect(missingCapabilities.code).toBe("USAGE_ERROR");
+    expect(missingCapabilities.exitCode).toBe(2);
+    expect(missingCapabilities.message).toContain("No capabilities found for this profile");
+    expect(dbGetTagDefinition("permission-brand-new")).toBeNull();
+    expect(dbListContactChatGrants({ contactId: contact.id })).toEqual([]);
+  });
+
   it("plans a chat-scoped contact grant without mutating provider-owned state", () => {
     const contact = createContact({ phone: "+15550000001", name: "Permission Test User" });
     const chat = groupChat("120363400000000012@g.us");
