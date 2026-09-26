@@ -3491,6 +3491,19 @@ public struct PermissionsNamespace: Sendable {
     return try await transport.call(groupSegments: ["permissions"], command: "check", body: requestBody, as: PermissionsCheckReturn.self)
   }
 
+  public func deny(_ profile: String, _ options: PermissionsDenyOptions = .init()) async throws -> PermissionsDenyReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    requestBody["profile"] = try RaviJSON.fromEncodable(profile)
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["permissions"], command: "deny", body: requestBody, as: PermissionsDenyReturn.self)
+  }
+
+  public func list(_ options: PermissionsListOptions = .init()) async throws -> PermissionsListReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["permissions"], command: "list", body: requestBody, as: PermissionsListReturn.self)
+  }
+
   public func materialize(_ options: PermissionsMaterializeOptions = .init()) async throws -> PermissionsMaterializeReturn {
     var requestBody: [String: RaviJSON] = [:]
     try options.encodeBody(into: &requestBody)

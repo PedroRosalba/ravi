@@ -4857,6 +4857,29 @@ class PermissionsNamespace {
     );
   }
 
+  Future<PermissionsDenyReturn> deny(String profile, [PermissionsDenyOptions options = const PermissionsDenyOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["profile"] = RaviJson.from(profile);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["permissions"],
+      command: "deny",
+      body: requestBody,
+      decode: permissionsDenyReturnFromJson,
+    );
+  }
+
+  Future<PermissionsListReturn> list([PermissionsListOptions options = const PermissionsListOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["permissions"],
+      command: "list",
+      body: requestBody,
+      decode: permissionsListReturnFromJson,
+    );
+  }
+
   Future<PermissionsMaterializeReturn> materialize([PermissionsMaterializeOptions options = const PermissionsMaterializeOptions()]) async {
     final requestBody = <String, RaviJson>{};
     options.encodeBody(requestBody);
