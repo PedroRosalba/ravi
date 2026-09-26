@@ -13574,11 +13574,13 @@ class PermissionsDenyReturn {
 PermissionsDenyReturn permissionsDenyReturnFromJson(Object? json) => PermissionsDenyReturn.fromJsonValue(json);
 
 class PermissionsListOptions {
-  const PermissionsListOptions({this.chat, this.chatTag, this.force, this.profile, this.to});
+  const PermissionsListOptions({this.chat, this.chatTag, this.force, this.limit, this.offset, this.profile, this.to});
 
   final String? chat;
   final String? chatTag;
   final bool? force;
+  final String? limit;
+  final String? offset;
   final String? profile;
   final String? to;
 
@@ -13592,6 +13594,12 @@ class PermissionsListOptions {
     if (force != null) {
       into["force"] = RaviJson.from(force);
     }
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
     if (profile != null) {
       into["profile"] = RaviJson.from(profile);
     }
@@ -13602,15 +13610,17 @@ class PermissionsListOptions {
 }
 
 class PermissionsListReturn {
-  const PermissionsListReturn({required this.confirmation, required this.force, required this.grants, required this.hints, required this.overlays, required this.scopes, required this.targets});
+  const PermissionsListReturn({required this.confirmation, required this.force, required this.grants, required this.hints, required this.overlays, required this.pagination, required this.scopes, required this.targets, required this.total});
 
   final RaviJson confirmation;
   final bool force;
   final List<RaviJson> grants;
   final List<String> hints;
   final List<RaviJson> overlays;
+  final RaviJson pagination;
   final List<RaviJson> scopes;
   final List<RaviJson> targets;
+  final double total;
 
   factory PermissionsListReturn.fromJson(Map<String, Object?> json) {
     return PermissionsListReturn(
@@ -13619,8 +13629,10 @@ class PermissionsListReturn {
       grants: raviJsonAsList(json["grants"], RaviJson.from),
       hints: raviJsonAsList(json["hints"], raviJsonAsString),
       overlays: raviJsonAsList(json["overlays"], RaviJson.from),
+      pagination: RaviJson.from(json["pagination"]),
       scopes: raviJsonAsList(json["scopes"], RaviJson.from),
       targets: raviJsonAsList(json["targets"], RaviJson.from),
+      total: raviJsonAsDouble(json["total"]),
     );
   }
 

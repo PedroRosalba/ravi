@@ -15826,13 +15826,17 @@ public struct PermissionsListOptions: Codable, Sendable {
   public var chat: String?
   public var chatTag: String?
   public var force: Bool?
+  public var limit: String?
+  public var offset: String?
   public var profile: String?
   public var to: String?
 
-  public init(chat: String? = nil, chatTag: String? = nil, force: Bool? = nil, profile: String? = nil, to: String? = nil) {
+  public init(chat: String? = nil, chatTag: String? = nil, force: Bool? = nil, limit: String? = nil, offset: String? = nil, profile: String? = nil, to: String? = nil) {
     self.chat = chat
     self.chatTag = chatTag
     self.force = force
+    self.limit = limit
+    self.offset = offset
     self.profile = profile
     self.to = to
   }
@@ -15841,6 +15845,8 @@ public struct PermissionsListOptions: Codable, Sendable {
     case chat = "chat"
     case chatTag = "chatTag"
     case force = "force"
+    case limit = "limit"
+    case offset = "offset"
     case profile = "profile"
     case to = "to"
   }
@@ -15854,6 +15860,12 @@ public struct PermissionsListOptions: Codable, Sendable {
     }
     if let value = self.force {
       body["force"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.limit {
+      body["limit"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.offset {
+      body["offset"] = try RaviJSON.fromEncodable(value)
     }
     if let value = self.profile {
       body["profile"] = try RaviJSON.fromEncodable(value)
@@ -15870,17 +15882,21 @@ public struct PermissionsListReturn: Codable, Sendable {
   public var grants: [RaviJSON]
   public var hints: [String]
   public var overlays: [RaviJSON]
+  public var pagination: RaviJSON
   public var scopes: [RaviJSON]
   public var targets: [RaviJSON]
+  public var total: Double
 
-  public init(confirmation: RaviJSON, force: Bool, grants: [RaviJSON], hints: [String], overlays: [RaviJSON], scopes: [RaviJSON], targets: [RaviJSON]) {
+  public init(confirmation: RaviJSON, force: Bool, grants: [RaviJSON], hints: [String], overlays: [RaviJSON], pagination: RaviJSON, scopes: [RaviJSON], targets: [RaviJSON], total: Double) {
     self.confirmation = confirmation
     self.force = force
     self.grants = grants
     self.hints = hints
     self.overlays = overlays
+    self.pagination = pagination
     self.scopes = scopes
     self.targets = targets
+    self.total = total
   }
 
   enum CodingKeys: String, CodingKey {
@@ -15889,8 +15905,10 @@ public struct PermissionsListReturn: Codable, Sendable {
     case grants = "grants"
     case hints = "hints"
     case overlays = "overlays"
+    case pagination = "pagination"
     case scopes = "scopes"
     case targets = "targets"
+    case total = "total"
   }
 }
 

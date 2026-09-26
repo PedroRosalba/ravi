@@ -4522,6 +4522,8 @@ export class RaviClient {
       chat?: string;
       chatTag?: string;
       force?: boolean;
+      limit?: string;
+      offset?: string;
       profile?: string;
       to?: string;
     }): Promise<PermissionsListReturn> => {

@@ -10220,6 +10220,8 @@ export type PermissionsListInput = {
   chat?: string;
   chatTag?: string;
   force?: boolean;
+  limit?: string;
+  offset?: string;
   profile?: string;
   to?: string;
 };
@@ -10255,6 +10257,15 @@ export type PermissionsListReturn = {
     eligible: boolean;
     governed: boolean;
   }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
   scopes: Array<{
     channel?: string;
     chatId?: string;
@@ -10271,6 +10282,7 @@ export type PermissionsListReturn = {
     id: string;
     type: string;
   }>;
+  total: number;
 };
 
 /** Input shape for `permissions.materialize`. */

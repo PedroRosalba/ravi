@@ -203,7 +203,7 @@ describe("PermissionsCommands provider-runtime surface", () => {
       commands.deny("image workflow", `contact:${contact.id}`, undefined, undefined, undefined, true, true),
     );
     const listError = captureContractError(() =>
-      commands.list(`contact:${contact.id}`, undefined, undefined, undefined, undefined, true),
+      commands.list(`contact:${contact.id}`, undefined, undefined, undefined, undefined, undefined, undefined, true),
     );
 
     for (const error of [allowError, denyError, listError]) {
@@ -677,7 +677,8 @@ describe("PermissionsCommands provider-runtime surface", () => {
       true,
     );
 
-    const forChat = commands.list(undefined, chat.id, undefined, undefined, undefined, true);
+    const forChat = commands.list(undefined, chat.id, undefined, undefined, undefined, undefined, undefined, true);
+    expect(forChat.total).toBe(2);
     expect(forChat.grants).toHaveLength(2);
     expect(forChat.grants).toContainEqual({
       contact: `contact:${ana.id}`,
@@ -700,7 +701,27 @@ describe("PermissionsCommands provider-runtime surface", () => {
       "Global contact grants also apply in governed chats; list them with `ravi permissions list --force`.",
     );
 
-    const forBruno = commands.list(`contact:${bruno.id}`, chat.id, undefined, undefined, undefined, true);
+    const firstPage = commands.list(undefined, chat.id, undefined, undefined, undefined, "1", undefined, true);
+    expect(firstPage.grants).toHaveLength(1);
+    expect(firstPage.pagination).toMatchObject({ limit: 1, offset: 0, returned: 1, total: 2, hasMore: true });
+    expect(firstPage.pagination.nextCommand).toBe(
+      `ravi permissions list --json --limit 1 --offset 1 --chat ${chat.id}`,
+    );
+    expect(firstPage.confirmation.message).toBe(`Listed 1 of 2 contact grant(s) covering chat:${chat.id}.`);
+    const secondPage = commands.list(undefined, chat.id, undefined, undefined, undefined, "1", "1", true);
+    expect(secondPage.pagination).toMatchObject({ offset: 1, returned: 1, hasMore: false, nextCommand: null });
+    expect([...firstPage.grants, ...secondPage.grants]).toEqual(expect.arrayContaining(forChat.grants));
+
+    const forBruno = commands.list(
+      `contact:${bruno.id}`,
+      chat.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
     expect(forBruno.grants.map((grant) => `${grant.profile}@${grant.scope}`).sort()).toEqual([
       "permission-image-workflow@global",
       "permission-mail-workflow@chat-tag:vip",
@@ -718,7 +739,7 @@ describe("PermissionsCommands provider-runtime surface", () => {
       `Listed 2 contact grant(s) for contact:${bruno.id} covering chat:${chat.id}.`,
     );
 
-    const global = commands.list(undefined, undefined, undefined, true, undefined, true);
+    const global = commands.list(undefined, undefined, undefined, true, undefined, undefined, undefined, true);
     expect(global.grants).toEqual([
       expect.objectContaining({ contact: `contact:${bruno.id}`, scope: "global", source: "contact-tag" }),
     ]);

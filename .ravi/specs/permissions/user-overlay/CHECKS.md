@@ -33,6 +33,8 @@
   `dryRun`, `contacts`, `agents`, `scopes`, `global`, `force`, `profile`,
   `capabilities`, and `message`.
 - `--force` MUST return `global=true`, `force=true`, and a safer-default hint.
+- `list --limit <n>` MUST return at most `n` grants, the full `total`, and a
+  `pagination.nextCommand` that fetches the next page with the same scope.
 - Overlay-gated denials MUST diagnose `user_overlay_missing_grant` and
   `resolve` MUST plan a chat-scoped contact grant.
 - The Bash/tool hook MUST deny a user-overlay turn anything outside its issued

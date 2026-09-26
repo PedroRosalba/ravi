@@ -28,6 +28,8 @@ import { revokeLiveRuntimeContextsForContactGrant } from "../../runtime/context-
 import { canonicalAssetIdsForTag, canonicalTagSlugsForAsset, tryNormalizeTagSlug } from "../../tags/index.js";
 import { CONTRACT_EXIT_USAGE, contractFail } from "../agent-contract.js";
 import { getContext } from "../context.js";
+import { buildCliOffsetPagination, paginateCliItems } from "../pagination.js";
+import { strictCliOffsetPaginationSchema } from "../return-schemas.js";
 import {
   ensureAgentRuntimeCapability,
   isChatOnlyRuntimePermissions,
@@ -49,6 +51,7 @@ import {
   normalizeTagSlug,
 } from "../../tags/index.js";
 import type { TagDefinition } from "../../tags/types.js";
+import type { OffsetPagination } from "../../utils/pagination.js";
 import { Arg, Command, CommandAccess, Group, Option, Returns } from "../decorators.js";
 import {
   getConfiguredCapabilityMaterializers,
@@ -277,6 +280,8 @@ const permissionsListReturnSchema = z.object({
   targets: z.array(permissionTargetReturnSchema),
   scopes: z.array(permissionContactScopeReturnSchema),
   force: z.boolean(),
+  total: z.number(),
+  pagination: strictCliOffsetPaginationSchema,
   grants: z.array(permissionContactGrantReturnSchema),
   overlays: z.array(permissionContactChatOverlayReturnSchema),
   confirmation: permissionConfirmationReturnSchema,
@@ -513,6 +518,8 @@ export class PermissionsCommands {
     force?: boolean,
     @Option({ flags: "--profile <profile>", description: "Only show grants for this permission profile" })
     profile?: string,
+    @Option({ flags: "--limit <n>", description: "Page size for grants (default: 50, max: 500)" }) limit?: string,
+    @Option({ flags: "--offset <n>", description: "Number of matching grants to skip (default: 0)" }) offset?: string,
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
   ) {
     const payload = buildPermissionListResult({
@@ -521,6 +528,8 @@ export class PermissionsCommands {
       chatTag,
       force: force === true,
       profile,
+      limit,
+      offset,
       asJson,
     });
 
@@ -941,12 +950,16 @@ function buildPermissionDenyPlan(input: PermissionDenyInput): PermissionDenyPlan
 interface PermissionListInput extends ContactScopeInput {
   subjects?: string;
   profile?: string;
+  limit?: string;
+  offset?: string;
 }
 
 interface PermissionListResult {
   targets: AuthorizationSubject[];
   scopes: ReturnType<typeof serializeContactScope>[];
   force: boolean;
+  total: number;
+  pagination: OffsetPagination;
   grants: Array<{
     contact: string;
     profile: string;
@@ -1018,12 +1031,33 @@ function buildPermissionListResult(input: PermissionListInput): PermissionListRe
   }
 
   const visibleGrants = dedupeGrants(grants).filter((grant) => !profileSlug || grant.profile === profileSlug);
+  const page = paginateCliItems(visibleGrants, { limit: input.limit, offset: input.offset });
+  const pagination = buildCliOffsetPagination({
+    baseCommand: ["ravi", "permissions", "list"],
+    limit: page.limit,
+    offset: page.offset,
+    returned: page.items.length,
+    total: page.total,
+    options: [
+      "--to",
+      input.subjects?.trim() || null,
+      "--chat",
+      input.chat?.trim() || null,
+      "--chat-tag",
+      input.chatTag?.trim() || null,
+      "--profile",
+      input.profile?.trim() || null,
+      input.force ? "--force" : null,
+    ],
+  });
   const contactRefs = contacts.map((contact) => `contact:${contact.id}`);
   return {
     targets,
     scopes: scopes.map(serializeContactScope),
     force: input.force,
-    grants: visibleGrants.map((grant) => ({
+    total: page.total,
+    pagination,
+    grants: page.items.map((grant) => ({
       contact: `contact:${grant.contactId}`,
       profile: grant.profile,
       scope: formatContactGrantScope(grant.scope),
@@ -1040,10 +1074,11 @@ function buildPermissionListResult(input: PermissionListInput): PermissionListRe
       scopes,
       force: input.force,
       ...(profileSlug ? { profile: profileSlug } : {}),
-      capabilities: dedupeStrings(visibleGrants.flatMap((grant) => grant.capabilities)),
-      count: visibleGrants.length,
+      capabilities: dedupeStrings(page.items.flatMap((grant) => grant.capabilities)),
+      count: page.items.length,
+      total: page.total,
     }),
-    hints: buildListHints({ scopes, contactIds, grants: visibleGrants }),
+    hints: buildListHints({ scopes, contactIds, grants: visibleGrants, pagination }),
   };
 }
 
@@ -1272,6 +1307,7 @@ function buildConfirmation(input: {
   profile?: string;
   capabilities: string[];
   count?: number;
+  total?: number;
 }): PermissionConfirmation {
   const scopeLabels = input.scopes.map((scope) => scope.label);
   const global = input.scopes.some((scope) => scope.type === "global");
@@ -1298,12 +1334,15 @@ function confirmationMessage(input: {
   global: boolean;
   profile?: string;
   count?: number;
+  total?: number;
 }): string {
   const where = input.global ? "globally (all chats, --force)" : `only in ${input.scopeLabels.join(" and ")}`;
   const who = input.contacts.join(", ");
   if (input.action === "list") {
     const filter = who ? ` for ${who}` : "";
-    return `Listed ${input.count ?? 0} contact grant(s)${filter} ${input.global ? "in the global scope" : `covering ${input.scopeLabels.join(" and ")}`}.`;
+    const count = input.count ?? 0;
+    const listed = input.total !== undefined && input.total > count ? `${count} of ${input.total}` : `${count}`;
+    return `Listed ${listed} contact grant(s)${filter} ${input.global ? "in the global scope" : `covering ${input.scopeLabels.join(" and ")}`}.`;
   }
   const verb =
     input.action === "allow" ? (input.dryRun ? "Would grant" : "Granted") : input.dryRun ? "Would revoke" : "Revoked";
@@ -1419,6 +1458,7 @@ function buildListHints(input: {
   scopes: ResolvedContactScope[];
   contactIds: string[];
   grants: ContactProfileGrant[];
+  pagination: OffsetPagination;
 }): string[] {
   const hints: string[] = [];
   for (const scope of input.scopes) {
@@ -1435,6 +1475,9 @@ function buildListHints(input: {
   }
   if (input.grants.length === 0) {
     hints.push("No contact grants match this scope.");
+  }
+  if (input.pagination.nextCommand) {
+    hints.push(`More grants match this scope; next page: ${input.pagination.nextCommand}`);
   }
   return hints;
 }

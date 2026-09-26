@@ -53030,6 +53030,14 @@ public enum RaviSchemas {
         "description": "List global (unscoped) contact grants instead of a chat scope",
         "type": "boolean"
       },
+      "limit": {
+        "description": "Page size for grants (default: 50, max: 500)",
+        "type": "string"
+      },
+      "offset": {
+        "description": "Number of matching grants to skip (default: 0)",
+        "type": "string"
+      },
       "profile": {
         "description": "Only show grants for this permission profile",
         "type": "string"
@@ -53201,6 +53209,53 @@ public enum RaviSchemas {
         },
         "type": "array"
       },
+      "pagination": {
+        "additionalProperties": false,
+        "properties": {
+          "hasMore": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "nextCommand": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextOffset": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offset": {
+            "type": "number"
+          },
+          "returned": {
+            "type": "number"
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "limit",
+          "offset",
+          "returned",
+          "total"
+        ],
+        "type": "object"
+      },
       "scopes": {
         "items": {
           "additionalProperties": false,
@@ -53267,12 +53322,17 @@ public enum RaviSchemas {
           "type": "object"
         },
         "type": "array"
+      },
+      "total": {
+        "type": "number"
       }
     },
     "required": [
       "targets",
       "scopes",
       "force",
+      "total",
+      "pagination",
       "grants",
       "overlays",
       "confirmation",

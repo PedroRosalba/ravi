@@ -181,7 +181,7 @@ ravi permissions allow <profile> --to contact:<id> --chat <chat-id|current> [--a
 ravi permissions allow <profile> --to contact:<id> --chat-tag <tag> [--agent <id>] [--apply]
 ravi permissions allow <profile> --to contact:<id> --force [--apply]
 ravi permissions deny  <profile> --to contact:<id> (--chat <chat> | --chat-tag <tag> | --force) [--apply]
-ravi permissions list  [--to contact:<id>] (--chat <chat> | --chat-tag <tag> | --force) [--profile <p>]
+ravi permissions list  [--to contact:<id>] (--chat <chat> | --chat-tag <tag> | --force) [--profile <p>] [--limit <n>] [--offset <n>]
 ```
 
 Rules:
@@ -233,6 +233,9 @@ Rules:
 - `list` MUST also return `grants[]` (`contact`, `profile`, `scope`,
   `scopeType`, `source`, `capabilities`) and, for chat scopes, `overlays[]`
   (`contact`, `chat`, `governed`, `eligible`, `capabilities`).
+- `list` MUST page `grants[]` with `--limit`/`--offset` and return `total`
+  plus `pagination` (with `nextCommand` while more grants match); the
+  confirmation message MUST say "N of M" when a page is partial.
 
 ## Known Limits
 
