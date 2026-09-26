@@ -6,7 +6,27 @@
 
 import "reflect-metadata";
 import { z } from "zod";
-import { addContactTag, getContact } from "../../contacts.js";
+import { addContactTag, getContact, removeContactTag, type Contact } from "../../contacts.js";
+import {
+  dbDeleteContactChatGrant,
+  dbEnsureContactChatGrant,
+  dbGetContactChatGrant,
+  type ContactChatGrantScopeType,
+} from "../../permissions/contact-chat-grants.js";
+import {
+  formatContactGrantScope,
+  isUserOverlayActiveForChat,
+  listContactGlobalProfileGrants,
+  listContactProfileGrantsCoveringChat,
+  listContactScopedProfileGrants,
+  resolveContactChatOverlay,
+  type ContactGrantScope,
+  type ContactProfileGrant,
+} from "../../permissions/contact-policy-permissions-provider.js";
+import { dbGetChat, dbGetThreadParentChat, dbListChatsByRef, type ChatRecord } from "../../router/router-db.js";
+import { canonicalAssetIdsForTag, canonicalTagSlugsForAsset, tryNormalizeTagSlug } from "../../tags/index.js";
+import { CONTRACT_EXIT_USAGE, contractFail } from "../agent-contract.js";
+import { getContext } from "../context.js";
 import {
   ensureAgentRuntimeCapability,
   isChatOnlyRuntimePermissions,
@@ -38,6 +58,12 @@ import { authorizePermission, materializeSubjectCapabilities } from "../../permi
 function printJson(payload: unknown): void {
   console.log(JSON.stringify(payload, null, 2));
 }
+
+const CHAT_OPTION_DESCRIPTION =
+  "Scope contact grants to one chat (canonical chat id, platform chat id, or 'current'). Threads inherit their chat.";
+const CHAT_TAG_OPTION_DESCRIPTION = "Scope contact grants to every chat carrying this chat tag";
+const FORCE_OPTION_DESCRIPTION =
+  "Explicitly use the global (all chats) contact scope. Prefer --chat; ask the human before going global.";
 
 const providerSchema = z.object({
   id: z.string(),
@@ -170,6 +196,32 @@ const permissionAllowOperationReturnSchema = z.object({
   message: z.string(),
 });
 
+const permissionContactScopeReturnSchema = z.object({
+  type: z.enum(["chat", "chat_tag", "global"]),
+  label: z.string(),
+  chatId: z.string().optional(),
+  requestedChatId: z.string().optional(),
+  threadChatId: z.string().optional(),
+  channel: z.string().optional(),
+  title: z.string().optional(),
+  known: z.boolean().optional(),
+  chatTag: z.string().optional(),
+  taggedChatCount: z.number().optional(),
+});
+
+const permissionConfirmationReturnSchema = z.object({
+  action: z.enum(["allow", "deny", "list"]),
+  dryRun: z.boolean(),
+  contacts: z.array(z.string()),
+  agents: z.array(z.string()),
+  scopes: z.array(z.string()),
+  global: z.boolean(),
+  force: z.boolean(),
+  profile: z.string().optional(),
+  capabilities: z.array(z.string()),
+  message: z.string(),
+});
+
 const permissionsAllowReturnSchema = z.object({
   dryRun: z.boolean(),
   profile: z.string(),
@@ -179,9 +231,55 @@ const permissionsAllowReturnSchema = z.object({
   capabilities: z.array(permissionCapabilityReturnSchema),
   targets: z.array(permissionTargetReturnSchema),
   agentCeilings: z.array(z.string()),
+  scopes: z.array(permissionContactScopeReturnSchema),
+  force: z.boolean(),
   operations: z.array(permissionAllowOperationReturnSchema),
   changedCount: z.number(),
+  confirmation: permissionConfirmationReturnSchema,
+  hints: z.array(z.string()),
   nextCommand: z.string().optional(),
+});
+
+const permissionsDenyReturnSchema = z.object({
+  dryRun: z.boolean(),
+  profile: z.string(),
+  tagSlug: z.string(),
+  capabilities: z.array(permissionCapabilityReturnSchema),
+  targets: z.array(permissionTargetReturnSchema),
+  scopes: z.array(permissionContactScopeReturnSchema),
+  force: z.boolean(),
+  operations: z.array(permissionAllowOperationReturnSchema),
+  changedCount: z.number(),
+  confirmation: permissionConfirmationReturnSchema,
+  hints: z.array(z.string()),
+  nextCommand: z.string().optional(),
+});
+
+const permissionContactGrantReturnSchema = z.object({
+  contact: z.string(),
+  profile: z.string(),
+  scope: z.string(),
+  scopeType: z.enum(["chat", "chat_tag", "global"]),
+  source: z.enum(["contact-chat-grant", "contact-tag"]),
+  capabilities: z.array(z.string()),
+});
+
+const permissionContactChatOverlayReturnSchema = z.object({
+  contact: z.string(),
+  chat: z.string(),
+  governed: z.boolean(),
+  eligible: z.boolean(),
+  capabilities: z.array(z.string()),
+});
+
+const permissionsListReturnSchema = z.object({
+  targets: z.array(permissionTargetReturnSchema),
+  scopes: z.array(permissionContactScopeReturnSchema),
+  force: z.boolean(),
+  grants: z.array(permissionContactGrantReturnSchema),
+  overlays: z.array(permissionContactChatOverlayReturnSchema),
+  confirmation: permissionConfirmationReturnSchema,
+  hints: z.array(z.string()),
 });
 
 const permissionsResolveReturnSchema = permissionsAllowReturnSchema.extend({
@@ -218,6 +316,7 @@ export class PermissionsCommands {
           "ravi permissions check --permission <perm> --object-type <type> --object-id <id>",
           "ravi permissions materialize --subject-type <type> --subject-id <id>",
           "ravi permissions resolve <denial-id>",
+          "ravi permissions list --to contact:<id> --chat <chat-id>",
         ],
         recurringAccess:
           "Use ravi permissions allow <profile> --to agent:<agent-id> for recurring agent identity access.",
@@ -318,7 +417,7 @@ export class PermissionsCommands {
     @Option({
       flags: "--to <subjects>",
       description:
-        "Comma-separated subjects to receive the profile. Prefer agent:<id>; contact:<id> is legacy/user-overlay.",
+        "Comma-separated subjects to receive the profile: agent:<id> (identity ceiling) or contact:<id> (user overlay; requires --chat, --chat-tag or --force).",
     })
     subjects?: string,
     @Option({
@@ -338,6 +437,9 @@ export class PermissionsCommands {
     @Option({ flags: "--apply", description: "Apply the planned provider-owned mutations" })
     apply?: boolean,
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
+    @Option({ flags: "--chat <chat>", description: CHAT_OPTION_DESCRIPTION }) chat?: string,
+    @Option({ flags: "--chat-tag <tag>", description: CHAT_TAG_OPTION_DESCRIPTION }) chatTag?: string,
+    @Option({ flags: "--force", description: FORCE_OPTION_DESCRIPTION }) force?: boolean,
   ) {
     const payload = buildPermissionAllowPlan({
       profile,
@@ -347,6 +449,10 @@ export class PermissionsCommands {
       label,
       description,
       apply: apply === true,
+      chat,
+      chatTag,
+      force: force === true,
+      asJson,
     });
 
     if (asJson) {
@@ -355,6 +461,74 @@ export class PermissionsCommands {
     }
 
     printPermissionAllowPlan(payload);
+    return payload;
+  }
+
+  @Command({ name: "deny", description: "Plan or revoke a contact permission profile grant in a chat scope" })
+  @CommandAccess({ kind: "mutate", resource: "permissions", action: "deny", risk: "medium" })
+  @Returns(permissionsDenyReturnSchema)
+  deny(
+    @Arg("profile", { description: "Permission profile/tag name, with or without permission- prefix" }) profile: string,
+    @Option({
+      flags: "--to <subjects>",
+      description: "Comma-separated contact:<id> subjects to revoke the profile from",
+    })
+    subjects?: string,
+    @Option({ flags: "--chat <chat>", description: CHAT_OPTION_DESCRIPTION }) chat?: string,
+    @Option({ flags: "--chat-tag <tag>", description: CHAT_TAG_OPTION_DESCRIPTION }) chatTag?: string,
+    @Option({ flags: "--force", description: FORCE_OPTION_DESCRIPTION }) force?: boolean,
+    @Option({ flags: "--apply", description: "Apply the planned provider-owned mutations" })
+    apply?: boolean,
+    @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
+  ) {
+    const payload = buildPermissionDenyPlan({
+      profile,
+      subjects,
+      chat,
+      chatTag,
+      force: force === true,
+      apply: apply === true,
+      asJson,
+    });
+
+    if (asJson) {
+      printJson(payload);
+      return payload;
+    }
+
+    printPermissionDenyPlan(payload);
+    return payload;
+  }
+
+  @Command({ name: "list", description: "List contact permission profile grants in a chat scope" })
+  @CommandAccess({ kind: "read", resource: "permissions", action: "list", risk: "low" })
+  @Returns(permissionsListReturnSchema)
+  list(
+    @Option({ flags: "--to <subjects>", description: "Optional comma-separated contact:<id> subjects to filter by" })
+    subjects?: string,
+    @Option({ flags: "--chat <chat>", description: CHAT_OPTION_DESCRIPTION }) chat?: string,
+    @Option({ flags: "--chat-tag <tag>", description: CHAT_TAG_OPTION_DESCRIPTION }) chatTag?: string,
+    @Option({ flags: "--force", description: "List global (unscoped) contact grants instead of a chat scope" })
+    force?: boolean,
+    @Option({ flags: "--profile <profile>", description: "Only show grants for this permission profile" })
+    profile?: string,
+    @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
+  ) {
+    const payload = buildPermissionListResult({
+      subjects,
+      chat,
+      chatTag,
+      force: force === true,
+      profile,
+      asJson,
+    });
+
+    if (asJson) {
+      printJson(payload);
+      return payload;
+    }
+
+    printPermissionListResult(payload);
     return payload;
   }
 
@@ -373,6 +547,9 @@ export class PermissionsCommands {
     @Option({ flags: "--apply", description: "Apply the planned provider-owned mutations" })
     apply?: boolean,
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
+    @Option({ flags: "--chat <chat>", description: CHAT_OPTION_DESCRIPTION }) chat?: string,
+    @Option({ flags: "--chat-tag <tag>", description: CHAT_TAG_OPTION_DESCRIPTION }) chatTag?: string,
+    @Option({ flags: "--force", description: FORCE_OPTION_DESCRIPTION }) force?: boolean,
   ) {
     const denial = requirePermissionDenial(denialId);
     const missingCapability = {
@@ -389,6 +566,7 @@ export class PermissionsCommands {
     const inferred = inferResolutionTargets(denial);
     const resolvedProfile =
       profile?.trim() || guidance.preferredPath.suggestedTags[0]?.slug || deriveProfileName(missingCapability);
+    const hasExplicitScope = Boolean(chat?.trim() || chatTag?.trim() || force === true);
     const payload = {
       ...buildPermissionAllowPlan({
         profile: resolvedProfile,
@@ -398,6 +576,12 @@ export class PermissionsCommands {
         label: labelFromProfile(resolvedProfile),
         description: `Provider-owned permission profile for ${formatCanonicalCapability(missingCapability)}.`,
         apply: apply === true,
+        chat: hasExplicitScope ? chat : inferred.chat,
+        chatTag: hasExplicitScope ? chatTag : undefined,
+        force: hasExplicitScope ? force === true : false,
+        asJson,
+        op: "permissions resolve",
+        commandPrefix: ["ravi", "permissions", "resolve", String(denial.id)],
       }),
       denial: {
         id: denial.id,
@@ -490,7 +674,14 @@ function serializeProvider(provider: { id: string; version: string; required: bo
   };
 }
 
-interface PermissionAllowInput {
+interface ContactScopeInput {
+  chat?: string;
+  chatTag?: string;
+  force: boolean;
+  asJson?: boolean;
+}
+
+interface PermissionAllowInput extends Omit<ContactScopeInput, "force"> {
   profile: string;
   subjects?: string;
   agentIds?: string;
@@ -498,6 +689,37 @@ interface PermissionAllowInput {
   label?: string;
   description?: string;
   apply: boolean;
+  force?: boolean;
+  op?: string;
+  commandPrefix?: string[];
+}
+
+type ResolvedContactScope =
+  | {
+      type: "chat";
+      label: string;
+      chatId: string;
+      requestedChatId: string;
+      threadChatId?: string;
+      channel?: string;
+      title?: string;
+      known: boolean;
+      chatTags: string[];
+    }
+  | { type: "chat_tag"; label: string; chatTag: string; taggedChatCount: number }
+  | { type: "global"; label: "global" };
+
+interface PermissionConfirmation {
+  action: "allow" | "deny" | "list";
+  dryRun: boolean;
+  contacts: string[];
+  agents: string[];
+  scopes: string[];
+  global: boolean;
+  force: boolean;
+  profile?: string;
+  capabilities: string[];
+  message: string;
 }
 
 interface PermissionAllowOperation {
@@ -517,12 +739,17 @@ interface PermissionAllowPlan {
   capabilities: AuthorizationCapability[];
   targets: AuthorizationSubject[];
   agentCeilings: string[];
+  scopes: ReturnType<typeof serializeContactScope>[];
+  force: boolean;
   operations: PermissionAllowOperation[];
   changedCount: number;
+  confirmation: PermissionConfirmation;
+  hints: string[];
   nextCommand?: string;
 }
 
 function buildPermissionAllowPlan(input: PermissionAllowInput): PermissionAllowPlan {
+  const op = input.op ?? "permissions allow";
   const profile = requiredOption(input.profile, "profile");
   const tagSlug = normalizePermissionTagSlug(profile);
   const existingTag = dbGetTagDefinition(tagSlug);
@@ -533,8 +760,16 @@ function buildPermissionAllowPlan(input: PermissionAllowInput): PermissionAllowP
   const label = input.label?.trim() || existingTag?.label || labelFromProfile(tagSlug);
   const description = input.description?.trim() || existingTag?.description;
   const operations: PermissionAllowOperation[] = [];
+  const force = input.force === true;
 
   ensureSupportedTargets(targets);
+  const contacts = resolveContactTargets(op, targets, input.asJson);
+  const scopes =
+    contacts.length > 0
+      ? resolveContactScopes(op, { ...input, force }, { requireKnownChat: true, suggest: allowScopeSuggester(input) })
+      : rejectScopeWithoutContacts(op, { ...input, force });
+  const governedBefore = new Map(scopes.map((scope) => [scope.label, isScopeGoverned(scope)]));
+
   planPermissionTagOperation({
     existingTag,
     tagSlug,
@@ -546,13 +781,19 @@ function buildPermissionAllowPlan(input: PermissionAllowInput): PermissionAllowP
     explicitCapabilitiesProvided: explicitCapabilities !== undefined,
   });
 
-  for (const target of targets) {
-    if (target.type === "contact") {
-      planContactProfileOperation({ target, tagSlug, operations, apply: input.apply });
-    } else if (target.type === "agent") {
-      for (const capability of capabilities) {
-        planAgentCapabilityOperation({ agentId: target.id, capability, operations, apply: input.apply });
+  for (const contact of contacts) {
+    for (const scope of scopes) {
+      if (scope.type === "global") {
+        planContactProfileOperation({ contact, tagSlug, operations, apply: input.apply });
+      } else {
+        planContactChatGrantOperation({ contact, tagSlug, scope, operations, apply: input.apply });
       }
+    }
+  }
+  for (const target of targets) {
+    if (target.type !== "agent") continue;
+    for (const capability of capabilities) {
+      planAgentCapabilityOperation({ agentId: target.id, capability, operations, apply: input.apply });
     }
   }
 
@@ -563,6 +804,12 @@ function buildPermissionAllowPlan(input: PermissionAllowInput): PermissionAllowP
   }
 
   const changedCount = operations.filter((operation) => operation.status === "applied").length;
+  const contactRefs = contacts.map((contact) => `contact:${contact.id}`);
+  const agentRefs = dedupeStrings([
+    ...targets.filter((target) => target.type === "agent").map((target) => `agent:${target.id}`),
+    ...agentCeilings.map((agentId) => `agent:${agentId}`),
+  ]);
+  const capabilityRefs = capabilities.map(formatCanonicalCapability);
   const payload: PermissionAllowPlan = {
     dryRun: !input.apply,
     profile,
@@ -572,13 +819,650 @@ function buildPermissionAllowPlan(input: PermissionAllowInput): PermissionAllowP
     capabilities,
     targets,
     agentCeilings,
+    scopes: scopes.map(serializeContactScope),
+    force,
     operations,
     changedCount,
+    confirmation: buildConfirmation({
+      action: "allow",
+      dryRun: !input.apply,
+      contacts: contactRefs,
+      agents: agentRefs,
+      scopes,
+      force,
+      profile: tagSlug,
+      capabilities: capabilityRefs,
+    }),
+    hints: buildAllowHints({
+      contacts: contactRefs,
+      scopes,
+      force,
+      tagSlug,
+      capabilityRefs,
+      agentCeilings,
+      governedBefore,
+      apply: input.apply,
+    }),
   };
   if (!input.apply) {
     payload.nextCommand = buildAllowApplyCommand(input);
   }
   return payload;
+}
+
+interface PermissionDenyInput extends ContactScopeInput {
+  profile: string;
+  subjects?: string;
+  apply: boolean;
+}
+
+interface PermissionDenyPlan {
+  dryRun: boolean;
+  profile: string;
+  tagSlug: string;
+  capabilities: AuthorizationCapability[];
+  targets: AuthorizationSubject[];
+  scopes: ReturnType<typeof serializeContactScope>[];
+  force: boolean;
+  operations: PermissionAllowOperation[];
+  changedCount: number;
+  confirmation: PermissionConfirmation;
+  hints: string[];
+  nextCommand?: string;
+}
+
+function buildPermissionDenyPlan(input: PermissionDenyInput): PermissionDenyPlan {
+  const op = "permissions deny";
+  const profile = requiredOption(input.profile, "profile");
+  const tagSlug = normalizePermissionTagSlug(profile);
+  const existingTag = dbGetTagDefinition(tagSlug);
+  const capabilities = existingTag ? readPermissionTagCapabilities(existingTag) : [];
+  const targets = parseSubjectRefs(input.subjects);
+  if (targets.length === 0 || targets.some((target) => target.type !== "contact")) {
+    contractFail(op, "USAGE_ERROR", "permissions deny revokes contact grants; pass --to contact:<id>.", {
+      asJson: input.asJson,
+      exitCode: CONTRACT_EXIT_USAGE,
+      details: {
+        suggestedAction:
+          "Pass --to contact:<id>. Agent identity ceilings are managed with `ravi agents permissions <agent>`.",
+        acceptedFlags: ["--to contact:<id>", "--chat <chat-id|current>", "--chat-tag <tag>", "--force"],
+      },
+    });
+  }
+  const contacts = resolveContactTargets(op, targets, input.asJson);
+  const scopes = resolveContactScopes(op, input, {
+    requireKnownChat: false,
+    suggest: (scopeFlags) => buildDenyCommand(input, scopeFlags),
+  });
+  const governedBefore = new Map(scopes.map((scope) => [scope.label, isScopeGoverned(scope)]));
+  const operations: PermissionAllowOperation[] = [];
+
+  for (const contact of contacts) {
+    for (const scope of scopes) {
+      if (scope.type === "global") {
+        planContactProfileRevokeOperation({ contact, tagSlug, operations, apply: input.apply });
+      } else {
+        planContactChatGrantRevokeOperation({ contact, tagSlug, scope, operations, apply: input.apply });
+      }
+    }
+  }
+
+  const contactRefs = contacts.map((contact) => `contact:${contact.id}`);
+  const capabilityRefs = capabilities.map(formatCanonicalCapability);
+  const payload: PermissionDenyPlan = {
+    dryRun: !input.apply,
+    profile,
+    tagSlug,
+    capabilities,
+    targets,
+    scopes: scopes.map(serializeContactScope),
+    force: input.force,
+    operations,
+    changedCount: operations.filter((operation) => operation.status === "applied").length,
+    confirmation: buildConfirmation({
+      action: "deny",
+      dryRun: !input.apply,
+      contacts: contactRefs,
+      agents: [],
+      scopes,
+      force: input.force,
+      profile: tagSlug,
+      capabilities: capabilityRefs,
+    }),
+    hints: buildDenyHints({ contacts, scopes, tagSlug, governedBefore, apply: input.apply }),
+  };
+  if (!input.apply) {
+    payload.nextCommand = [...buildDenyCommand(input, scopeFlagsFor(input)), "--apply"].join(" ");
+  }
+  return payload;
+}
+
+interface PermissionListInput extends ContactScopeInput {
+  subjects?: string;
+  profile?: string;
+}
+
+interface PermissionListResult {
+  targets: AuthorizationSubject[];
+  scopes: ReturnType<typeof serializeContactScope>[];
+  force: boolean;
+  grants: Array<{
+    contact: string;
+    profile: string;
+    scope: string;
+    scopeType: ContactGrantScope["type"];
+    source: ContactProfileGrant["source"];
+    capabilities: string[];
+  }>;
+  overlays: Array<{ contact: string; chat: string; governed: boolean; eligible: boolean; capabilities: string[] }>;
+  confirmation: PermissionConfirmation;
+  hints: string[];
+}
+
+function buildPermissionListResult(input: PermissionListInput): PermissionListResult {
+  const op = "permissions list";
+  const targets = parseSubjectRefs(input.subjects);
+  if (targets.some((target) => target.type !== "contact")) {
+    contractFail(op, "USAGE_ERROR", "permissions list filters contact grants; pass --to contact:<id>.", {
+      asJson: input.asJson,
+      exitCode: CONTRACT_EXIT_USAGE,
+      details: {
+        suggestedAction: "Inspect agent identity ceilings with `ravi permissions materialize --subject-type agent`.",
+        acceptedFlags: ["--to contact:<id>", "--chat <chat-id|current>", "--chat-tag <tag>", "--force", "--profile"],
+      },
+    });
+  }
+  const contacts = resolveContactTargets(op, targets, input.asJson);
+  const scopes = resolveContactScopes(op, input, {
+    requireKnownChat: false,
+    suggest: (scopeFlags) => buildListCommand(input, scopeFlags),
+  });
+  const profileSlug = input.profile?.trim() ? normalizePermissionTagSlug(input.profile) : null;
+  const contactIds = contacts.map((contact) => contact.id);
+  const grants: ContactProfileGrant[] = [];
+  const overlays: PermissionListResult["overlays"] = [];
+
+  for (const scope of scopes) {
+    if (scope.type === "global") {
+      grants.push(
+        ...(contactIds.length > 0
+          ? contactIds.flatMap((contactId) => listContactGlobalProfileGrants(contactId))
+          : listContactGlobalProfileGrants()),
+      );
+    } else if (scope.type === "chat_tag") {
+      const grantScope = { type: "chat_tag" as const, chatTag: scope.chatTag };
+      grants.push(
+        ...(contactIds.length > 0
+          ? contactIds.flatMap((contactId) => listContactScopedProfileGrants({ contactId, scope: grantScope }))
+          : listContactScopedProfileGrants({ scope: grantScope })),
+      );
+    } else {
+      grants.push(
+        ...(contactIds.length > 0
+          ? contactIds.flatMap((contactId) => listContactProfileGrantsCoveringChat(scope, contactId))
+          : listContactProfileGrantsCoveringChat(scope)),
+      );
+      for (const contactId of contactIds) {
+        const overlay = resolveContactChatOverlay({ contactId, chatId: scope.chatId });
+        grants.push(...overlay.grants.filter((grant) => grant.scope.type === "global"));
+        overlays.push({
+          contact: `contact:${overlay.contactId}`,
+          chat: `chat:${overlay.scope.chatId}`,
+          governed: overlay.active,
+          eligible: overlay.eligible,
+          capabilities: dedupeStrings(overlay.capabilities.map(formatCanonicalCapability)),
+        });
+      }
+    }
+  }
+
+  const visibleGrants = dedupeGrants(grants).filter((grant) => !profileSlug || grant.profile === profileSlug);
+  const contactRefs = contacts.map((contact) => `contact:${contact.id}`);
+  return {
+    targets,
+    scopes: scopes.map(serializeContactScope),
+    force: input.force,
+    grants: visibleGrants.map((grant) => ({
+      contact: `contact:${grant.contactId}`,
+      profile: grant.profile,
+      scope: formatContactGrantScope(grant.scope),
+      scopeType: grant.scope.type,
+      source: grant.source,
+      capabilities: grant.capabilities,
+    })),
+    overlays,
+    confirmation: buildConfirmation({
+      action: "list",
+      dryRun: false,
+      contacts: contactRefs,
+      agents: [],
+      scopes,
+      force: input.force,
+      ...(profileSlug ? { profile: profileSlug } : {}),
+      capabilities: dedupeStrings(visibleGrants.flatMap((grant) => grant.capabilities)),
+      count: visibleGrants.length,
+    }),
+    hints: buildListHints({ scopes, contactIds, grants: visibleGrants }),
+  };
+}
+
+function resolveContactTargets(op: string, targets: AuthorizationSubject[], asJson?: boolean): Contact[] {
+  const contacts: Contact[] = [];
+  for (const target of targets) {
+    if (target.type !== "contact") continue;
+    const contact = getContact(target.id);
+    if (!contact) {
+      contractFail(op, "CONTACT_NOT_FOUND", `Contact not found: ${target.id}`, {
+        asJson,
+        details: { suggestedAction: "Check the contact id with `ravi contacts find <query> --json`" },
+      });
+    }
+    if (!contacts.some((existing) => existing.id === contact.id)) contacts.push(contact);
+  }
+  return contacts;
+}
+
+function rejectScopeWithoutContacts(op: string, input: ContactScopeInput): ResolvedContactScope[] {
+  if (!input.chat?.trim() && !input.chatTag?.trim() && !input.force) return [];
+  return contractFail(
+    op,
+    "USAGE_ERROR",
+    "--chat, --chat-tag and --force scope contact grants; add --to contact:<id> or drop them.",
+    {
+      asJson: input.asJson,
+      exitCode: CONTRACT_EXIT_USAGE,
+      details: {
+        suggestedAction:
+          "Agent targets and --agent ceilings are not chat-scoped. Pass --to contact:<id> to grant a user in a chat.",
+      },
+    },
+  );
+}
+
+function resolveContactScopes(
+  op: string,
+  input: ContactScopeInput,
+  options: { requireKnownChat: boolean; suggest: (scopeFlags: string[]) => string[] },
+): ResolvedContactScope[] {
+  const chatRef = input.chat?.trim();
+  const chatTagRef = input.chatTag?.trim();
+  if (input.force && (chatRef || chatTagRef)) {
+    contractFail(op, "USAGE_ERROR", "--force selects the global scope; it cannot be combined with --chat/--chat-tag.", {
+      asJson: input.asJson,
+      exitCode: CONTRACT_EXIT_USAGE,
+      details: {
+        suggestedAction: "Keep --chat/--chat-tag for a scoped grant (recommended), or use only --force for global.",
+        suggestions: [options.suggest(scopeFlagsFor({ chat: chatRef, chatTag: chatTagRef, force: false })).join(" ")],
+      },
+    });
+  }
+  if (!input.force && !chatRef && !chatTagRef) {
+    const currentChat = readCurrentChatId();
+    const suggestions = [
+      ...(currentChat ? [options.suggest(["--chat", shellArg(currentChat)]).join(" ")] : []),
+      options.suggest(["--chat", "<chat-id>"]).join(" "),
+      options.suggest(["--chat-tag", "<tag>"]).join(" "),
+    ];
+    contractFail(
+      op,
+      "CHAT_SCOPE_REQUIRED",
+      "Contact permissions are chat-scoped: pass --chat <chat-id|current> or --chat-tag <tag>. Use --force only for an explicit global grant.",
+      {
+        asJson: input.asJson,
+        exitCode: CONTRACT_EXIT_USAGE,
+        details: {
+          suggestedAction: currentChat
+            ? `Ask the human whether this should apply only in this chat (--chat ${currentChat}) before considering --force.`
+            : "Ask the human which chat/group this should apply to before considering --force.",
+          suggestions,
+          acceptedFlags: ["--chat <chat-id|current>", "--chat-tag <tag>", "--force"],
+          ...(currentChat ? { currentChat } : {}),
+        },
+      },
+    );
+  }
+  if (input.force) return [{ type: "global", label: "global" }];
+
+  const scopes: ResolvedContactScope[] = [];
+  if (chatRef) scopes.push(resolveChatScope(op, chatRef, { ...options, asJson: input.asJson }));
+  if (chatTagRef) {
+    const chatTag = tryNormalizeTagSlug(chatTagRef);
+    if (!chatTag) {
+      contractFail(op, "USAGE_ERROR", `Invalid chat tag: ${chatTagRef}`, {
+        asJson: input.asJson,
+        exitCode: CONTRACT_EXIT_USAGE,
+        details: {
+          suggestedAction: "Use a tag slug: lowercase letters, numbers, dots, underscores, colons or dashes.",
+        },
+      });
+    }
+    scopes.push({
+      type: "chat_tag",
+      label: `chat-tag:${chatTag}`,
+      chatTag,
+      taggedChatCount: canonicalAssetIdsForTag("chat", chatTag)?.length ?? 0,
+    });
+  }
+  return scopes;
+}
+
+function resolveChatScope(
+  op: string,
+  chatRef: string,
+  options: { requireKnownChat: boolean; asJson?: boolean },
+): ResolvedContactScope {
+  const current = chatRef === "current" ? readCurrentChatSource() : null;
+  if (chatRef === "current" && !current) {
+    contractFail(op, "USAGE_ERROR", "No current chat in this context; pass --chat <chat-id>.", {
+      asJson: options.asJson,
+      exitCode: CONTRACT_EXIT_USAGE,
+      details: { suggestedAction: "Find the chat id with `ravi chats list --json` and pass --chat <chat-id>." },
+    });
+  }
+  const ref = current?.chatId ?? chatRef;
+  const chat = findChatForScope(op, ref, { channel: current?.channel, instanceId: current?.instanceId }, options);
+  if (!chat) {
+    return {
+      type: "chat",
+      label: `chat:${ref}`,
+      chatId: ref,
+      requestedChatId: ref,
+      known: false,
+      chatTags: canonicalTagSlugsForAsset("chat", ref),
+    };
+  }
+  const parent = dbGetThreadParentChat(chat);
+  const container = parent ?? chat;
+  return {
+    type: "chat",
+    label: `chat:${container.id}`,
+    chatId: container.id,
+    requestedChatId: ref,
+    ...(parent ? { threadChatId: chat.id } : {}),
+    channel: container.channel,
+    ...(container.title ? { title: container.title } : {}),
+    known: true,
+    chatTags: canonicalTagSlugsForAsset("chat", container.id),
+  };
+}
+
+function findChatForScope(
+  op: string,
+  ref: string,
+  hint: { channel?: string; instanceId?: string },
+  options: { requireKnownChat: boolean; asJson?: boolean },
+): ChatRecord | null {
+  const direct = dbGetChat(ref);
+  if (direct) return direct;
+  const matches = dbListChatsByRef({ ref, channel: hint.channel, instanceId: hint.instanceId, limit: 10 });
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1) {
+    contractFail(op, "CHAT_AMBIGUOUS", `Chat reference ${ref} matches ${matches.length} chats; pass a canonical id.`, {
+      asJson: options.asJson,
+      exitCode: CONTRACT_EXIT_USAGE,
+      details: {
+        suggestedAction: "Re-run with --chat <canonical-chat-id> from the suggestions.",
+        suggestions: matches.map((chat) => `${chat.id} (${chat.channel}${chat.title ? `: ${chat.title}` : ""})`),
+      },
+    });
+  }
+  if (options.requireKnownChat) {
+    contractFail(op, "CHAT_NOT_FOUND", `Chat not found: ${ref}`, {
+      asJson: options.asJson,
+      details: { suggestedAction: "Find the chat id with `ravi chats list --json` and pass --chat <chat-id>." },
+    });
+  }
+  return null;
+}
+
+function readCurrentChatSource(): { chatId: string; channel?: string; instanceId?: string } | null {
+  const source = getContext()?.source;
+  const chatId = cleanString(source?.canonicalChatId) ?? cleanString(source?.chatId);
+  if (!chatId) return null;
+  return {
+    chatId,
+    ...(cleanString(source?.channel) ? { channel: source!.channel } : {}),
+    ...(cleanString(source?.instanceId) ? { instanceId: source!.instanceId } : {}),
+  };
+}
+
+function readCurrentChatId(): string | null {
+  const current = readCurrentChatSource();
+  if (!current) return null;
+  return findChatSilently(current)?.id ?? current.chatId;
+}
+
+function findChatSilently(current: { chatId: string; channel?: string; instanceId?: string }): ChatRecord | null {
+  const chat =
+    dbGetChat(current.chatId) ??
+    dbListChatsByRef({ ref: current.chatId, channel: current.channel, instanceId: current.instanceId, limit: 2 })[0] ??
+    null;
+  return chat ? (dbGetThreadParentChat(chat) ?? chat) : null;
+}
+
+function isScopeGoverned(scope: ResolvedContactScope): boolean {
+  return scope.type === "chat" ? isUserOverlayActiveForChat(scope) : false;
+}
+
+function serializeContactScope(scope: ResolvedContactScope) {
+  if (scope.type === "global") return { type: scope.type, label: scope.label };
+  if (scope.type === "chat_tag") {
+    return { type: scope.type, label: scope.label, chatTag: scope.chatTag, taggedChatCount: scope.taggedChatCount };
+  }
+  return {
+    type: scope.type,
+    label: scope.label,
+    chatId: scope.chatId,
+    requestedChatId: scope.requestedChatId,
+    ...(scope.threadChatId ? { threadChatId: scope.threadChatId } : {}),
+    ...(scope.channel ? { channel: scope.channel } : {}),
+    ...(scope.title ? { title: scope.title } : {}),
+    known: scope.known,
+  };
+}
+
+function buildConfirmation(input: {
+  action: PermissionConfirmation["action"];
+  dryRun: boolean;
+  contacts: string[];
+  agents: string[];
+  scopes: ResolvedContactScope[];
+  force: boolean;
+  profile?: string;
+  capabilities: string[];
+  count?: number;
+}): PermissionConfirmation {
+  const scopeLabels = input.scopes.map((scope) => scope.label);
+  const global = input.scopes.some((scope) => scope.type === "global");
+  return {
+    action: input.action,
+    dryRun: input.dryRun,
+    contacts: input.contacts,
+    agents: input.agents,
+    scopes: scopeLabels,
+    global,
+    force: input.force,
+    ...(input.profile ? { profile: input.profile } : {}),
+    capabilities: input.capabilities,
+    message: confirmationMessage({ ...input, scopeLabels, global }),
+  };
+}
+
+function confirmationMessage(input: {
+  action: PermissionConfirmation["action"];
+  dryRun: boolean;
+  contacts: string[];
+  agents: string[];
+  scopeLabels: string[];
+  global: boolean;
+  profile?: string;
+  count?: number;
+}): string {
+  const where = input.global ? "globally (all chats, --force)" : `only in ${input.scopeLabels.join(" and ")}`;
+  const who = input.contacts.join(", ");
+  if (input.action === "list") {
+    const filter = who ? ` for ${who}` : "";
+    return `Listed ${input.count ?? 0} contact grant(s)${filter} ${input.global ? "in the global scope" : `covering ${input.scopeLabels.join(" and ")}`}.`;
+  }
+  const verb =
+    input.action === "allow" ? (input.dryRun ? "Would grant" : "Granted") : input.dryRun ? "Would revoke" : "Revoked";
+  const parts: string[] = [];
+  if (who) {
+    const preposition = input.action === "allow" ? "to" : "from";
+    parts.push(`${verb} ${input.profile} ${preposition} ${who} ${where}${input.global ? "" : " (not global)"}.`);
+  }
+  if (input.agents.length > 0) {
+    parts.push(
+      `${input.dryRun ? "Would ensure" : "Ensured"} ${input.agents.join(", ")} ceiling includes ${input.profile}.`,
+    );
+  }
+  return parts.join(" ") || `No contact or agent targets for ${input.profile}.`;
+}
+
+function buildAllowHints(input: {
+  contacts: string[];
+  scopes: ResolvedContactScope[];
+  force: boolean;
+  tagSlug: string;
+  capabilityRefs: string[];
+  agentCeilings: string[];
+  governedBefore: Map<string, boolean>;
+  apply: boolean;
+}): string[] {
+  if (input.contacts.length === 0) return [];
+  const hints: string[] = [];
+  if (input.force) {
+    const currentChat = readCurrentChatId();
+    hints.push(
+      `Global contact grant (--force): ${input.contacts.join(", ")} gets ${input.tagSlug} in every chat governed by contact grants. ` +
+        `Safer default: confirm with the human whether this should apply only in a specific chat/group` +
+        (currentChat ? ` (e.g. --chat ${currentChat}).` : " (--chat <chat-id>)."),
+    );
+    hints.push(
+      "Global grants do not govern a chat by themselves; they only apply where a chat-scoped or chat-tag grant exists.",
+    );
+  }
+  for (const scope of input.scopes) {
+    if (scope.type === "chat") {
+      if (scope.threadChatId) {
+        hints.push(
+          `chat:${scope.threadChatId} is a thread; the grant is stored on its chat ${scope.label} and inherited.`,
+        );
+      }
+      if (!input.governedBefore.get(scope.label)) {
+        hints.push(
+          `${scope.label} ${input.apply ? "is now" : "would become"} governed by contact grants: tool caps there become ` +
+            "agent_ceiling ∩ contact_chat_caps, and senders without a grant covering this chat get no tool capabilities.",
+        );
+      }
+    } else if (scope.type === "chat_tag") {
+      hints.push(
+        `${scope.label} covers ${scope.taggedChatCount} chat(s) currently tagged ${scope.chatTag}; each becomes governed by contact grants.`,
+      );
+    }
+  }
+  if (input.agentCeilings.length === 0) {
+    hints.push(
+      `Contact grants never exceed the executor agent ceiling. Pass --agent <id> to ensure the agent can use ${input.capabilityRefs.join(", ")}.`,
+    );
+  }
+  return hints;
+}
+
+function buildDenyHints(input: {
+  contacts: Contact[];
+  scopes: ResolvedContactScope[];
+  tagSlug: string;
+  governedBefore: Map<string, boolean>;
+  apply: boolean;
+}): string[] {
+  const hints: string[] = [];
+  for (const scope of input.scopes) {
+    if (scope.type === "chat" && !scope.known) {
+      hints.push(`${scope.label} is not a known chat; only an exact stored grant on that id can be revoked.`);
+    }
+    if (scope.type !== "chat") continue;
+    for (const contact of input.contacts) {
+      const remaining = [
+        ...listContactProfileGrantsCoveringChat(scope, contact.id),
+        ...listContactGlobalProfileGrants(contact.id),
+      ].filter(
+        (grant) =>
+          grant.profile === input.tagSlug && !(grant.scope.type === "chat" && grant.scope.chatId === scope.chatId),
+      );
+      for (const grant of remaining) {
+        hints.push(
+          `contact:${contact.id} still receives ${input.tagSlug} in ${scope.label} through ${formatContactGrantScope(grant.scope)}.`,
+        );
+      }
+    }
+    if (input.apply && input.governedBefore.get(scope.label) && !isUserOverlayActiveForChat(scope)) {
+      hints.push(`${scope.label} is no longer governed by contact grants; turns there use the agent identity again.`);
+    }
+  }
+  return hints;
+}
+
+function buildListHints(input: {
+  scopes: ResolvedContactScope[];
+  contactIds: string[];
+  grants: ContactProfileGrant[];
+}): string[] {
+  const hints: string[] = [];
+  for (const scope of input.scopes) {
+    if (scope.type !== "chat") continue;
+    if (scope.threadChatId) {
+      hints.push(`chat:${scope.threadChatId} is a thread; showing grants of its chat ${scope.label}.`);
+    }
+    if (!isUserOverlayActiveForChat(scope)) {
+      hints.push(`${scope.label} is not governed by contact grants; turns there use the agent identity.`);
+    }
+    if (input.contactIds.length === 0 && listContactGlobalProfileGrants().length > 0) {
+      hints.push("Global contact grants also apply in governed chats; list them with `ravi permissions list --force`.");
+    }
+  }
+  if (input.grants.length === 0) {
+    hints.push("No contact grants match this scope.");
+  }
+  return hints;
+}
+
+function dedupeGrants(grants: ContactProfileGrant[]): ContactProfileGrant[] {
+  const seen = new Set<string>();
+  return grants.filter((grant) => {
+    const key = `${grant.contactId}|${grant.profile}|${formatContactGrantScope(grant.scope)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function scopeFlagsFor(input: { chat?: string; chatTag?: string; force?: boolean }): string[] {
+  const flags: string[] = [];
+  if (input.chat?.trim()) flags.push("--chat", shellArg(input.chat.trim()));
+  if (input.chatTag?.trim()) flags.push("--chat-tag", shellArg(input.chatTag.trim()));
+  if (input.force) flags.push("--force");
+  return flags;
+}
+
+function allowScopeSuggester(input: PermissionAllowInput): (scopeFlags: string[]) => string[] {
+  return (scopeFlags) =>
+    input.commandPrefix
+      ? [...input.commandPrefix, ...scopeFlags]
+      : [...buildAllowCommandParts({ ...input, chat: undefined, chatTag: undefined, force: false }), ...scopeFlags];
+}
+
+function buildDenyCommand(input: PermissionDenyInput, scopeFlags: string[]): string[] {
+  const parts = ["ravi", "permissions", "deny", shellArg(input.profile)];
+  if (input.subjects?.trim()) parts.push("--to", shellArg(input.subjects.trim()));
+  return [...parts, ...scopeFlags];
+}
+
+function buildListCommand(input: PermissionListInput, scopeFlags: string[]): string[] {
+  const parts = ["ravi", "permissions", "list"];
+  if (input.subjects?.trim()) parts.push("--to", shellArg(input.subjects.trim()));
+  if (input.profile?.trim()) parts.push("--profile", shellArg(input.profile.trim()));
+  return [...parts, ...scopeFlags];
 }
 
 function resolveProfileCapabilities(
@@ -678,41 +1562,156 @@ function planPermissionTagOperation(input: {
 }
 
 function planContactProfileOperation(input: {
-  target: AuthorizationSubject;
+  contact: Contact;
   tagSlug: string;
   operations: PermissionAllowOperation[];
   apply: boolean;
 }): void {
-  const contact = getContact(input.target.id);
-  if (!contact) {
-    throw new Error(`Contact not found: ${input.target.id}`);
-  }
-  const target = `contact:${contact.id}`;
-  if (contact.tags.includes(input.tagSlug)) {
+  const target = `contact:${input.contact.id}`;
+  if (input.contact.tags.includes(input.tagSlug)) {
     input.operations.push({
-      kind: "contact-profile",
+      kind: "contact-profile-global",
       status: "unchanged",
       target,
-      message: "Contact already has the permission profile tag.",
+      message: "Contact already has the global permission profile tag.",
     });
     return;
   }
   if (input.apply) {
-    addContactTag(contact.phone, input.tagSlug);
+    addContactTag(input.contact.id, input.tagSlug);
     input.operations.push({
-      kind: "contact-profile",
+      kind: "contact-profile-global",
       status: "applied",
       target,
-      message: "Attached permission profile tag through contact policy.",
+      message: "Attached global permission profile tag through contact policy (--force).",
     });
     return;
   }
   input.operations.push({
-    kind: "contact-profile",
+    kind: "contact-profile-global",
     status: "planned",
     target,
-    message: "Would attach permission profile tag through contact policy.",
+    message: "Would attach global permission profile tag through contact policy (--force).",
   });
+}
+
+function planContactProfileRevokeOperation(input: {
+  contact: Contact;
+  tagSlug: string;
+  operations: PermissionAllowOperation[];
+  apply: boolean;
+}): void {
+  const target = `contact:${input.contact.id}`;
+  if (!input.contact.tags.includes(input.tagSlug)) {
+    input.operations.push({
+      kind: "contact-profile-global",
+      status: "unchanged",
+      target,
+      message: "Contact does not have the global permission profile tag.",
+    });
+    return;
+  }
+  if (input.apply) {
+    removeContactTag(input.contact.id, input.tagSlug);
+    input.operations.push({
+      kind: "contact-profile-global",
+      status: "applied",
+      target,
+      message: "Removed global permission profile tag from contact policy (--force).",
+    });
+    return;
+  }
+  input.operations.push({
+    kind: "contact-profile-global",
+    status: "planned",
+    target,
+    message: "Would remove global permission profile tag from contact policy (--force).",
+  });
+}
+
+function planContactChatGrantOperation(input: {
+  contact: Contact;
+  tagSlug: string;
+  scope: Exclude<ResolvedContactScope, { type: "global" }>;
+  operations: PermissionAllowOperation[];
+  apply: boolean;
+}): void {
+  const key = contactChatGrantKey(input.contact, input.tagSlug, input.scope);
+  const target = `contact:${input.contact.id}@${input.scope.label}`;
+  if (dbGetContactChatGrant(key)) {
+    input.operations.push({
+      kind: "contact-chat-grant",
+      status: "unchanged",
+      target,
+      message: `Contact already has the permission profile in ${input.scope.label}.`,
+    });
+    return;
+  }
+  if (input.apply) {
+    dbEnsureContactChatGrant({ ...key, createdBy: "permissions.allow" });
+    input.operations.push({
+      kind: "contact-chat-grant",
+      status: "applied",
+      target,
+      message: `Granted the permission profile to the contact only in ${input.scope.label}.`,
+    });
+    return;
+  }
+  input.operations.push({
+    kind: "contact-chat-grant",
+    status: "planned",
+    target,
+    message: `Would grant the permission profile to the contact only in ${input.scope.label}.`,
+  });
+}
+
+function planContactChatGrantRevokeOperation(input: {
+  contact: Contact;
+  tagSlug: string;
+  scope: Exclude<ResolvedContactScope, { type: "global" }>;
+  operations: PermissionAllowOperation[];
+  apply: boolean;
+}): void {
+  const key = contactChatGrantKey(input.contact, input.tagSlug, input.scope);
+  const target = `contact:${input.contact.id}@${input.scope.label}`;
+  if (!dbGetContactChatGrant(key)) {
+    input.operations.push({
+      kind: "contact-chat-grant",
+      status: "unchanged",
+      target,
+      message: `Contact has no ${input.tagSlug} grant stored on ${input.scope.label}.`,
+    });
+    return;
+  }
+  if (input.apply) {
+    dbDeleteContactChatGrant(key);
+    input.operations.push({
+      kind: "contact-chat-grant",
+      status: "applied",
+      target,
+      message: `Revoked the permission profile from the contact in ${input.scope.label}.`,
+    });
+    return;
+  }
+  input.operations.push({
+    kind: "contact-chat-grant",
+    status: "planned",
+    target,
+    message: `Would revoke the permission profile from the contact in ${input.scope.label}.`,
+  });
+}
+
+function contactChatGrantKey(
+  contact: Contact,
+  profileSlug: string,
+  scope: Exclude<ResolvedContactScope, { type: "global" }>,
+): { contactId: string; profileSlug: string; scopeType: ContactChatGrantScopeType; scopeId: string } {
+  return {
+    contactId: contact.id,
+    profileSlug,
+    scopeType: scope.type,
+    scopeId: scope.type === "chat" ? scope.chatId : scope.chatTag,
+  };
 }
 
 function planAgentCapabilityOperation(input: {
@@ -758,13 +1757,58 @@ function printPermissionAllowPlan(payload: PermissionAllowPlan): void {
   if (payload.agentCeilings.length > 0) {
     console.log(`agent ceilings: ${payload.agentCeilings.map((agentId) => `agent:${agentId}`).join(", ")}`);
   }
+  printScopedMutationTail(payload);
+}
+
+function printPermissionDenyPlan(payload: PermissionDenyPlan): void {
+  console.log(payload.dryRun ? "permission deny plan" : "permission deny applied");
+  console.log(`profile: ${payload.tagSlug}`);
+  console.log(`targets: ${payload.targets.map((target) => `${target.type}:${target.id}`).join(", ")}`);
+  printScopedMutationTail(payload);
+}
+
+function printScopedMutationTail(payload: {
+  scopes: Array<{ label: string }>;
+  operations: PermissionAllowOperation[];
+  confirmation: PermissionConfirmation;
+  hints: string[];
+  nextCommand?: string;
+}): void {
+  if (payload.scopes.length > 0) {
+    console.log(`scope: ${payload.scopes.map((scope) => scope.label).join(", ")}`);
+  }
   for (const operation of payload.operations) {
     const target = operation.target ? ` ${operation.target}` : "";
     const capability = operation.capability ? ` ${operation.capability}` : "";
     console.log(`- ${operation.status} ${operation.kind}${target}${capability}: ${operation.message}`);
   }
+  console.log(`confirmation: ${payload.confirmation.message}`);
+  for (const hint of payload.hints) {
+    console.log(`hint: ${hint}`);
+  }
   if (payload.nextCommand) {
     console.log(`apply: ${payload.nextCommand}`);
+  }
+}
+
+function printPermissionListResult(payload: PermissionListResult): void {
+  console.log(`scope: ${payload.scopes.map((scope) => scope.label).join(", ")}`);
+  if (payload.grants.length === 0) {
+    console.log("no contact grants");
+  }
+  for (const grant of payload.grants) {
+    console.log(
+      `- ${grant.contact} ${grant.profile} @ ${grant.scope}: ${grant.capabilities.join(", ") || "(no caps)"}`,
+    );
+  }
+  for (const overlay of payload.overlays) {
+    console.log(
+      `overlay ${overlay.contact} @ ${overlay.chat}: ${overlay.governed ? "governed" : "not governed"}; contact_chat_caps=${overlay.capabilities.join(", ") || "(none)"}`,
+    );
+  }
+  console.log(`confirmation: ${payload.confirmation.message}`);
+  for (const hint of payload.hints) {
+    console.log(`hint: ${hint}`);
   }
 }
 
@@ -911,14 +1955,17 @@ function deriveProfileName(capability: AuthorizationCapability): string {
 }
 
 function buildAllowApplyCommand(input: PermissionAllowInput): string {
+  return [...buildAllowCommandParts(input), ...scopeFlagsFor(input), "--apply"].join(" ");
+}
+
+function buildAllowCommandParts(input: PermissionAllowInput): string[] {
   const parts = ["ravi", "permissions", "allow", shellArg(input.profile)];
   if (input.subjects?.trim()) parts.push("--to", shellArg(input.subjects.trim()));
   if (input.agentIds?.trim()) parts.push("--agent", shellArg(input.agentIds.trim()));
   if (input.capabilities?.trim()) parts.push("--capabilities", shellArg(input.capabilities.trim()));
   if (input.label?.trim()) parts.push("--label", shellArg(input.label.trim()));
   if (input.description?.trim()) parts.push("--description", shellArg(input.description.trim()));
-  parts.push("--apply");
-  return parts.join(" ");
+  return parts;
 }
 
 function shellArg(value: string): string {
@@ -937,11 +1984,25 @@ function requirePermissionDenial(value: string): PermissionDenial {
   return denial;
 }
 
-function inferResolutionTargets(denial: PermissionDenial): { subjects?: string; agentIds?: string } {
+function inferResolutionTargets(denial: PermissionDenial): { subjects?: string; agentIds?: string; chat?: string } {
   const context = isRecord(denial.detail?.context) ? denial.detail.context : undefined;
   const executorAgentId = cleanString(context?.executorAgentId) ?? cleanString(denial.agentId);
   const isAgentIdentityContext =
     cleanString(context?.authorityMode) === "agent-identity" || Boolean(cleanString(context?.agentIdentityPrincipal));
+  const overlayActor = parseSubjectRef(cleanString(context?.actorPrincipal));
+  const overlayChat = cleanString(context?.userOverlayChat)?.replace(/^chat:/, "");
+
+  if (
+    cleanString(context?.actorAuthorizationMode) === "user-overlay" &&
+    overlayActor?.type === "contact" &&
+    overlayChat
+  ) {
+    return {
+      subjects: `contact:${overlayActor.id}`,
+      ...(executorAgentId ? { agentIds: executorAgentId } : {}),
+      chat: overlayChat,
+    };
+  }
 
   if (executorAgentId && (isAgentIdentityContext || denial.subjectType === "agent")) {
     return {
