@@ -1,10 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createContact } from "../contacts.js";
+import { dbEnsureContactChatGrant } from "../permissions/contact-chat-grants.js";
 import { canWithCapabilities } from "../permissions/provider-runtime.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
-import { dbCreateAgent, dbGetContext, dbListContexts, dbUpdateAgent, dbUpsertChat } from "../router/router-db.js";
+import {
+  dbCreateAgent,
+  dbGetContext,
+  dbListContexts,
+  dbUpdateAgent,
+  dbUpsertChat,
+  type ChatRecord,
+} from "../router/router-db.js";
 import { attachChatToSession, getOrCreateSession, resetSession } from "../router/sessions.js";
-import { dbCreateTagDefinition } from "../tags/index.js";
+import { attachTagSlugsToAsset, dbCreateTagDefinition } from "../tags/index.js";
 import { dbCreateTask, dbDispatchTask } from "../tasks/task-db.js";
 import type { AgentConfig } from "../router/index.js";
 import type { TaskRuntimeResolution } from "../tasks/types.js";
@@ -1580,6 +1588,243 @@ describe("runtime request context source persistence", () => {
     expect(dbGetContext(runtimeContext.contextId)?.source).toEqual(runtimeContext.source);
   });
 });
+
+describe("runtime request context chat-scoped user overlay", () => {
+  beforeEach(async () => {
+    stateDir = await createIsolatedRaviState("ravi-runtime-user-overlay-test-");
+    dbCreateAgent({ id: agent.id, cwd: agent.cwd });
+    dbUpdateAgent(agent.id, {
+      defaults: {
+        runtimePermissions: {
+          capabilities: ["mutate:image:generate", "execute:executable:curl"],
+        },
+      },
+    });
+    dbCreateTagDefinition({
+      slug: "permission-image",
+      label: "Image",
+      kind: "system",
+      source: "permissions",
+      metadata: { permissions: { capabilities: ["mutate:image:generate", "mutate:mail:send"] } },
+    });
+  });
+
+  afterEach(async () => {
+    await cleanupIsolatedRaviState(stateDir);
+    stateDir = null;
+  });
+
+  function groupChat(platformChatId: string) {
+    return dbUpsertChat({
+      channel: "whatsapp",
+      instanceId: "main",
+      platformChatId,
+      chatType: "group",
+      title: platformChatId,
+    });
+  }
+
+  function contextFor(contactId: string, chat: ChatRecord) {
+    const prompt = promptInChat(contactId, chat);
+    const overlaySessionKey = `agent:provider-agent:chat:${chat.id}:${contactId}`;
+    const overlaySessionName = `overlay-${chat.id}-${contactId}`;
+    getOrCreateSession(overlaySessionKey, agent.id, agent.cwd, { name: overlaySessionName });
+    return buildRuntimeRequestContext({
+      dbSessionKey: overlaySessionKey,
+      sessionName: overlaySessionName,
+      sessionCwd: agent.cwd,
+      agent,
+      prompt,
+      runtimeProviderId: "codex",
+      model: "gpt-5",
+      runtimeResolution,
+      resolvedSource: prompt.source,
+    }).runtimeContext;
+  }
+
+  function grant(contactId: string, scopeType: "chat" | "chat_tag", scopeId: string) {
+    dbEnsureContactChatGrant({ contactId, profileSlug: "permission-image", scopeType, scopeId });
+  }
+
+  it("intersects a chat-scoped contact grant with the executor agent ceiling", () => {
+    const chat = groupChat("120363400000000001@g.us");
+    const ana = createContact({ phone: "5511900000001", name: "Ana" });
+    grant(ana.id, "chat", chat.id);
+
+    const context = contextFor(ana.id, chat);
+
+    expect(context.metadata).toMatchObject({
+      authorityMode: "agent-identity",
+      actorPrincipal: `contact:${ana.id}`,
+      actorAuthorizationMode: "user-overlay",
+      userOverlay: "active",
+      userOverlayChat: `chat:${chat.id}`,
+      userOverlayGrants: [`permission-image@chat:${chat.id}`],
+      actorCapabilityCount: 2,
+    });
+    expect(canWithCapabilities(context.capabilities, "mutate", "image", "generate")).toBe(true);
+    // In the contact grant but outside the agent ceiling.
+    expect(canWithCapabilities(context.capabilities, "mutate", "mail", "send")).toBe(false);
+    // In the agent ceiling but not granted to the contact in this chat.
+    expect(canWithCapabilities(context.capabilities, "execute", "executable", "curl")).toBe(false);
+    expect(canWithCapabilities(context.capabilities, "use", "tool", "Bash")).toBe(false);
+  });
+
+  it("keeps chats without contact grants on the agent identity", () => {
+    const governed = groupChat("120363400000000002@g.us");
+    const other = groupChat("120363400000000003@g.us");
+    const ana = createContact({ phone: "5511900000002", name: "Ana" });
+    grant(ana.id, "chat", governed.id);
+
+    const context = contextFor(ana.id, other);
+
+    expect(context.metadata).toMatchObject({
+      actorAuthorizationMode: "invoke-only",
+      userOverlay: "inactive",
+      userOverlayChat: `chat:${other.id}`,
+      actorCapabilityCount: 0,
+    });
+    expect(context.metadata?.userOverlayGrants).toBeUndefined();
+    expect(canWithCapabilities(context.capabilities, "execute", "executable", "curl")).toBe(true);
+    expect(canWithCapabilities(context.capabilities, "use", "tool", "Bash")).toBe(true);
+  });
+
+  it("gives senders without a grant no tool capabilities in a governed chat", () => {
+    const chat = groupChat("120363400000000004@g.us");
+    const ana = createContact({ phone: "5511900000003", name: "Ana" });
+    const bruno = createContact({ phone: "5511900000004", name: "Bruno" });
+    grant(ana.id, "chat", chat.id);
+
+    const context = contextFor(bruno.id, chat);
+
+    expect(context.metadata).toMatchObject({
+      actorAuthorizationMode: "user-overlay",
+      userOverlay: "active",
+      userOverlayGrants: [],
+      actorCapabilityCount: 0,
+      effectiveCapabilityCount: 0,
+    });
+    expect(context.capabilities).toEqual([]);
+  });
+
+  it("applies chat-tag grants to every chat carrying the tag", () => {
+    const tagged = groupChat("120363400000000005@g.us");
+    const untagged = groupChat("120363400000000006@g.us");
+    attachTagSlugsToAsset({ assetType: "chat", assetId: tagged.id, tags: ["vip"], source: "test" });
+    const ana = createContact({ phone: "5511900000005", name: "Ana" });
+    grant(ana.id, "chat_tag", "vip");
+
+    const inTagged = contextFor(ana.id, tagged);
+    const inUntagged = contextFor(ana.id, untagged);
+
+    expect(inTagged.metadata).toMatchObject({
+      userOverlay: "active",
+      userOverlayGrants: ["permission-image@chat-tag:vip"],
+    });
+    expect(canWithCapabilities(inTagged.capabilities, "mutate", "image", "generate")).toBe(true);
+    expect(canWithCapabilities(inTagged.capabilities, "execute", "executable", "curl")).toBe(false);
+    expect(inUntagged.metadata?.userOverlay).toBe("inactive");
+    expect(canWithCapabilities(inUntagged.capabilities, "execute", "executable", "curl")).toBe(true);
+  });
+
+  it("lets threads inherit the grants of their chat", () => {
+    const channel = dbUpsertChat({
+      channel: "slack",
+      instanceId: "ravi-slack",
+      platformChatId: "C0OVERLAY1",
+      chatType: "group",
+      title: "overlay",
+    });
+    const thread = dbUpsertChat({
+      channel: "slack",
+      instanceId: "ravi-slack",
+      platformChatId: "C0OVERLAY1#1781574894.010449",
+      chatType: "thread",
+      title: "overlay thread",
+    });
+    const ana = createContact({ phone: "5511900000006", name: "Ana" });
+    grant(ana.id, "chat", channel.id);
+
+    const context = contextFor(ana.id, thread);
+
+    expect(context.metadata).toMatchObject({
+      agentIdentityCompartment: `chat:${thread.id}`,
+      actorAuthorizationMode: "user-overlay",
+      userOverlay: "active",
+      userOverlayChat: `chat:${channel.id}`,
+      userOverlayThreadChat: `chat:${thread.id}`,
+      userOverlayGrants: [`permission-image@chat:${channel.id}`],
+    });
+    expect(canWithCapabilities(context.capabilities, "mutate", "image", "generate")).toBe(true);
+    expect(canWithCapabilities(context.capabilities, "execute", "executable", "curl")).toBe(false);
+  });
+
+  it("counts global contact grants only inside governed chats", () => {
+    const governed = groupChat("120363400000000007@g.us");
+    const other = groupChat("120363400000000008@g.us");
+    const ana = createContact({ phone: "5511900000007", name: "Ana" });
+    const owner = createContact({ phone: "5511900000008", name: "Owner", tags: ["permission-image"] });
+    grant(ana.id, "chat", governed.id);
+
+    const inGoverned = contextFor(owner.id, governed);
+    const inOther = contextFor(owner.id, other);
+
+    expect(inGoverned.metadata).toMatchObject({
+      userOverlay: "active",
+      userOverlayGrants: ["permission-image@global"],
+    });
+    expect(canWithCapabilities(inGoverned.capabilities, "mutate", "image", "generate")).toBe(true);
+    expect(canWithCapabilities(inGoverned.capabilities, "execute", "executable", "curl")).toBe(false);
+    expect(inOther.metadata?.userOverlay).toBe("inactive");
+    expect(canWithCapabilities(inOther.capabilities, "execute", "executable", "curl")).toBe(true);
+  });
+
+  it("drops blocked contacts to zero capabilities in a governed chat", () => {
+    const chat = groupChat("120363400000000009@g.us");
+    const blocked = createContact({ phone: "5511900000009", name: "Blocked", status: "blocked" });
+    grant(blocked.id, "chat", chat.id);
+
+    const context = contextFor(blocked.id, chat);
+
+    expect(context.metadata).toMatchObject({
+      userOverlay: "active",
+      userOverlayEligible: false,
+      effectiveCapabilityCount: 0,
+    });
+  });
+});
+
+function promptInChat(contactId: string, chat: ChatRecord): RuntimeLaunchPrompt {
+  const source = {
+    channel: chat.channel,
+    accountId: chat.instanceId,
+    instanceId: chat.instanceId,
+    chatId: chat.platformChatId,
+    canonicalChatId: chat.id,
+    actorType: "contact" as const,
+    contactId,
+  };
+  return {
+    prompt: "overlay turn",
+    source,
+    context: {
+      channelId: chat.channel,
+      channelName: chat.channel,
+      accountId: chat.instanceId,
+      instanceId: chat.instanceId,
+      chatId: chat.platformChatId,
+      canonicalChatId: chat.id,
+      messageId: `msg_${contactId}_${chat.id}`,
+      senderId: contactId,
+      senderName: contactId,
+      isGroup: true,
+      groupName: chat.title,
+      timestamp: 1000,
+      actorType: "contact",
+      contactId,
+    },
+  };
+}
 
 function promptForContact(contactId: string, text: string): RuntimeLaunchPrompt {
   const senderName = contactId === "ana" ? "Ana" : contactId ? "Luís" : "Desconhecido";

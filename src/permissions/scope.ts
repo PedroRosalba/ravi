@@ -140,6 +140,33 @@ function buildScopeDenialDiagnosis(
     const grantSubjects = isActionableGrantSubject(executorAgentPrincipal) ? [executorAgentPrincipal] : [];
     const detailPrefix = `Agent identity scope denied for ${grant}: ${identityPrincipal}`;
 
+    if (provenance.actorAuthorizationMode === "user-overlay" && provenance.userOverlayChat) {
+      const chat = provenance.userOverlayChat;
+      const chatId = chat.replace(/^chat:/, "");
+      const actorLabel = formatPrincipalLabel(actorPrincipal, provenance.actorDisplayName);
+      const actorGrantable = isActionableGrantSubject(actorPrincipal, provenance.actorResolution);
+      const allowCommand = `ravi permissions allow <profile> --to ${actorPrincipal} --chat ${chatId}${
+        grantSubjects.length > 0 ? ` --agent ${executorAgentPrincipal.slice("agent:".length)}` : ""
+      } --capabilities ${input.relation}:${target}`;
+      return {
+        blockType: "user_overlay_missing_grant",
+        detail:
+          `User overlay scope denied for ${grant}: ${chat} is governed by contact grants, so effective caps are ` +
+          `${identityPrincipal} ∩ contact caps of ${actorLabel} in ${chat}. Grant ${grant} to ${actorPrincipal} in ${chat} ` +
+          `(and make sure ${executorAgentPrincipal} holds it): ${allowCommand}.`,
+        missingPrincipals: [actorPrincipal],
+        missingPrincipalDetails: [
+          {
+            branch: "actor",
+            principal: actorPrincipal,
+            ...(provenance.actorDisplayName ? { displayName: provenance.actorDisplayName } : {}),
+            ...(provenance.actorResolution ? { resolution: provenance.actorResolution } : {}),
+          },
+        ],
+        recommendedGrantSubjects: [...(actorGrantable ? [actorPrincipal] : []), ...grantSubjects],
+      };
+    }
+
     if (provenance.effectiveCapabilityCount === 0) {
       return {
         blockType: "agent_identity_effective_capabilities_empty",

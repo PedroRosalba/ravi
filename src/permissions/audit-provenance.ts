@@ -32,6 +32,10 @@ export interface AuditContextProvenance {
   agentIdentityPrincipal?: string;
   agentIdentityCompartment?: string;
   agentIdentityCapabilityCount?: number;
+  userOverlay?: string;
+  userOverlayChat?: string;
+  userOverlayThreadChat?: string;
+  userOverlayGrants?: string[];
   actorCapabilityCount?: number;
   surfaceCapabilityCount?: number;
   actorOverrideCapabilityCount?: number;
@@ -62,6 +66,9 @@ const STRING_METADATA_KEYS = [
   "executorAgentId",
   "agentIdentityPrincipal",
   "agentIdentityCompartment",
+  "userOverlay",
+  "userOverlayChat",
+  "userOverlayThreadChat",
 ] as const;
 
 const NUMBER_METADATA_KEYS = [
@@ -96,6 +103,7 @@ export function buildAuditContextProvenance(input?: AuditProvenanceInput | null)
     assignNumber(context, key, metadata?.[key]);
   }
   assignStringArray(context, "delegationOverridePrincipals", metadata?.delegationOverridePrincipals);
+  assignStringArray(context, "userOverlayGrants", metadata?.userOverlayGrants);
   assignCapabilityArray(context, "turnCapabilities", metadata?.turnCapabilities);
 
   if (Array.isArray(capabilities)) {

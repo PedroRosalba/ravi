@@ -6622,6 +6622,21 @@ export function dbGetChat(id: string): ChatRecord | null {
   return row ? rowToChat(row) : null;
 }
 
+/**
+ * Thread chats are stored as `<parent-normalized-id>#<thread-id>` on the same
+ * channel/instance as their container chat.
+ */
+export function dbGetThreadParentChat(
+  chat: Pick<ChatRecord, "channel" | "instanceId" | "normalizedChatId">,
+): ChatRecord | null {
+  const separator = chat.normalizedChatId.indexOf("#");
+  if (separator <= 0) return null;
+  const row = getDb()
+    .prepare("SELECT * FROM chats WHERE channel = ? AND instance_id = ? AND normalized_chat_id = ?")
+    .get(chat.channel, chat.instanceId, chat.normalizedChatId.slice(0, separator)) as ChatRow | undefined;
+  return row ? rowToChat(row) : null;
+}
+
 export function dbFindChat(input: {
   channel: string;
   instanceId?: string | null;
