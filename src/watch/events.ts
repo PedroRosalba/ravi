@@ -1,10 +1,16 @@
 import type { InboxNatsPayload } from "../inbox/types.js";
+import { isPageCommentInboxEvent, pageCommentWatchSubject, type PageCommentEventType } from "./page-comment.js";
 import type { EffectiveWatchPlacement, WatchNatsPayload } from "./types.js";
+
+const PAGE_COMMENT_IDENTITY_KEYS = ["pageId", "siteId", "orgId", "organizationId", "projectId"] as const;
 
 export function watchEventFromInboxPayload(
   inbox: InboxNatsPayload,
   origin: { inboxItemId?: number | string | null } = {},
 ): WatchNatsPayload | null {
+  if (isPageCommentInboxEvent(inbox.eventType)) {
+    return pageCommentWatchEvent(inbox, inbox.eventType, origin);
+  }
   if (!inbox.eventType.startsWith("watch.")) return null;
 
   const [, connector, ...rest] = inbox.eventType.split(".");
@@ -42,6 +48,84 @@ export function watchEventFromInboxPayload(
     occurredAt: inbox.occurredAt,
     createdAt: inbox.createdAt,
   };
+}
+
+function pageCommentWatchEvent(
+  inbox: InboxNatsPayload,
+  eventType: PageCommentEventType,
+  origin: { inboxItemId?: number | string | null },
+): WatchNatsPayload {
+  const payload = normalizePageCommentPayload(objectValue(inbox.payload), inbox.links);
+  const source = objectValue(inbox.source) ?? {};
+  const sensitivity = normalizeSensitivity(inbox.sensitivity);
+  const delivery = {
+    ...objectValue(inbox.delivery),
+    inboxEventId: inbox.eventId,
+    ...(origin.inboxItemId !== undefined && origin.inboxItemId !== null ? { inboxItemId: origin.inboxItemId } : {}),
+  };
+  const identity = hoistIdentity(payload);
+
+  return {
+    version: 1,
+    eventId: inbox.eventId,
+    watchId: stringValue(payload.watchId) ?? inbox.dedupeKey ?? inbox.eventId,
+    connector: "console",
+    placement: "console",
+    eventType,
+    dedupeKey: inbox.dedupeKey,
+    subject: pageCommentWatchSubject(eventType),
+    source,
+    payload,
+    ...(Array.isArray(inbox.links) ? { links: inbox.links } : {}),
+    ...(sensitivity ? { sensitivity } : {}),
+    delivery,
+    occurredAt: inbox.occurredAt,
+    createdAt: inbox.createdAt,
+    ...identity,
+  };
+}
+
+function normalizePageCommentPayload(
+  payload: Record<string, unknown>,
+  links: InboxNatsPayload["links"] | undefined,
+): Record<string, unknown> {
+  const next = { ...payload };
+  if (!(typeof next.body === "string" && next.body.trim())) {
+    const text = stringValue(next.text);
+    const comment = objectValue(next.comment);
+    const commentBody = stringValue(comment?.body) ?? stringValue(comment?.text);
+    if (text) next.body = text;
+    else if (commentBody) next.body = commentBody;
+  }
+  if (!stringValue(next.url)) {
+    const url = pageCommentUrlFromLinks(links);
+    if (url) next.url = url;
+  }
+  return next;
+}
+
+function pageCommentUrlFromLinks(links: InboxNatsPayload["links"] | undefined): string | null {
+  if (!Array.isArray(links)) return null;
+  const entries = links.flatMap((link) => {
+    const url = typeof link?.url === "string" ? link.url.trim() : "";
+    if (!url) return [];
+    const label = typeof link.label === "string" ? link.label.trim() : "";
+    return [{ label, url }];
+  });
+  const page = entries.find((link) => link.label === "Page");
+  if (page) return page.url;
+  const http = entries.find((link) => /^https?:\/\//i.test(link.url));
+  if (http) return http.url;
+  return entries.find((link) => link.label === "Console")?.url ?? null;
+}
+
+function hoistIdentity(payload: Record<string, unknown>): Partial<WatchNatsPayload> {
+  const identity: Partial<WatchNatsPayload> = {};
+  for (const key of PAGE_COMMENT_IDENTITY_KEYS) {
+    const value = stringValue(payload[key]);
+    if (value) identity[key] = value;
+  }
+  return identity;
 }
 
 function normalizePlacement(value: string | null): EffectiveWatchPlacement {

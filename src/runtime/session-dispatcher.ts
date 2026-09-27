@@ -1536,9 +1536,9 @@ export class RuntimeSessionDispatcher {
     }
 
     const sessionKey = restartResume.sessionKey ?? sessionEntry?.sessionKey ?? sessionName;
-    const pendingMessages = normalizePersistedRuntimeMessages(
-      dbGetDaemonRestartPendingMessages(restartResume.restartEpoch, sessionKey),
-    );
+    const pendingMessages = restartResume.noticeOnly
+      ? []
+      : normalizePersistedRuntimeMessages(dbGetDaemonRestartPendingMessages(restartResume.restartEpoch, sessionKey));
     if (pendingMessages.length === 0 && restartResume.pendingOnly) {
       return null;
     }
@@ -1556,6 +1556,7 @@ export class RuntimeSessionDispatcher {
       sessionKey,
       restartEpoch: restartResume.restartEpoch,
       pendingMessages: pendingMessages.length,
+      noticeOnly: restartResume.noticeOnly === true,
     });
     return {
       prompt: {

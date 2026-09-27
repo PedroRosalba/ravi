@@ -51,6 +51,111 @@ describe("watch events", () => {
     expect(watchEventFromInboxPayload(makeInboxPayload({ eventType: "mail.message.received" }))).toBeNull();
   });
 
+  it("maps Agent Inbox page.comment.created onto the page comment watch subject", () => {
+    const event = watchEventFromInboxPayload(
+      makeInboxPayload({
+        eventType: "page.comment.created",
+        payload: {
+          pageId: "site_1",
+          orgId: "org_1",
+          projectId: "proj_1",
+          text: "please fix the chart",
+          url: "https://weekly.ravi.page/",
+        },
+      }),
+      { inboxItemId: 9 },
+    );
+
+    expect(event).toMatchObject({
+      connector: "console",
+      eventType: "page.comment.created",
+      subject: "ravi.watch.console.page.comment.created",
+      pageId: "site_1",
+      orgId: "org_1",
+      projectId: "proj_1",
+      payload: {
+        pageId: "site_1",
+        body: "please fix the chart",
+        url: "https://weekly.ravi.page/",
+      },
+      delivery: { inboxItemId: 9 },
+    });
+  });
+
+  it("reserves page.comment.resolved on the same watch bridge", () => {
+    const event = watchEventFromInboxPayload(
+      makeInboxPayload({
+        eventType: "page.comment.resolved",
+        payload: { siteId: "site_1", comment: { body: "done" } },
+      }),
+    );
+
+    expect(event).toMatchObject({
+      eventType: "page.comment.resolved",
+      subject: "ravi.watch.console.page.comment.resolved",
+      siteId: "site_1",
+      payload: { body: "done", siteId: "site_1" },
+    });
+  });
+
+  it("keeps a payload url and does not replace it with inbox links", () => {
+    const event = watchEventFromInboxPayload(
+      makeInboxPayload({
+        eventType: "page.comment.created",
+        payload: { pageId: "site_1", body: "keep this url", url: "https://weekly.ravi.page/" },
+        links: [
+          { label: "Page", url: "https://pages.example/site_1" },
+          { label: "Console", url: "https://console.example/pages/site_1" },
+        ],
+      }),
+    );
+
+    expect(event?.payload.url).toBe("https://weekly.ravi.page/");
+    expect(event?.payload.body).toBe("keep this url");
+  });
+
+  it("fills payload.url from the Page link when Console omits it", () => {
+    const event = watchEventFromInboxPayload(
+      makeInboxPayload({
+        eventType: "page.comment.created",
+        payload: { pageId: "site_1", body: "from links", url: "  " },
+        links: [
+          { label: "Other", url: "https://other.example/first" },
+          { label: "Page", url: "https://pages.example/site_1" },
+          { label: "Console", url: "https://console.example/pages/site_1" },
+        ],
+      }),
+    );
+
+    expect(event?.payload.url).toBe("https://pages.example/site_1");
+  });
+
+  it("fills payload.url from the Console link when that is the only link", () => {
+    const event = watchEventFromInboxPayload(
+      makeInboxPayload({
+        eventType: "page.comment.created",
+        payload: { pageId: "site_1", text: "console only" },
+        links: [{ label: "Console", url: "https://console.example/pages/site_1" }],
+      }),
+    );
+
+    expect(event?.payload.url).toBe("https://console.example/pages/site_1");
+    expect(event?.payload.body).toBe("console only");
+  });
+
+  it("leaves payload.url unset when the comment has no links", () => {
+    const event = watchEventFromInboxPayload(
+      makeInboxPayload({
+        eventType: "page.comment.created",
+        payload: { pageId: "site_1", body: "no url" },
+        links: null,
+      }),
+    );
+
+    expect(event?.payload.url).toBeUndefined();
+    expect(event?.payload.body).toBe("no url");
+  });
+
   it("keeps watch subject generation stable", () => {
     expect(eventSubject("npm", "package.version_published")).toBe("ravi.watch.npm.package.version_published");
   });
