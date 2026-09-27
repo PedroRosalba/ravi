@@ -248,6 +248,12 @@ export interface PromptMessage {
    */
   _deferRuntimeStart?: boolean;
   /**
+   * Channel `!!` message: persisted as a normal user row but never starts,
+   * wakes, or interrupts a turn. The dispatcher holds it in memory and feeds it
+   * to the model ahead of the session's next real turn.
+   */
+  _skipTurn?: boolean;
+  /**
    * Operator-requested channel introduction. When the turn origin is
    * `session.bootstrap`, pool admission uses the interactive lane so the
    * greeting cold-starts (or queues as a real pending start) instead of
