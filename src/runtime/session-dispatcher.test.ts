@@ -27,6 +27,7 @@ import {
 } from "../router/sessions.js";
 import {
   dbGetDaemonRestartPendingMessages,
+  dbGetDaemonRestartResumeDelivery,
   dbGetDaemonRestartSessionSnapshot,
   dbListEligibleDaemonRestartSessionSnapshots,
   dbMarkDaemonRestartResumeDelivered,
@@ -45,7 +46,11 @@ import {
 } from "../tasks/task-db.js";
 import { buildChannelTurnOrigin, buildSessionRelayTurnOrigin } from "./turn-origin.js";
 import type { RuntimeCrashRecoveryCoordinator } from "./crash-recovery.js";
-import { buildDaemonRestartResumePrompt, resolveCrashRecoveryRestartResumeMode } from "./daemon-restart-resume.js";
+import {
+  buildDaemonRestartNoticePrompt,
+  buildDaemonRestartResumePrompt,
+  resolveCrashRecoveryRestartResumeMode,
+} from "./daemon-restart-resume.js";
 import {
   buildRuntimeModelBrokerPhysicalFingerprint,
   buildRuntimeModelBrokerSelectionCompatibilityKey,
@@ -1464,6 +1469,109 @@ describe("RuntimeSessionDispatcher abort resolution", () => {
           mode,
         }),
       ).toBeNull();
+
+      const notice = buildDaemonRestartNoticePrompt({
+        restartEpoch: "epoch-unsafe-only",
+        reason: "version update",
+        sessionKey,
+        fenceReason: "unsafe_snapshot",
+        snapshotMetadata: snapshot?.metadata,
+      });
+      const prepared = (
+        dispatcher as unknown as {
+          prepareDaemonRestartResumePrompt(
+            requestedSessionName: string,
+            prompt: RuntimeLaunchPrompt,
+            sessionEntry: null,
+          ): { prompt: RuntimeLaunchPrompt; messages: RuntimeUserMessage[] } | null;
+        }
+      ).prepareDaemonRestartResumePrompt(sessionName, notice, null);
+      expect(prepared?.messages).toHaveLength(1);
+      expect(prepared?.messages[0]?.pendingId).not.toBe(active.pendingId);
+      expect(prepared?.prompt.prompt).toContain("Daemon reiniciou (version update)");
+      expect(prepared?.prompt.prompt).toContain("ferramenta já iniciada");
+      expect(prepared?.prompt.prompt).not.toContain("unsafe only");
+      expect(prepared?.prompt.prompt).not.toContain("Continue de onde parou");
+      expect(prepared?.prompt._daemonRestartResume).toMatchObject({ noticeOnly: true });
+    } finally {
+      await cleanupIsolatedRaviState(stateDir);
+    }
+  });
+
+  it("never hydrates persisted pending work into a restart notice", async () => {
+    const stateDir = await createIsolatedRaviState("ravi-runtime-dispatcher-notice-no-hydrate-");
+    try {
+      const now = Date.now();
+      const sessionKey = "agent:dev:test:restart-notice-stale";
+      const sessionName = "restart-notice-stale";
+      getOrCreateSession(sessionKey, "dev", stateDir, { name: sessionName });
+      dbUpsertDaemonRestartEpoch({ restartEpoch: "epoch-notice-stale", reason: "test", createdAt: now });
+      const stale = createQueuedRuntimeUserMessage({ prompt: "stale work outside the resume window" });
+      dbRecordDaemonRestartSessionSnapshot({
+        restartEpoch: "epoch-notice-stale",
+        sessionKey,
+        sessionName,
+        activity: "queued",
+        nonIdle: true,
+        lastActivityAt: now - 2 * 60 * 60 * 1000,
+        stoppedAt: now - 2 * 60 * 60 * 1000,
+        pendingMessages: [stale],
+        metadata: { crashRecoveryRestartResumeMode: "continue" },
+      });
+      const dispatcher = createDispatcher();
+      const notice = buildDaemonRestartNoticePrompt({
+        restartEpoch: "epoch-notice-stale",
+        reason: "test",
+        sessionKey,
+        fenceReason: "ineligible_snapshot",
+      });
+
+      const prepared = (
+        dispatcher as unknown as {
+          prepareDaemonRestartResumePrompt(
+            requestedSessionName: string,
+            prompt: RuntimeLaunchPrompt,
+            sessionEntry: null,
+          ): { prompt: RuntimeLaunchPrompt; messages: RuntimeUserMessage[] } | null;
+        }
+      ).prepareDaemonRestartResumePrompt(sessionName, notice, null);
+
+      expect(dbGetDaemonRestartPendingMessages("epoch-notice-stale", sessionKey)).toHaveLength(1);
+      expect(prepared?.messages).toHaveLength(1);
+      expect(prepared?.messages.map((message) => message.pendingId)).not.toContain(stale.pendingId);
+      expect(prepared?.prompt.prompt).not.toContain("stale work outside the resume window");
+      expect(prepared?.prompt.prompt).toContain("fora da janela de retomada");
+    } finally {
+      await cleanupIsolatedRaviState(stateDir);
+    }
+  });
+
+  it("stashes a restart notice once while a cold start is already in flight", async () => {
+    const stateDir = await createIsolatedRaviState("ravi-runtime-dispatcher-starting-notice-");
+    try {
+      const now = Date.now();
+      const sessionKey = "agent:main:test:restart-notice-starting";
+      const sessionName = "restart-notice-starting";
+      getOrCreateSession(sessionKey, "main", stateDir, { name: sessionName });
+      dbUpsertDaemonRestartEpoch({ restartEpoch: "epoch-notice-starting", reason: "test", createdAt: now });
+      const dispatcher = createDispatcher();
+      dispatcher.startingSessions.add(sessionName);
+
+      await dispatcher.handlePromptImmediate(
+        sessionName,
+        buildDaemonRestartNoticePrompt({
+          restartEpoch: "epoch-notice-starting",
+          reason: "version update",
+          sessionKey,
+          fenceReason: "unsafe_snapshot",
+        }),
+      );
+
+      const stashed = dispatcher.stashedMessages.get(sessionName);
+      expect(stashed).toHaveLength(1);
+      expect(stashed?.[0]?.message.content).toContain("Daemon reiniciou (version update)");
+      expect(stashed?.[0]?.message.content).not.toContain("Continue de onde parou");
+      expect(stashed?.[0]?.launchPrompt?._daemonRestartResume?.noticeOnly).toBe(true);
     } finally {
       await cleanupIsolatedRaviState(stateDir);
     }
@@ -2694,6 +2802,8 @@ describe("RuntimeSessionDispatcher abort resolution", () => {
           restartEpoch: "epoch-window",
           sessionKey: "agent:dev:test:restart-fresh",
           sessionName: "restart-fresh",
+          deliveryKind: "resume",
+          decisionReason: "continue",
           deliveredAt: now,
         }),
       ).toBe(true);
@@ -2702,9 +2812,15 @@ describe("RuntimeSessionDispatcher abort resolution", () => {
           restartEpoch: "epoch-window",
           sessionKey: "agent:dev:test:restart-fresh",
           sessionName: "restart-fresh",
+          deliveryKind: "notice",
+          decisionReason: "unsafe_snapshot",
           deliveredAt: now,
         }),
       ).toBe(false);
+      expect(dbGetDaemonRestartResumeDelivery("epoch-window", "agent:dev:test:restart-fresh")).toMatchObject({
+        deliveryKind: "resume",
+        decisionReason: "continue",
+      });
       expect(
         dbListEligibleDaemonRestartSessionSnapshots({
           restartEpoch: "epoch-window",
@@ -3466,6 +3582,94 @@ describe("RuntimeSessionDispatcher abort resolution", () => {
     } finally {
       await cleanupIsolatedRaviState(stateDir);
     }
+  });
+
+  it("admits a group-create intro as an interactive start instead of deferring it", async () => {
+    const stateDir = await createIsolatedRaviState("ravi-runtime-dispatcher-group-intro-");
+    try {
+      getOrCreateSession("agent:dev:test:group-intro", "dev", stateDir, { name: "demo-group" });
+      const dispatcher = createDispatcher(2, 1);
+      dispatcher.streamingSessions.set("busy-background", createActiveSession());
+      dispatcher.streamingSessions.set("busy-interactive", createActiveSession());
+
+      const intro = dispatcher.handlePromptImmediate("demo-group", {
+        prompt: "[System] Inform: Você foi adicionado ao grupo. Se apresente brevemente.",
+        _interactiveStart: true,
+        _turnOrigin: buildChannelTurnOrigin("session.bootstrap", {
+          type: "automation",
+          id: "channels:session.bootstrap",
+        }),
+        source: {
+          channel: "whatsapp",
+          accountId: "demo",
+          chatId: "group:test-group-1",
+          actorType: "system",
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(dispatcher.deferredBootstraps.has("demo-group")).toBe(false);
+      expect(dispatcher.pendingStarts).toHaveLength(1);
+      expect(dispatcher.pendingStarts[0]?.sessionName).toBe("demo-group");
+      expect(dispatcher.pendingStarts[0]?.lane).toBe("interactive");
+      expect(dispatcher.pendingStarts[0]?.prompt.prompt).toContain("Se apresente brevemente");
+      expect(dispatcher.pendingStarts[0]?.prompt._deferRuntimeStart).toBeUndefined();
+      expect(dispatcher.streamingSessions.has("demo-group")).toBe(false);
+
+      dispatcher.shutdownAll();
+      await intro;
+    } finally {
+      await cleanupIsolatedRaviState(stateDir);
+    }
+  });
+
+  it("reserves an interactive slot for a group intro while a background bootstrap stays queued", async () => {
+    const dispatcher = createDispatcher(2, 1);
+    dispatcher.streamingSessions.set("busy-background", createActiveSession());
+    const reserve = (
+      dispatcher as unknown as {
+        reserveRuntimeSessionStart: (sessionName: string, prompt: RuntimeLaunchPrompt) => Promise<boolean>;
+      }
+    ).reserveRuntimeSessionStart.bind(dispatcher);
+
+    const backgroundOrigin = buildChannelTurnOrigin("session.bootstrap", {
+      type: "automation",
+      id: "channels:session.bootstrap",
+    });
+    const background = reserve("background-bootstrap", {
+      prompt: "[System] Inform: background bootstrap",
+      _turnOrigin: backgroundOrigin,
+      source: {
+        channel: "whatsapp",
+        accountId: "demo",
+        chatId: "group:test-group-1",
+        actorType: "system",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(dispatcher.pendingStarts.map((entry) => entry.sessionName)).toEqual(["background-bootstrap"]);
+    expect(dispatcher.pendingStarts[0]?.lane).toBe("background");
+
+    const introReserved = await reserve("demo-group", {
+      prompt: "[System] Inform: Se apresente brevemente.",
+      _interactiveStart: true,
+      _turnOrigin: backgroundOrigin,
+      source: {
+        channel: "whatsapp",
+        accountId: "demo",
+        chatId: "group:test-group-1",
+        actorType: "system",
+      },
+    });
+
+    expect(introReserved).toBe(true);
+    expect(dispatcher.startReservations.has("demo-group")).toBe(true);
+    expect(dispatcher.deferredBootstraps.has("demo-group")).toBe(false);
+    expect(dispatcher.pendingStarts.map((entry) => entry.sessionName)).toEqual(["background-bootstrap"]);
+
+    dispatcher.shutdownAll();
+    await background;
   });
 
   it("promotes a background pending start to interactive when a human inbound arrives", async () => {

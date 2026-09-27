@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
+import { resolveTriggerActivation } from "./activation.js";
 import { compileFilter } from "./filter.js";
 import { isTriggerOriginatedEvent, planTriggerTopicRefresh, shouldRetryTriggerTopic } from "./runner.js";
 import { findTriggerTopicCatalogEntry } from "./topic-catalog.js";
@@ -75,6 +76,32 @@ describe("triggers native automation support", () => {
     expect(entry?.examples.some((example) => example.includes("ravi.watch.console.bug.status"))).toBe(true);
   });
 
+  it("catalogs page comment watch subjects and fails closed when the bound agent is gone", () => {
+    const created = findTriggerTopicCatalogEntry("ravi.watch.console.page.comment.created");
+    const resolved = findTriggerTopicCatalogEntry("ravi.watch.console.page.comment.resolved");
+
+    expect(created).toMatchObject({
+      id: "page.comment.created",
+      pattern: "ravi.watch.console.page.comment.created",
+    });
+    expect(created?.filters?.some((filter) => filter.includes("data.payload.pageId"))).toBe(true);
+    expect(created?.messageTemplate?.template).toContain("{{data.payload.body}}");
+    expect(resolved?.id).toBe("page.comment.resolved");
+
+    const activation = resolveTriggerActivation(
+      {
+        enabled: true,
+        topic: "ravi.watch.console.page.comment.created",
+        filter: `data.payload.pageId == "site_1"`,
+        agentId: "gone-creator",
+      },
+      { agentExists: () => false },
+    );
+    expect(activation.state).toBe("unbound_agent");
+    expect(activation.reason).toContain("unbound_agent");
+    expect(activation.filter.evaluate({ payload: { pageId: "site_1" } })).toBe(true);
+  });
+
   it("persists shell trigger command fields and clears them for agent triggers", () => {
     const trigger = dbCreateTrigger({
       name: "shell-ticket-flow",
@@ -113,7 +140,22 @@ describe("triggers native automation support", () => {
     expect(updated?.onError).toBeUndefined();
   });
 
-  it("compiles and caches boolean filters while preserving invalid-filter fail-open behavior", () => {
+  it("clears a persisted filter when updated with null", () => {
+    const trigger = dbCreateTrigger({
+      name: "filtered",
+      agentId: "agent-a",
+      topic: "ravi.watch.github.*",
+      message: "check",
+      filter: "data.payload.number == 7",
+    });
+    expect(dbGetTrigger(trigger.id)?.filter).toBe("data.payload.number == 7");
+
+    dbUpdateTrigger(trigger.id, { filter: null });
+
+    expect(dbGetTrigger(trigger.id)?.filter).toBeUndefined();
+  });
+
+  it("compiles and caches boolean filters and fails closed on invalid filters", () => {
     const expression = `data.provider == "slack" && data.actionId startsWith "ticket_"`;
     const compiled = compileFilter(expression);
 
@@ -124,7 +166,8 @@ describe("triggers native automation support", () => {
 
     const invalid = compileFilter("this is not a predicate");
     expect(invalid.valid).toBe(false);
-    expect(invalid.evaluate({ provider: "slack" })).toBe(true);
+    expect(invalid.error).toBeTruthy();
+    expect(invalid.evaluate({ provider: "slack" })).toBe(false);
   });
 
   it("refreshes topic subscriptions incrementally without reviving removed or trigger-originated work", () => {

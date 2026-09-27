@@ -101,6 +101,8 @@ export interface DaemonRestartResumePromptMetadata {
   sessionKey?: string;
   /** Wake the runtime with persisted pending successors only; never append a generic continuation. */
   pendingOnly?: true;
+  /** Restart notice for a fenced resume: deliver only this prompt; never hydrate persisted pending work. */
+  noticeOnly?: true;
   /**
    * Last-used / live provider captured on the restart snapshot. Resume selection
    * treats this as a last-used hint, not a launch override.
@@ -241,8 +243,19 @@ export interface PromptMessage {
   /**
    * Channel bootstrap that must not occupy a runtime pool slot until a later
    * interactive turn. The dispatcher stashes the inform and prepends it.
+   * Group-create introductions MUST NOT set this: the operator asked the
+   * agent to speak, so the greeting has to start a turn on its own.
    */
   _deferRuntimeStart?: boolean;
+  /**
+   * Operator-requested channel introduction. When the turn origin is
+   * `session.bootstrap`, pool admission uses the interactive lane so the
+   * greeting cold-starts (or queues as a real pending start) instead of
+   * waiting for a later human message. Turn provenance stays the channel
+   * bootstrap cause. Observers, task sessions, and any prompt that is not
+   * a channel `session.bootstrap` ignore this flag.
+   */
+  _interactiveStart?: boolean;
 }
 
 export type RuntimeLaunchPrompt = PromptMessage;
