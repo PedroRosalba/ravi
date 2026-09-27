@@ -15565,15 +15565,21 @@ public struct PermissionsAllowOptions: Codable, Sendable {
   public var agent: String?
   public var apply: Bool?
   public var capabilities: String?
+  public var chat: String?
+  public var chatTag: String?
   public var description: String?
+  public var force: Bool?
   public var label: String?
   public var to: String?
 
-  public init(agent: String? = nil, apply: Bool? = nil, capabilities: String? = nil, description: String? = nil, label: String? = nil, to: String? = nil) {
+  public init(agent: String? = nil, apply: Bool? = nil, capabilities: String? = nil, chat: String? = nil, chatTag: String? = nil, description: String? = nil, force: Bool? = nil, label: String? = nil, to: String? = nil) {
     self.agent = agent
     self.apply = apply
     self.capabilities = capabilities
+    self.chat = chat
+    self.chatTag = chatTag
     self.description = description
+    self.force = force
     self.label = label
     self.to = to
   }
@@ -15582,7 +15588,10 @@ public struct PermissionsAllowOptions: Codable, Sendable {
     case agent = "agent"
     case apply = "apply"
     case capabilities = "capabilities"
+    case chat = "chat"
+    case chatTag = "chatTag"
     case description = "description"
+    case force = "force"
     case label = "label"
     case to = "to"
   }
@@ -15597,8 +15606,17 @@ public struct PermissionsAllowOptions: Codable, Sendable {
     if let value = self.capabilities {
       body["capabilities"] = try RaviJSON.fromEncodable(value)
     }
+    if let value = self.chat {
+      body["chat"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.chatTag {
+      body["chatTag"] = try RaviJSON.fromEncodable(value)
+    }
     if let value = self.description {
       body["description"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.force {
+      body["force"] = try RaviJSON.fromEncodable(value)
     }
     if let value = self.label {
       body["label"] = try RaviJSON.fromEncodable(value)
@@ -15613,25 +15631,33 @@ public struct PermissionsAllowReturn: Codable, Sendable {
   public var agentCeilings: [String]
   public var capabilities: [RaviJSON]
   public var changedCount: Double
+  public var confirmation: RaviJSON
   public var description: String?
   public var dryRun: Bool
+  public var force: Bool
+  public var hints: [String]
   public var label: String
   public var nextCommand: String?
   public var operations: [RaviJSON]
   public var profile: String
+  public var scopes: [RaviJSON]
   public var tagSlug: String
   public var targets: [RaviJSON]
 
-  public init(agentCeilings: [String], capabilities: [RaviJSON], changedCount: Double, description: String? = nil, dryRun: Bool, label: String, nextCommand: String? = nil, operations: [RaviJSON], profile: String, tagSlug: String, targets: [RaviJSON]) {
+  public init(agentCeilings: [String], capabilities: [RaviJSON], changedCount: Double, confirmation: RaviJSON, description: String? = nil, dryRun: Bool, force: Bool, hints: [String], label: String, nextCommand: String? = nil, operations: [RaviJSON], profile: String, scopes: [RaviJSON], tagSlug: String, targets: [RaviJSON]) {
     self.agentCeilings = agentCeilings
     self.capabilities = capabilities
     self.changedCount = changedCount
+    self.confirmation = confirmation
     self.description = description
     self.dryRun = dryRun
+    self.force = force
+    self.hints = hints
     self.label = label
     self.nextCommand = nextCommand
     self.operations = operations
     self.profile = profile
+    self.scopes = scopes
     self.tagSlug = tagSlug
     self.targets = targets
   }
@@ -15640,12 +15666,16 @@ public struct PermissionsAllowReturn: Codable, Sendable {
     case agentCeilings = "agentCeilings"
     case capabilities = "capabilities"
     case changedCount = "changedCount"
+    case confirmation = "confirmation"
     case description = "description"
     case dryRun = "dryRun"
+    case force = "force"
+    case hints = "hints"
     case label = "label"
     case nextCommand = "nextCommand"
     case operations = "operations"
     case profile = "profile"
+    case scopes = "scopes"
     case tagSlug = "tagSlug"
     case targets = "targets"
   }
@@ -15708,6 +15738,183 @@ public struct PermissionsCheckReturn: Codable, Sendable {
   }
 }
 
+public struct PermissionsDenyOptions: Codable, Sendable {
+  public var apply: Bool?
+  public var chat: String?
+  public var chatTag: String?
+  public var force: Bool?
+  public var to: String?
+
+  public init(apply: Bool? = nil, chat: String? = nil, chatTag: String? = nil, force: Bool? = nil, to: String? = nil) {
+    self.apply = apply
+    self.chat = chat
+    self.chatTag = chatTag
+    self.force = force
+    self.to = to
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case apply = "apply"
+    case chat = "chat"
+    case chatTag = "chatTag"
+    case force = "force"
+    case to = "to"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.apply {
+      body["apply"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.chat {
+      body["chat"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.chatTag {
+      body["chatTag"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.force {
+      body["force"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.to {
+      body["to"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct PermissionsDenyReturn: Codable, Sendable {
+  public var capabilities: [RaviJSON]
+  public var changedCount: Double
+  public var confirmation: RaviJSON
+  public var dryRun: Bool
+  public var force: Bool
+  public var hints: [String]
+  public var nextCommand: String?
+  public var operations: [RaviJSON]
+  public var profile: String
+  public var scopes: [RaviJSON]
+  public var tagSlug: String
+  public var targets: [RaviJSON]
+
+  public init(capabilities: [RaviJSON], changedCount: Double, confirmation: RaviJSON, dryRun: Bool, force: Bool, hints: [String], nextCommand: String? = nil, operations: [RaviJSON], profile: String, scopes: [RaviJSON], tagSlug: String, targets: [RaviJSON]) {
+    self.capabilities = capabilities
+    self.changedCount = changedCount
+    self.confirmation = confirmation
+    self.dryRun = dryRun
+    self.force = force
+    self.hints = hints
+    self.nextCommand = nextCommand
+    self.operations = operations
+    self.profile = profile
+    self.scopes = scopes
+    self.tagSlug = tagSlug
+    self.targets = targets
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case capabilities = "capabilities"
+    case changedCount = "changedCount"
+    case confirmation = "confirmation"
+    case dryRun = "dryRun"
+    case force = "force"
+    case hints = "hints"
+    case nextCommand = "nextCommand"
+    case operations = "operations"
+    case profile = "profile"
+    case scopes = "scopes"
+    case tagSlug = "tagSlug"
+    case targets = "targets"
+  }
+}
+
+public struct PermissionsListOptions: Codable, Sendable {
+  public var chat: String?
+  public var chatTag: String?
+  public var force: Bool?
+  public var limit: String?
+  public var offset: String?
+  public var profile: String?
+  public var to: String?
+
+  public init(chat: String? = nil, chatTag: String? = nil, force: Bool? = nil, limit: String? = nil, offset: String? = nil, profile: String? = nil, to: String? = nil) {
+    self.chat = chat
+    self.chatTag = chatTag
+    self.force = force
+    self.limit = limit
+    self.offset = offset
+    self.profile = profile
+    self.to = to
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case chat = "chat"
+    case chatTag = "chatTag"
+    case force = "force"
+    case limit = "limit"
+    case offset = "offset"
+    case profile = "profile"
+    case to = "to"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.chat {
+      body["chat"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.chatTag {
+      body["chatTag"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.force {
+      body["force"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.limit {
+      body["limit"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.offset {
+      body["offset"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.profile {
+      body["profile"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.to {
+      body["to"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct PermissionsListReturn: Codable, Sendable {
+  public var confirmation: RaviJSON
+  public var force: Bool
+  public var grants: [RaviJSON]
+  public var hints: [String]
+  public var overlays: [RaviJSON]
+  public var pagination: RaviJSON
+  public var scopes: [RaviJSON]
+  public var targets: [RaviJSON]
+  public var total: Double
+
+  public init(confirmation: RaviJSON, force: Bool, grants: [RaviJSON], hints: [String], overlays: [RaviJSON], pagination: RaviJSON, scopes: [RaviJSON], targets: [RaviJSON], total: Double) {
+    self.confirmation = confirmation
+    self.force = force
+    self.grants = grants
+    self.hints = hints
+    self.overlays = overlays
+    self.pagination = pagination
+    self.scopes = scopes
+    self.targets = targets
+    self.total = total
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case confirmation = "confirmation"
+    case force = "force"
+    case grants = "grants"
+    case hints = "hints"
+    case overlays = "overlays"
+    case pagination = "pagination"
+    case scopes = "scopes"
+    case targets = "targets"
+    case total = "total"
+  }
+}
+
 public struct PermissionsMaterializeOptions: Codable, Sendable {
   public var subjectId: String?
   public var subjectType: String?
@@ -15756,17 +15963,26 @@ public struct PermissionsMaterializeReturn: Codable, Sendable {
 public struct PermissionsResolveOptions: Codable, Sendable {
   public var apply: Bool?
   public var capabilities: String?
+  public var chat: String?
+  public var chatTag: String?
+  public var force: Bool?
   public var profile: String?
 
-  public init(apply: Bool? = nil, capabilities: String? = nil, profile: String? = nil) {
+  public init(apply: Bool? = nil, capabilities: String? = nil, chat: String? = nil, chatTag: String? = nil, force: Bool? = nil, profile: String? = nil) {
     self.apply = apply
     self.capabilities = capabilities
+    self.chat = chat
+    self.chatTag = chatTag
+    self.force = force
     self.profile = profile
   }
 
   enum CodingKeys: String, CodingKey {
     case apply = "apply"
     case capabilities = "capabilities"
+    case chat = "chat"
+    case chatTag = "chatTag"
+    case force = "force"
     case profile = "profile"
   }
 
@@ -15776,6 +15992,15 @@ public struct PermissionsResolveOptions: Codable, Sendable {
     }
     if let value = self.capabilities {
       body["capabilities"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.chat {
+      body["chat"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.chatTag {
+      body["chatTag"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.force {
+      body["force"] = try RaviJSON.fromEncodable(value)
     }
     if let value = self.profile {
       body["profile"] = try RaviJSON.fromEncodable(value)
@@ -15787,29 +16012,37 @@ public struct PermissionsResolveReturn: Codable, Sendable {
   public var agentCeilings: [String]
   public var capabilities: [RaviJSON]
   public var changedCount: Double
+  public var confirmation: RaviJSON
   public var denial: RaviJSON
   public var description: String?
   public var dryRun: Bool
+  public var force: Bool
   public var guidance: RaviJSON?
+  public var hints: [String]
   public var label: String
   public var nextCommand: String?
   public var operations: [RaviJSON]
   public var profile: String
+  public var scopes: [RaviJSON]
   public var tagSlug: String
   public var targets: [RaviJSON]
 
-  public init(agentCeilings: [String], capabilities: [RaviJSON], changedCount: Double, denial: RaviJSON, description: String? = nil, dryRun: Bool, guidance: RaviJSON? = nil, label: String, nextCommand: String? = nil, operations: [RaviJSON], profile: String, tagSlug: String, targets: [RaviJSON]) {
+  public init(agentCeilings: [String], capabilities: [RaviJSON], changedCount: Double, confirmation: RaviJSON, denial: RaviJSON, description: String? = nil, dryRun: Bool, force: Bool, guidance: RaviJSON? = nil, hints: [String], label: String, nextCommand: String? = nil, operations: [RaviJSON], profile: String, scopes: [RaviJSON], tagSlug: String, targets: [RaviJSON]) {
     self.agentCeilings = agentCeilings
     self.capabilities = capabilities
     self.changedCount = changedCount
+    self.confirmation = confirmation
     self.denial = denial
     self.description = description
     self.dryRun = dryRun
+    self.force = force
     self.guidance = guidance
+    self.hints = hints
     self.label = label
     self.nextCommand = nextCommand
     self.operations = operations
     self.profile = profile
+    self.scopes = scopes
     self.tagSlug = tagSlug
     self.targets = targets
   }
@@ -15818,14 +16051,18 @@ public struct PermissionsResolveReturn: Codable, Sendable {
     case agentCeilings = "agentCeilings"
     case capabilities = "capabilities"
     case changedCount = "changedCount"
+    case confirmation = "confirmation"
     case denial = "denial"
     case description = "description"
     case dryRun = "dryRun"
+    case force = "force"
     case guidance = "guidance"
+    case hints = "hints"
     case label = "label"
     case nextCommand = "nextCommand"
     case operations = "operations"
     case profile = "profile"
+    case scopes = "scopes"
     case tagSlug = "tagSlug"
     case targets = "targets"
   }

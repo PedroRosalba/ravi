@@ -240,6 +240,9 @@ mock.module("../../router/router-db.js", () => ({
     chatType: "group",
     title: "Launch",
   }),
+  dbGetChat: () => null,
+  dbGetThreadParentChat: () => null,
+  dbListChatsByRef: () => [],
   dbListChats: () => ({
     total: 1,
     limit: 500,

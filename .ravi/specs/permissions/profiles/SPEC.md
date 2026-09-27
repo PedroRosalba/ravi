@@ -67,8 +67,10 @@ for creating a new profile, not the normal approval interface.
 - Profile grants SHOULD be temporary by default unless marked permanent.
 - Revoked or expired profile grants and memberships MUST stop authorizing.
 - Profile expansion MUST happen before turn-scoped capability materialization.
-- A profile assignment to a contact is legacy/user-overlay unless an explicit
-  provider consumes it for invocation eligibility.
+- A profile assignment to a contact MUST be scoped to a chat or chat tag by
+  default. Global contact assignment (a contact permission tag) requires an
+  explicit `--force`. Contact profiles only narrow the agent identity in
+  governed chats (`permissions/user-overlay`).
 - A profile assignment to a chat/surface is compartment policy or constraint;
   a missing chat profile MUST NOT zero agent identity authority.
 - Agent runtime profile `chat-only` is a zero-authority reception ceiling.
@@ -152,7 +154,9 @@ Rules:
 
 For human-scale management, policy tags SHOULD describe reusable profiles, but
 the production default is to apply recurring tool authority to the agent
-identity/executor agent. Contact tags are for legacy/user-overlay policy.
+identity/executor agent. Contacts receive profiles through chat-scoped grants
+(`permission_contact_chat_grants`) that reference the profile by slug; a global
+contact permission tag is the `--force` path.
 
 Example:
 
@@ -237,15 +241,20 @@ Semantics:
 - Applying a profile to `agent:<id>` MUST ensure the executor-agent runtime
   config contains the concrete capabilities, without replacing existing
   explicit capabilities.
-- Applying a profile to `contact:<id>` MAY still use the contact policy path,
-  but this is legacy/user-overlay and not the normal way to unblock
-  multiplayer agent tool authority.
+- Applying a profile to `contact:<id>` MUST name a scope: `--chat
+  <chat-id|current>` or `--chat-tag <tag>` stores a chat-scoped grant; `--force`
+  attaches the global contact permission tag. Without a scope the command MUST
+  refuse with `CHAT_SCOPE_REQUIRED`. Contact grants narrow the agent identity;
+  pass `--agent <id>` so the executor ceiling includes the profile.
+- `ravi permissions deny` and `ravi permissions list` MUST accept the same
+  scope flags and report the same structured `confirmation`.
 - Existing provider-owned permission tags MUST be reused when their capability
   set matches the denied capability.
 - Non-permission tags MUST NOT be mutated by permission workflow commands.
 - Surface/chat constraints require their own materializer. Until such a
   provider exists, the workflow command MUST not pretend that attaching a tag to
-  a chat grants authority.
+  a chat grants authority. A chat tag used with `--chat-tag` only selects which
+  chats a contact grant covers; it grants nothing by itself.
 
 ## Relationship To Tool Groups
 
@@ -266,3 +275,5 @@ objects.
 - A chat constraint profile can reduce an owner's authority in that chat.
 - Denial/audit output can identify whether a capability came from a direct
   grant or a profile.
+- A contact profile granted in one chat does not materialize in another chat
+  unless a chat-tag or `--force` grant covers it.

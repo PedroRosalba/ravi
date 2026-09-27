@@ -13370,12 +13370,15 @@ class PagesVisibilityReturn {
 PagesVisibilityReturn pagesVisibilityReturnFromJson(Object? json) => PagesVisibilityReturn.fromJsonValue(json);
 
 class PermissionsAllowOptions {
-  const PermissionsAllowOptions({this.agent, this.apply, this.capabilities, this.description, this.label, this.to});
+  const PermissionsAllowOptions({this.agent, this.apply, this.capabilities, this.chat, this.chatTag, this.description, this.force, this.label, this.to});
 
   final String? agent;
   final bool? apply;
   final String? capabilities;
+  final String? chat;
+  final String? chatTag;
   final String? description;
+  final bool? force;
   final String? label;
   final String? to;
 
@@ -13389,8 +13392,17 @@ class PermissionsAllowOptions {
     if (capabilities != null) {
       into["capabilities"] = RaviJson.from(capabilities);
     }
+    if (chat != null) {
+      into["chat"] = RaviJson.from(chat);
+    }
+    if (chatTag != null) {
+      into["chatTag"] = RaviJson.from(chatTag);
+    }
     if (description != null) {
       into["description"] = RaviJson.from(description);
+    }
+    if (force != null) {
+      into["force"] = RaviJson.from(force);
     }
     if (label != null) {
       into["label"] = RaviJson.from(label);
@@ -13402,17 +13414,21 @@ class PermissionsAllowOptions {
 }
 
 class PermissionsAllowReturn {
-  const PermissionsAllowReturn({required this.agentCeilings, required this.capabilities, required this.changedCount, this.description, required this.dryRun, required this.label, this.nextCommand, required this.operations, required this.profile, required this.tagSlug, required this.targets});
+  const PermissionsAllowReturn({required this.agentCeilings, required this.capabilities, required this.changedCount, required this.confirmation, this.description, required this.dryRun, required this.force, required this.hints, required this.label, this.nextCommand, required this.operations, required this.profile, required this.scopes, required this.tagSlug, required this.targets});
 
   final List<String> agentCeilings;
   final List<RaviJson> capabilities;
   final double changedCount;
+  final RaviJson confirmation;
   final String? description;
   final bool dryRun;
+  final bool force;
+  final List<String> hints;
   final String label;
   final String? nextCommand;
   final List<RaviJson> operations;
   final String profile;
+  final List<RaviJson> scopes;
   final String tagSlug;
   final List<RaviJson> targets;
 
@@ -13421,12 +13437,16 @@ class PermissionsAllowReturn {
       agentCeilings: raviJsonAsList(json["agentCeilings"], raviJsonAsString),
       capabilities: raviJsonAsList(json["capabilities"], RaviJson.from),
       changedCount: raviJsonAsDouble(json["changedCount"]),
+      confirmation: RaviJson.from(json["confirmation"]),
       description: json["description"] == null ? null : raviJsonAsString(json["description"]),
       dryRun: raviJsonAsBool(json["dryRun"]),
+      force: raviJsonAsBool(json["force"]),
+      hints: raviJsonAsList(json["hints"], raviJsonAsString),
       label: raviJsonAsString(json["label"]),
       nextCommand: json["nextCommand"] == null ? null : raviJsonAsString(json["nextCommand"]),
       operations: raviJsonAsList(json["operations"], RaviJson.from),
       profile: raviJsonAsString(json["profile"]),
+      scopes: raviJsonAsList(json["scopes"], RaviJson.from),
       tagSlug: raviJsonAsString(json["tagSlug"]),
       targets: raviJsonAsList(json["targets"], RaviJson.from),
     );
@@ -13487,6 +13507,144 @@ class PermissionsCheckReturn {
 
 PermissionsCheckReturn permissionsCheckReturnFromJson(Object? json) => PermissionsCheckReturn.fromJsonValue(json);
 
+class PermissionsDenyOptions {
+  const PermissionsDenyOptions({this.apply, this.chat, this.chatTag, this.force, this.to});
+
+  final bool? apply;
+  final String? chat;
+  final String? chatTag;
+  final bool? force;
+  final String? to;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (apply != null) {
+      into["apply"] = RaviJson.from(apply);
+    }
+    if (chat != null) {
+      into["chat"] = RaviJson.from(chat);
+    }
+    if (chatTag != null) {
+      into["chatTag"] = RaviJson.from(chatTag);
+    }
+    if (force != null) {
+      into["force"] = RaviJson.from(force);
+    }
+    if (to != null) {
+      into["to"] = RaviJson.from(to);
+    }
+  }
+}
+
+class PermissionsDenyReturn {
+  const PermissionsDenyReturn({required this.capabilities, required this.changedCount, required this.confirmation, required this.dryRun, required this.force, required this.hints, this.nextCommand, required this.operations, required this.profile, required this.scopes, required this.tagSlug, required this.targets});
+
+  final List<RaviJson> capabilities;
+  final double changedCount;
+  final RaviJson confirmation;
+  final bool dryRun;
+  final bool force;
+  final List<String> hints;
+  final String? nextCommand;
+  final List<RaviJson> operations;
+  final String profile;
+  final List<RaviJson> scopes;
+  final String tagSlug;
+  final List<RaviJson> targets;
+
+  factory PermissionsDenyReturn.fromJson(Map<String, Object?> json) {
+    return PermissionsDenyReturn(
+      capabilities: raviJsonAsList(json["capabilities"], RaviJson.from),
+      changedCount: raviJsonAsDouble(json["changedCount"]),
+      confirmation: RaviJson.from(json["confirmation"]),
+      dryRun: raviJsonAsBool(json["dryRun"]),
+      force: raviJsonAsBool(json["force"]),
+      hints: raviJsonAsList(json["hints"], raviJsonAsString),
+      nextCommand: json["nextCommand"] == null ? null : raviJsonAsString(json["nextCommand"]),
+      operations: raviJsonAsList(json["operations"], RaviJson.from),
+      profile: raviJsonAsString(json["profile"]),
+      scopes: raviJsonAsList(json["scopes"], RaviJson.from),
+      tagSlug: raviJsonAsString(json["tagSlug"]),
+      targets: raviJsonAsList(json["targets"], RaviJson.from),
+    );
+  }
+
+  static PermissionsDenyReturn fromJsonValue(Object? json) {
+    return PermissionsDenyReturn.fromJson(raviJsonObject(json, "PermissionsDenyReturn"));
+  }
+}
+
+PermissionsDenyReturn permissionsDenyReturnFromJson(Object? json) => PermissionsDenyReturn.fromJsonValue(json);
+
+class PermissionsListOptions {
+  const PermissionsListOptions({this.chat, this.chatTag, this.force, this.limit, this.offset, this.profile, this.to});
+
+  final String? chat;
+  final String? chatTag;
+  final bool? force;
+  final String? limit;
+  final String? offset;
+  final String? profile;
+  final String? to;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (chat != null) {
+      into["chat"] = RaviJson.from(chat);
+    }
+    if (chatTag != null) {
+      into["chatTag"] = RaviJson.from(chatTag);
+    }
+    if (force != null) {
+      into["force"] = RaviJson.from(force);
+    }
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
+    if (profile != null) {
+      into["profile"] = RaviJson.from(profile);
+    }
+    if (to != null) {
+      into["to"] = RaviJson.from(to);
+    }
+  }
+}
+
+class PermissionsListReturn {
+  const PermissionsListReturn({required this.confirmation, required this.force, required this.grants, required this.hints, required this.overlays, required this.pagination, required this.scopes, required this.targets, required this.total});
+
+  final RaviJson confirmation;
+  final bool force;
+  final List<RaviJson> grants;
+  final List<String> hints;
+  final List<RaviJson> overlays;
+  final RaviJson pagination;
+  final List<RaviJson> scopes;
+  final List<RaviJson> targets;
+  final double total;
+
+  factory PermissionsListReturn.fromJson(Map<String, Object?> json) {
+    return PermissionsListReturn(
+      confirmation: RaviJson.from(json["confirmation"]),
+      force: raviJsonAsBool(json["force"]),
+      grants: raviJsonAsList(json["grants"], RaviJson.from),
+      hints: raviJsonAsList(json["hints"], raviJsonAsString),
+      overlays: raviJsonAsList(json["overlays"], RaviJson.from),
+      pagination: RaviJson.from(json["pagination"]),
+      scopes: raviJsonAsList(json["scopes"], RaviJson.from),
+      targets: raviJsonAsList(json["targets"], RaviJson.from),
+      total: raviJsonAsDouble(json["total"]),
+    );
+  }
+
+  static PermissionsListReturn fromJsonValue(Object? json) {
+    return PermissionsListReturn.fromJson(raviJsonObject(json, "PermissionsListReturn"));
+  }
+}
+
+PermissionsListReturn permissionsListReturnFromJson(Object? json) => PermissionsListReturn.fromJsonValue(json);
+
 class PermissionsMaterializeOptions {
   const PermissionsMaterializeOptions({this.subjectId, this.subjectType});
 
@@ -13528,10 +13686,13 @@ class PermissionsMaterializeReturn {
 PermissionsMaterializeReturn permissionsMaterializeReturnFromJson(Object? json) => PermissionsMaterializeReturn.fromJsonValue(json);
 
 class PermissionsResolveOptions {
-  const PermissionsResolveOptions({this.apply, this.capabilities, this.profile});
+  const PermissionsResolveOptions({this.apply, this.capabilities, this.chat, this.chatTag, this.force, this.profile});
 
   final bool? apply;
   final String? capabilities;
+  final String? chat;
+  final String? chatTag;
+  final bool? force;
   final String? profile;
 
   void encodeBody(Map<String, RaviJson> into) {
@@ -13541,6 +13702,15 @@ class PermissionsResolveOptions {
     if (capabilities != null) {
       into["capabilities"] = RaviJson.from(capabilities);
     }
+    if (chat != null) {
+      into["chat"] = RaviJson.from(chat);
+    }
+    if (chatTag != null) {
+      into["chatTag"] = RaviJson.from(chatTag);
+    }
+    if (force != null) {
+      into["force"] = RaviJson.from(force);
+    }
     if (profile != null) {
       into["profile"] = RaviJson.from(profile);
     }
@@ -13548,19 +13718,23 @@ class PermissionsResolveOptions {
 }
 
 class PermissionsResolveReturn {
-  const PermissionsResolveReturn({required this.agentCeilings, required this.capabilities, required this.changedCount, required this.denial, this.description, required this.dryRun, this.guidance, required this.label, this.nextCommand, required this.operations, required this.profile, required this.tagSlug, required this.targets});
+  const PermissionsResolveReturn({required this.agentCeilings, required this.capabilities, required this.changedCount, required this.confirmation, required this.denial, this.description, required this.dryRun, required this.force, this.guidance, required this.hints, required this.label, this.nextCommand, required this.operations, required this.profile, required this.scopes, required this.tagSlug, required this.targets});
 
   final List<String> agentCeilings;
   final List<RaviJson> capabilities;
   final double changedCount;
+  final RaviJson confirmation;
   final RaviJson denial;
   final String? description;
   final bool dryRun;
+  final bool force;
   final RaviJson? guidance;
+  final List<String> hints;
   final String label;
   final String? nextCommand;
   final List<RaviJson> operations;
   final String profile;
+  final List<RaviJson> scopes;
   final String tagSlug;
   final List<RaviJson> targets;
 
@@ -13569,14 +13743,18 @@ class PermissionsResolveReturn {
       agentCeilings: raviJsonAsList(json["agentCeilings"], raviJsonAsString),
       capabilities: raviJsonAsList(json["capabilities"], RaviJson.from),
       changedCount: raviJsonAsDouble(json["changedCount"]),
+      confirmation: RaviJson.from(json["confirmation"]),
       denial: RaviJson.from(json["denial"]),
       description: json["description"] == null ? null : raviJsonAsString(json["description"]),
       dryRun: raviJsonAsBool(json["dryRun"]),
+      force: raviJsonAsBool(json["force"]),
       guidance: json["guidance"] == null ? null : RaviJson.from(json["guidance"]),
+      hints: raviJsonAsList(json["hints"], raviJsonAsString),
       label: raviJsonAsString(json["label"]),
       nextCommand: json["nextCommand"] == null ? null : raviJsonAsString(json["nextCommand"]),
       operations: raviJsonAsList(json["operations"], RaviJson.from),
       profile: raviJsonAsString(json["profile"]),
+      scopes: raviJsonAsList(json["scopes"], RaviJson.from),
       tagSlug: raviJsonAsString(json["tagSlug"]),
       targets: raviJsonAsList(json["targets"], RaviJson.from),
     );

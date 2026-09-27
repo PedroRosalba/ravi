@@ -10038,7 +10038,10 @@ export type PermissionsAllowInput = {
   agent?: string;
   apply?: boolean;
   capabilities?: string;
+  chat?: string;
+  chatTag?: string;
   description?: string;
+  force?: boolean;
   label?: string;
   profile: string;
   to?: string;
@@ -10053,8 +10056,22 @@ export type PermissionsAllowReturn = {
     permission: string;
   }>;
   changedCount: number;
+  confirmation: {
+    action: "allow" | "deny" | "list";
+    agents: string[];
+    capabilities: string[];
+    contacts: string[];
+    dryRun: boolean;
+    force: boolean;
+    global: boolean;
+    message: string;
+    profile?: string;
+    scopes: string[];
+  };
   description?: string;
   dryRun: boolean;
+  force: boolean;
+  hints: string[];
   label: string;
   nextCommand?: string;
   operations: Array<{
@@ -10065,6 +10082,18 @@ export type PermissionsAllowReturn = {
     target?: string;
   }>;
   profile: string;
+  scopes: Array<{
+    channel?: string;
+    chatId?: string;
+    chatTag?: string;
+    known?: boolean;
+    label: string;
+    requestedChatId?: string;
+    taggedChatCount?: number;
+    threadChatId?: string;
+    title?: string;
+    type: "chat" | "chat_tag" | "global";
+  }>;
   tagSlug: string;
   targets: Array<{
     id: string;
@@ -10139,6 +10168,137 @@ export type PermissionsCheckReturn = {
   };
 };
 
+/** Input shape for `permissions.deny`. */
+export type PermissionsDenyInput = {
+  apply?: boolean;
+  chat?: string;
+  chatTag?: string;
+  force?: boolean;
+  profile: string;
+  to?: string;
+};
+
+/** Return shape for `permissions.deny`. */
+export type PermissionsDenyReturn = {
+  capabilities: Array<{
+    objectId: string;
+    objectType: string;
+    permission: string;
+  }>;
+  changedCount: number;
+  confirmation: {
+    action: "allow" | "deny" | "list";
+    agents: string[];
+    capabilities: string[];
+    contacts: string[];
+    dryRun: boolean;
+    force: boolean;
+    global: boolean;
+    message: string;
+    profile?: string;
+    scopes: string[];
+  };
+  dryRun: boolean;
+  force: boolean;
+  hints: string[];
+  nextCommand?: string;
+  operations: Array<{
+    capability?: string;
+    kind: string;
+    message: string;
+    status: "planned" | "applied" | "unchanged";
+    target?: string;
+  }>;
+  profile: string;
+  scopes: Array<{
+    channel?: string;
+    chatId?: string;
+    chatTag?: string;
+    known?: boolean;
+    label: string;
+    requestedChatId?: string;
+    taggedChatCount?: number;
+    threadChatId?: string;
+    title?: string;
+    type: "chat" | "chat_tag" | "global";
+  }>;
+  tagSlug: string;
+  targets: Array<{
+    id: string;
+    type: string;
+  }>;
+};
+
+/** Input shape for `permissions.list`. */
+export type PermissionsListInput = {
+  chat?: string;
+  chatTag?: string;
+  force?: boolean;
+  limit?: string;
+  offset?: string;
+  profile?: string;
+  to?: string;
+};
+
+/** Return shape for `permissions.list`. */
+export type PermissionsListReturn = {
+  confirmation: {
+    action: "allow" | "deny" | "list";
+    agents: string[];
+    capabilities: string[];
+    contacts: string[];
+    dryRun: boolean;
+    force: boolean;
+    global: boolean;
+    message: string;
+    profile?: string;
+    scopes: string[];
+  };
+  force: boolean;
+  grants: Array<{
+    capabilities: string[];
+    contact: string;
+    profile: string;
+    scope: string;
+    scopeType: "chat" | "chat_tag" | "global";
+    source: "contact-chat-grant" | "contact-tag";
+  }>;
+  hints: string[];
+  overlays: Array<{
+    capabilities: string[];
+    chat: string;
+    contact: string;
+    eligible: boolean;
+    governed: boolean;
+  }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  scopes: Array<{
+    channel?: string;
+    chatId?: string;
+    chatTag?: string;
+    known?: boolean;
+    label: string;
+    requestedChatId?: string;
+    taggedChatCount?: number;
+    threadChatId?: string;
+    title?: string;
+    type: "chat" | "chat_tag" | "global";
+  }>;
+  targets: Array<{
+    id: string;
+    type: string;
+  }>;
+  total: number;
+};
+
 /** Input shape for `permissions.materialize`. */
 export type PermissionsMaterializeInput = {
   subjectId?: string;
@@ -10169,7 +10329,10 @@ export type PermissionsMaterializeReturn = {
 export type PermissionsResolveInput = {
   apply?: boolean;
   capabilities?: string;
+  chat?: string;
+  chatTag?: string;
   denialId: string;
+  force?: boolean;
   profile?: string;
 };
 
@@ -10182,6 +10345,18 @@ export type PermissionsResolveReturn = {
     permission: string;
   }>;
   changedCount: number;
+  confirmation: {
+    action: "allow" | "deny" | "list";
+    agents: string[];
+    capabilities: string[];
+    contacts: string[];
+    dryRun: boolean;
+    force: boolean;
+    global: boolean;
+    message: string;
+    profile?: string;
+    scopes: string[];
+  };
   denial: {
     agentId: string | null;
     contextId: string | null;
@@ -10192,6 +10367,7 @@ export type PermissionsResolveReturn = {
   };
   description?: string;
   dryRun: boolean;
+  force: boolean;
   guidance?: {
     breakGlass: string;
     candidateCapabilities?: string[];
@@ -10219,6 +10395,7 @@ export type PermissionsResolveReturn = {
     };
     scope: string;
   };
+  hints: string[];
   label: string;
   nextCommand?: string;
   operations: Array<{
@@ -10229,6 +10406,18 @@ export type PermissionsResolveReturn = {
     target?: string;
   }>;
   profile: string;
+  scopes: Array<{
+    channel?: string;
+    chatId?: string;
+    chatTag?: string;
+    known?: boolean;
+    label: string;
+    requestedChatId?: string;
+    taggedChatCount?: number;
+    threadChatId?: string;
+    title?: string;
+    type: "chat" | "chat_tag" | "global";
+  }>;
   tagSlug: string;
   targets: Array<{
     id: string;

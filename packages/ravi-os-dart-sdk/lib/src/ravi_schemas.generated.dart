@@ -52262,9 +52262,21 @@ class RaviSchemas {
       "description": "Comma-separated capabilities, e.g. mutate:image:generate,execute:executable:curl",
       "type": "string"
     },
+    "chat": {
+      "description": "Scope contact grants to one chat (canonical chat id, platform chat id, or 'current'). Threads inherit their chat.",
+      "type": "string"
+    },
+    "chatTag": {
+      "description": "Scope contact grants to every chat carrying this chat tag",
+      "type": "string"
+    },
     "description": {
       "description": "Description when creating/updating the profile tag",
       "type": "string"
+    },
+    "force": {
+      "description": "Explicitly use the global (all chats) contact scope. Prefer --chat; ask the human before going global.",
+      "type": "boolean"
     },
     "label": {
       "description": "Human label when creating/updating the profile tag",
@@ -52275,7 +52287,7 @@ class RaviSchemas {
       "type": "string"
     },
     "to": {
-      "description": "Comma-separated subjects to receive the profile. Prefer agent:<id>; contact:<id> is legacy/user-overlay.",
+      "description": "Comma-separated subjects to receive the profile: agent:<id> (identity ceiling) or contact:<id> (user overlay; requires --chat, --chat-tag or --force).",
       "type": "string"
     }
   },
@@ -52322,11 +52334,84 @@ class RaviSchemas {
     "changedCount": {
       "type": "number"
     },
+    "confirmation": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "allow",
+            "deny",
+            "list"
+          ],
+          "type": "string"
+        },
+        "agents": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contacts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "force": {
+          "type": "boolean"
+        },
+        "global": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "action",
+        "dryRun",
+        "contacts",
+        "agents",
+        "scopes",
+        "global",
+        "force",
+        "capabilities",
+        "message"
+      ],
+      "type": "object"
+    },
     "description": {
       "type": "string"
     },
     "dryRun": {
       "type": "boolean"
+    },
+    "force": {
+      "type": "boolean"
+    },
+    "hints": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     },
     "label": {
       "type": "string"
@@ -52371,6 +52456,54 @@ class RaviSchemas {
     "profile": {
       "type": "string"
     },
+    "scopes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "chatId": {
+            "type": "string"
+          },
+          "chatTag": {
+            "type": "string"
+          },
+          "known": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "requestedChatId": {
+            "type": "string"
+          },
+          "taggedChatCount": {
+            "type": "number"
+          },
+          "threadChatId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "chat",
+              "chat_tag",
+              "global"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "label"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "tagSlug": {
       "type": "string"
     },
@@ -52402,8 +52535,12 @@ class RaviSchemas {
     "capabilities",
     "targets",
     "agentCeilings",
+    "scopes",
+    "force",
     "operations",
-    "changedCount"
+    "changedCount",
+    "confirmation",
+    "hints"
   ],
   "type": "object"
 }
@@ -52676,6 +52813,604 @@ class RaviSchemas {
 }
 ''';
 
+  static const permissionsDenyInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "apply": {
+      "description": "Apply the planned provider-owned mutations",
+      "type": "boolean"
+    },
+    "chat": {
+      "description": "Scope contact grants to one chat (canonical chat id, platform chat id, or 'current'). Threads inherit their chat.",
+      "type": "string"
+    },
+    "chatTag": {
+      "description": "Scope contact grants to every chat carrying this chat tag",
+      "type": "string"
+    },
+    "force": {
+      "description": "Explicitly use the global (all chats) contact scope. Prefer --chat; ask the human before going global.",
+      "type": "boolean"
+    },
+    "profile": {
+      "description": "Permission profile/tag name, with or without permission- prefix",
+      "type": "string"
+    },
+    "to": {
+      "description": "Comma-separated contact:<id> subjects to revoke the profile from",
+      "type": "string"
+    }
+  },
+  "required": [
+    "profile"
+  ],
+  "type": "object"
+}
+''';
+
+  static const permissionsDenyReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "capabilities": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "objectId": {
+            "type": "string"
+          },
+          "objectType": {
+            "type": "string"
+          },
+          "permission": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "permission",
+          "objectType",
+          "objectId"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "changedCount": {
+      "type": "number"
+    },
+    "confirmation": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "allow",
+            "deny",
+            "list"
+          ],
+          "type": "string"
+        },
+        "agents": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contacts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "force": {
+          "type": "boolean"
+        },
+        "global": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "action",
+        "dryRun",
+        "contacts",
+        "agents",
+        "scopes",
+        "global",
+        "force",
+        "capabilities",
+        "message"
+      ],
+      "type": "object"
+    },
+    "dryRun": {
+      "type": "boolean"
+    },
+    "force": {
+      "type": "boolean"
+    },
+    "hints": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "nextCommand": {
+      "type": "string"
+    },
+    "operations": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "capability": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "planned",
+              "applied",
+              "unchanged"
+            ],
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "status",
+          "message"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "scopes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "chatId": {
+            "type": "string"
+          },
+          "chatTag": {
+            "type": "string"
+          },
+          "known": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "requestedChatId": {
+            "type": "string"
+          },
+          "taggedChatCount": {
+            "type": "number"
+          },
+          "threadChatId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "chat",
+              "chat_tag",
+              "global"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "label"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "tagSlug": {
+      "type": "string"
+    },
+    "targets": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "dryRun",
+    "profile",
+    "tagSlug",
+    "capabilities",
+    "targets",
+    "scopes",
+    "force",
+    "operations",
+    "changedCount",
+    "confirmation",
+    "hints"
+  ],
+  "type": "object"
+}
+''';
+
+  static const permissionsListInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "chat": {
+      "description": "Scope contact grants to one chat (canonical chat id, platform chat id, or 'current'). Threads inherit their chat.",
+      "type": "string"
+    },
+    "chatTag": {
+      "description": "Scope contact grants to every chat carrying this chat tag",
+      "type": "string"
+    },
+    "force": {
+      "description": "List global (unscoped) contact grants instead of a chat scope",
+      "type": "boolean"
+    },
+    "limit": {
+      "description": "Page size for grants (default: 50, max: 500)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Number of matching grants to skip (default: 0)",
+      "type": "string"
+    },
+    "profile": {
+      "description": "Only show grants for this permission profile",
+      "type": "string"
+    },
+    "to": {
+      "description": "Optional comma-separated contact:<id> subjects to filter by",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const permissionsListReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "confirmation": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "allow",
+            "deny",
+            "list"
+          ],
+          "type": "string"
+        },
+        "agents": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contacts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "force": {
+          "type": "boolean"
+        },
+        "global": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "action",
+        "dryRun",
+        "contacts",
+        "agents",
+        "scopes",
+        "global",
+        "force",
+        "capabilities",
+        "message"
+      ],
+      "type": "object"
+    },
+    "force": {
+      "type": "boolean"
+    },
+    "grants": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "contact": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "scopeType": {
+            "enum": [
+              "chat",
+              "chat_tag",
+              "global"
+            ],
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "contact-chat-grant",
+              "contact-tag"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "contact",
+          "profile",
+          "scope",
+          "scopeType",
+          "source",
+          "capabilities"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "hints": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "overlays": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "chat": {
+            "type": "string"
+          },
+          "contact": {
+            "type": "string"
+          },
+          "eligible": {
+            "type": "boolean"
+          },
+          "governed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "contact",
+          "chat",
+          "governed",
+          "eligible",
+          "capabilities"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
+    "scopes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "chatId": {
+            "type": "string"
+          },
+          "chatTag": {
+            "type": "string"
+          },
+          "known": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "requestedChatId": {
+            "type": "string"
+          },
+          "taggedChatCount": {
+            "type": "number"
+          },
+          "threadChatId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "chat",
+              "chat_tag",
+              "global"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "label"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "targets": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "targets",
+    "scopes",
+    "force",
+    "total",
+    "pagination",
+    "grants",
+    "overlays",
+    "confirmation",
+    "hints"
+  ],
+  "type": "object"
+}
+''';
+
   static const permissionsMaterializeInputSchema = r'''
 {
   "additionalProperties": false,
@@ -52783,9 +53518,21 @@ class RaviSchemas {
       "description": "Optional capabilities to merge into the profile; defaults to the denied capability",
       "type": "string"
     },
+    "chat": {
+      "description": "Scope contact grants to one chat (canonical chat id, platform chat id, or 'current'). Threads inherit their chat.",
+      "type": "string"
+    },
+    "chatTag": {
+      "description": "Scope contact grants to every chat carrying this chat tag",
+      "type": "string"
+    },
     "denialId": {
       "description": "Permission denial id",
       "type": "string"
+    },
+    "force": {
+      "description": "Explicitly use the global (all chats) contact scope. Prefer --chat; ask the human before going global.",
+      "type": "boolean"
     },
     "profile": {
       "description": "Permission profile/tag to use instead of the suggested one",
@@ -52834,6 +53581,70 @@ class RaviSchemas {
     },
     "changedCount": {
       "type": "number"
+    },
+    "confirmation": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "allow",
+            "deny",
+            "list"
+          ],
+          "type": "string"
+        },
+        "agents": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contacts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "force": {
+          "type": "boolean"
+        },
+        "global": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "action",
+        "dryRun",
+        "contacts",
+        "agents",
+        "scopes",
+        "global",
+        "force",
+        "capabilities",
+        "message"
+      ],
+      "type": "object"
     },
     "denial": {
       "additionalProperties": false,
@@ -52892,6 +53703,9 @@ class RaviSchemas {
       "type": "string"
     },
     "dryRun": {
+      "type": "boolean"
+    },
+    "force": {
       "type": "boolean"
     },
     "guidance": {
@@ -53016,6 +53830,12 @@ class RaviSchemas {
       ],
       "type": "object"
     },
+    "hints": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "label": {
       "type": "string"
     },
@@ -53059,6 +53879,54 @@ class RaviSchemas {
     "profile": {
       "type": "string"
     },
+    "scopes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "chatId": {
+            "type": "string"
+          },
+          "chatTag": {
+            "type": "string"
+          },
+          "known": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "requestedChatId": {
+            "type": "string"
+          },
+          "taggedChatCount": {
+            "type": "number"
+          },
+          "threadChatId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "chat",
+              "chat_tag",
+              "global"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "label"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "tagSlug": {
       "type": "string"
     },
@@ -53090,8 +53958,12 @@ class RaviSchemas {
     "capabilities",
     "targets",
     "agentCeilings",
+    "scopes",
+    "force",
     "operations",
     "changedCount",
+    "confirmation",
+    "hints",
     "denial"
   ],
   "type": "object"

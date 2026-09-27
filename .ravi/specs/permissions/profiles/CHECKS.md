@@ -24,6 +24,10 @@ capability: profiles
   capabilities are added beyond bootstrap.
 - Materialize a contact tagged `permission.admin` and assert admin authority
   appears only through `contact-policy-permissions`.
+- `permissions allow <profile> --to contact:<id>` without `--chat`,
+  `--chat-tag`, or `--force` MUST fail with `CHAT_SCOPE_REQUIRED`; with
+  `--chat` it MUST store a chat-scoped grant and MUST NOT attach a global
+  contact tag.
 - Add a generic CRM tag and assert it does not materialize runtime authority.
 - Build delegated authority with agent, actor, surface, and turn capabilities;
   assert intersection, surface inheritance, explicit deny, constraints, and

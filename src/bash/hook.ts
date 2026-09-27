@@ -221,8 +221,17 @@ function canWithBashContext(
   // Resolved agent-identity / delegated turns use the live executor ceiling so
   // `ravi agents permissions` expansions and reductions apply on the next
   // PreToolUse check without requiring a session reset. Unresolved actors and
-  // observation-narrowed turns stay bound to the issued snapshot.
+  // observation-narrowed turns stay bound to the issued snapshot. User-overlay
+  // turns need both: the snapshot holds agent ∩ contact chat grants, and the
+  // live ceiling may only narrow it further.
   if (canUseLiveExecutorCeiling(ctx)) {
+    if (isUserOverlayTurn(ctx)) {
+      return (
+        hasContextCapabilities(ctx) &&
+        canWithCapabilityContext(ctx, permission, objectType, objectId) &&
+        canWithMaterializedAgentCapabilities(ctx, permission, objectType, objectId)
+      );
+    }
     return canWithMaterializedAgentCapabilities(ctx, permission, objectType, objectId);
   }
   if (hasContextCapabilities(ctx)) {
@@ -258,6 +267,10 @@ function canUseLiveExecutorCeiling(ctx: BashPermissionContext): boolean {
 
 function isUnresolvedAgentIdentityActor(ctx: Pick<BashPermissionContext, "metadata">): boolean {
   return ctx.metadata?.actorResolution === "missing_contact";
+}
+
+function isUserOverlayTurn(ctx: Pick<BashPermissionContext, "metadata">): boolean {
+  return ctx.metadata?.actorAuthorizationMode === "user-overlay";
 }
 
 function hasTurnCapabilityNarrowing(ctx: Pick<BashPermissionContext, "metadata">): boolean {

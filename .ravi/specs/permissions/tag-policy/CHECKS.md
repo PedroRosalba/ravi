@@ -11,4 +11,9 @@
   `kind=system`, `source=permissions` tag definition with explicit capability
   metadata.
 - `permission.family` MUST NOT materialize for `pending` contacts or when the
-  tag definition is missing.
+  tag definition is missing, including inside a governed chat overlay.
+- A chat tag used as a `--chat-tag` grant scope MUST NOT materialize
+  capabilities by itself; only the contact grant referencing a permission
+  profile does.
+- `bun test src/runtime/runtime-request-context.test.ts` MUST pass after
+  changing how contact tags feed the chat-scoped user overlay.

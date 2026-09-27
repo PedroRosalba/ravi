@@ -20,6 +20,12 @@ import {
   buildAgentIdentitySubjectId,
   type AgentIdentityCompartment,
 } from "../permissions/agent-identity-permissions-provider.js";
+import {
+  formatContactGrantScope,
+  resolveContactChatOverlay,
+  USER_OVERLAY_AUTHORIZATION_MODE,
+  type ContactChatOverlay,
+} from "../permissions/contact-policy-permissions-provider.js";
 import { materializeSubjectCapabilities } from "../permissions/provider-runtime.js";
 import { consoleIdentityFromBinding, readCachedActorBinding } from "../cloud-auth/actor-bindings.js";
 import { dbResolveActiveTaskBindingForSession } from "../tasks/task-db.js";
@@ -333,6 +339,7 @@ function buildAgentIdentityRuntimeContextInputForPrompt(options: {
     actorPrincipal,
     hasPromptExternalAuthoritySurface(options.prompt),
   );
+  const userOverlay = resolveUserOverlay(actorPrincipal, surfacePrincipal, actorMetadata);
 
   return buildAgentIdentityRuntimeContextInput({
     agentId: options.agentId,
@@ -344,6 +351,21 @@ function buildAgentIdentityRuntimeContextInputForPrompt(options: {
     actorDisplayName,
     surfaceDisplayName,
     consoleBinding,
+    userOverlay,
+  });
+}
+
+function resolveUserOverlay(
+  actorPrincipal: AuthorityPrincipal | null,
+  surfacePrincipal: AuthorityPrincipal | null,
+  actorMetadata: (MessageActorMetadata & { channel?: string; instanceId?: string }) | undefined,
+): ContactChatOverlay | null {
+  if (actorPrincipal?.subjectType !== "contact" || surfacePrincipal?.subjectType !== "chat") return null;
+  return resolveContactChatOverlay({
+    contactId: actorPrincipal.subjectId,
+    chatId: surfacePrincipal.subjectId,
+    channel: cleanStringValue(actorMetadata?.channel),
+    instanceId: cleanStringValue(actorMetadata?.instanceId),
   });
 }
 
@@ -357,6 +379,7 @@ function buildAgentIdentityRuntimeContextInput(options: {
   actorDisplayName?: string;
   surfaceDisplayName?: string;
   consoleBinding?: { consoleUserId?: string; consoleOrgId?: string };
+  userOverlay?: ContactChatOverlay | null;
 }): {
   capabilities: ContextCapability[];
   metadata: Record<string, unknown>;
@@ -380,9 +403,13 @@ function buildAgentIdentityRuntimeContextInput(options: {
     : [];
   const taskSelfCapabilityCount = countTaskSelfCapabilities(options.capabilities);
   const taskSelfTaskId = resolveTaskSelfTaskId(options.capabilities);
+  // In a chat governed by contact grants the sender's chat caps replace the
+  // agent identity as the actor branch: agent_ceiling ∩ contact_chat_caps.
+  const userOverlay = shouldMaterializeIdentity && options.userOverlay?.active ? options.userOverlay : null;
   const effectiveCapabilities = buildEffectiveCapabilities({
     agentCapabilities: agentIdentityCapabilities,
-    actorCapabilities: agentIdentityCapabilities,
+    actorCapabilities: userOverlay ? userOverlay.capabilities : agentIdentityCapabilities,
+    ...(userOverlay ? { actorOverrideCapabilities: options.capabilities.filter(isTaskSelfCapability) } : {}),
     turnCapabilities: hasAnyCapability(observationCapabilities) ? observationCapabilities : undefined,
   });
 
@@ -394,7 +421,12 @@ function buildAgentIdentityRuntimeContextInput(options: {
       executorAgentId: options.agentId,
       actorPrincipal: options.actorPrincipal ? formatPrincipal(options.actorPrincipal) : "unknown",
       actorResolution: options.actorResolution,
-      actorAuthorizationMode: options.actorResolution === "not_applicable" ? "not-applicable" : "invoke-only",
+      actorAuthorizationMode: userOverlay
+        ? USER_OVERLAY_AUTHORIZATION_MODE
+        : options.actorResolution === "not_applicable"
+          ? "not-applicable"
+          : "invoke-only",
+      ...(options.userOverlay ? buildUserOverlayMetadata(options.userOverlay, Boolean(userOverlay)) : {}),
       ...(options.actorDisplayName ? { actorDisplayName: options.actorDisplayName } : {}),
       ...(options.surfacePrincipal ? { surfacePrincipal: formatPrincipal(options.surfacePrincipal) } : {}),
       ...(options.surfaceDisplayName ? { surfaceDisplayName: options.surfaceDisplayName } : {}),
@@ -404,7 +436,7 @@ function buildAgentIdentityRuntimeContextInput(options: {
       agentIdentityCapabilityCount: agentIdentityCapabilities.length,
       ...(taskSelfCapabilityCount > 0 ? { taskSelfCapabilityCount } : {}),
       ...(taskSelfTaskId ? { taskSelfTaskId } : {}),
-      actorCapabilityCount: 0,
+      actorCapabilityCount: userOverlay ? userOverlay.capabilities.length : 0,
       surfaceCapabilityCount: 0,
       turnCapabilityCount: observationCapabilities.length,
       ...(observationCapabilities.length > 0 ? { turnCapabilities: observationCapabilities } : {}),
@@ -412,6 +444,18 @@ function buildAgentIdentityRuntimeContextInput(options: {
       ...(options.consoleBinding?.consoleUserId ? { consoleUserId: options.consoleBinding.consoleUserId } : {}),
       ...(options.consoleBinding?.consoleOrgId ? { consoleOrgId: options.consoleBinding.consoleOrgId } : {}),
     },
+  };
+}
+
+function buildUserOverlayMetadata(overlay: ContactChatOverlay, applied: boolean): Record<string, unknown> {
+  return {
+    userOverlay: applied ? "active" : "inactive",
+    userOverlayChat: `chat:${overlay.scope.chatId}`,
+    ...(overlay.scope.threadChatId ? { userOverlayThreadChat: `chat:${overlay.scope.threadChatId}` } : {}),
+    ...(applied && !overlay.eligible ? { userOverlayEligible: false } : {}),
+    ...(applied
+      ? { userOverlayGrants: overlay.grants.map((grant) => `${grant.profile}@${formatContactGrantScope(grant.scope)}`) }
+      : {}),
   };
 }
 

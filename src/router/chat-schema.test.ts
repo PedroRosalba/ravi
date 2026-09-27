@@ -14,6 +14,7 @@ import {
   dbGetAgentChatActionCounts,
   dbContactDmNormalizedChatId,
   dbGetChatReadingDelta,
+  dbGetThreadParentChat,
   dbListAgentChatMessagesPage,
   dbListChatIdsByContactIds,
   dbListChats,
@@ -284,6 +285,38 @@ describe("identity chat schema", () => {
         platformChatId: "120363424772797713@g.us#topic-b",
       })?.id,
     ).toBe(groupThreadB.id);
+  });
+
+  it("resolves a thread chat to its container chat on the same channel instance", () => {
+    const group = dbUpsertChat({
+      channel: "whatsapp",
+      instanceId: "instance-1",
+      platformChatId: "120363424772797713@g.us",
+      chatType: "group",
+    });
+    const thread = dbUpsertChat({
+      channel: "whatsapp",
+      instanceId: "instance-1",
+      platformChatId: "120363424772797713@g.us#topic-a",
+      chatType: "thread",
+    });
+    const otherInstanceThread = dbUpsertChat({
+      channel: "whatsapp",
+      instanceId: "instance-2",
+      platformChatId: "120363424772797713@g.us#topic-a",
+      chatType: "thread",
+    });
+    const orphanThread = dbUpsertChat({
+      channel: "whatsapp",
+      instanceId: "instance-1",
+      platformChatId: "120363499999999999@g.us#topic-a",
+      chatType: "thread",
+    });
+
+    expect(dbGetThreadParentChat(thread)?.id).toBe(group.id);
+    expect(dbGetThreadParentChat(group)).toBeNull();
+    expect(dbGetThreadParentChat(otherInstanceThread)).toBeNull();
+    expect(dbGetThreadParentChat(orphanThread)).toBeNull();
   });
 
   it("stores channel messages durably and idempotently per provider message", () => {

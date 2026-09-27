@@ -104,7 +104,10 @@ Rules:
   mode. Break-glass is a separate operator path.
 - A surface with no provider-owned policy MUST NOT zero the agent identity.
 - Surface/user overlays MAY reduce or require additional checks only when a
-  future provider explicitly implements that overlay on top of agent identity.
+  provider explicitly implements that overlay on top of agent identity. The
+  chat-scoped user overlay (`permissions/user-overlay`) is the implemented one:
+  in governed chats it intersects the contact's chat grants with the agent
+  identity and never exceeds it.
 - `contact_policies.status=allowed` permits interaction, not tools. It MUST NOT imply `use tool:*`, `execute executable:*`, `execute group:*`, session access, or contact writes.
 
 Legacy delegated fallback formula:
@@ -162,7 +165,16 @@ are audit artifacts, not a second source of truth:
   (`agentIdentityCapabilityCount`, `actorCapabilityCount`,
   `surfaceCapabilityCount`, ...) describe the moment the context was built.
   In agent-identity mode, `actorCapabilityCount=0` or `surfaceCapabilityCount=0`
-  is not itself a denial reason.
+  is not itself a denial reason, except with
+  `actorAuthorizationMode=user-overlay`, where `actorCapabilityCount` is the
+  contact's chat grant count and does gate the turn.
+- Contact chat grants, chat-tag coverage, and global contact tags are read at
+  turn start. `ravi permissions deny --apply` MUST revoke live contexts whose
+  overlay used the removed grant, so revocation stops authorizing at the next
+  check. New grants and chat-tag changes apply from the next turn.
+- The Bash/tool hook's live executor ceiling MUST NOT widen a user-overlay
+  turn: it authorizes only what both the issued snapshot and the live ceiling
+  allow.
 - The long-term direction is to evaluate authority against the live graph at
   check time and keep per-turn snapshots only for audit provenance. Any
   caching layer MUST key on actor identity and an authority version, and a

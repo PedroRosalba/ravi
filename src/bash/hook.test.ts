@@ -489,4 +489,43 @@ describe("turn-runtime executor ceiling", () => {
     const result = await callToolHook("Bash", agentId, whatsappToolContext([]));
     expect(isDenied(result)).toBe(false);
   });
+
+  it("bounds user-overlay turns by the contact's chat grants even under full-access", () => {
+    dbUpdateAgent(agentId, { defaults: { runtimePermissions: { profile: "full-access" } } });
+    const overlayTurn = whatsappTurn(
+      [
+        { permission: "use", objectType: "tool", objectId: "Bash" },
+        { permission: "execute", objectType: "executable", objectId: "git" },
+      ],
+      { actorAuthorizationMode: "user-overlay", userOverlay: "active" },
+    );
+
+    expect(evaluateBashPermission("git status", overlayTurn).allowed).toBe(true);
+    expect(evaluateBashPermission("ssh host uptime", overlayTurn).allowed).toBe(false);
+  });
+
+  it("denies tools to a user-overlay sender without chat grants", async () => {
+    dbUpdateAgent(agentId, { defaults: { runtimePermissions: { profile: "full-access" } } });
+
+    const result = await callToolHook(
+      "Bash",
+      agentId,
+      whatsappToolContext([], { actorAuthorizationMode: "user-overlay", userOverlay: "active" }),
+    );
+    expect(isDenied(result)).toBe(true);
+  });
+
+  it("still applies a live executor reduction to user-overlay turns", () => {
+    dbUpdateAgent(agentId, {
+      defaults: { runtimePermissions: { capabilities: ["execute:executable:*"] } },
+    });
+    const overlayTurn = whatsappTurn([{ permission: "execute", objectType: "executable", objectId: "ssh" }], {
+      actorAuthorizationMode: "user-overlay",
+      userOverlay: "active",
+    });
+    expect(evaluateBashPermission("ssh host uptime", overlayTurn).allowed).toBe(true);
+
+    dbUpdateAgent(agentId, { defaults: {} });
+    expect(evaluateBashPermission("ssh host uptime", overlayTurn).allowed).toBe(false);
+  });
 });

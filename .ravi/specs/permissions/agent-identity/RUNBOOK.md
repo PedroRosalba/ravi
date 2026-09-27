@@ -11,6 +11,10 @@
 5. Confirm unresolved external actors materialize zero authority.
 6. Denials from agent-identity turns should recommend grants to the executor
    agent identity, not to an arbitrary contact.
+7. If context metadata shows `actorAuthorizationMode=user-overlay`, the chat
+   is governed by contact grants: inspect them with
+   `ravi permissions list --to contact:<id> --chat <chat-id> --json` and
+   follow the `permissions/user-overlay` RUNBOOK.
 
 ## Validation
 

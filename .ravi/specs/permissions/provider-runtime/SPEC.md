@@ -59,10 +59,11 @@ Required capability materializers:
   `read:context:codex-bash-hook` capability so Codex can enforce Bash policy;
   this MUST NOT grant the broader `execute:group:context` capability.
 - `ravi permissions status/check/materialize` MUST remain inspection-only.
-- `ravi permissions allow/resolve` MUST be provider-owned orchestration only:
-  it may create/update permission-scoped tags, attach contact policy tags, and
-  ensure agent default capability ceilings, but MUST NOT write to a native permission
-  graph.
+- `ravi permissions allow/deny/resolve` MUST be provider-owned orchestration
+  only: they may create/update permission-scoped tags, write chat-scoped
+  contact grants (`permission_contact_chat_grants`), attach global contact
+  permission tags with `--force`, and ensure agent default capability
+  ceilings, but MUST NOT write to a native permission graph.
 - Agent authority changes MUST use provider-owned config, currently
   `agent.defaults.runtimePermissions` via `ravi permissions allow/resolve` or
   direct agent-only `ravi agents permissions`.
@@ -74,10 +75,13 @@ Required capability materializers:
   `null` / absent / `none` remain the bootstrap floor.
 - External shared-surface turns MUST use `agent-identity-permissions` as the
   production authority projection. Contact and chat principals remain
-  provenance/invocation context unless a future overlay provider explicitly
-  gates them.
+  provenance/invocation context, except in chats governed by chat-scoped
+  contact grants, where `contact-policy-permissions` supplies the user overlay
+  intersected with the agent identity (`permissions/user-overlay`).
 - Denial resolution for `authorityMode=agent-identity` MUST apply recurring
-  capability to `agent:<executorAgentId>`, not to `contact:<actorId>`.
+  capability to `agent:<executorAgentId>`, not to `contact:<actorId>`, unless
+  the denial came from the user overlay; then it MUST plan a chat-scoped
+  contact grant plus the agent ceiling.
 - Direct local management MAY be allowed only through the explicit
   `operator-control` provider.
 - `operator-control` MUST support local requests only when the caller

@@ -525,6 +525,66 @@ describe("Scope Isolation", () => {
         "Grant execute group:context_codex-bash-hook to agent:audit",
       );
     });
+
+    it("points user-overlay denials at a chat-scoped contact grant", () => {
+      const context = {
+        contextId: "ctx_user_overlay",
+        agentId: "audit",
+        sessionKey: "agent:audit:whatsapp:main:group:120363424239734858",
+        sessionName: "audit-3",
+        context: {
+          contextId: "ctx_user_overlay",
+          contextKey: "rctx_user_overlay",
+          kind: "turn-runtime",
+          agentId: "audit",
+          sessionKey: "agent:audit:whatsapp:main:group:120363424239734858",
+          sessionName: "audit-3",
+          capabilities: [cap("use", "tool", "Read")],
+          metadata: {
+            authorityMode: "agent-identity",
+            authorityResolver: "agent-identity-v1",
+            executorAgentId: "audit",
+            actorPrincipal: "contact:ana",
+            actorResolution: "resolved",
+            actorAuthorizationMode: "user-overlay",
+            userOverlay: "active",
+            userOverlayChat: "chat:chat_group_1",
+            userOverlayGrants: ["permission-reader@chat:chat_group_1"],
+            surfacePrincipal: "chat:chat_group_1",
+            agentIdentityPrincipal: "agent_identity:audit:chat:chat_group_1",
+            agentIdentityCompartment: "chat:chat_group_1",
+            agentIdentityCapabilityCount: 12,
+            actorCapabilityCount: 1,
+            effectiveCapabilityCount: 1,
+          },
+          createdAt: 0,
+        },
+      } satisfies ToolContext;
+
+      const result = runWithContext(context, () => enforceScopeCheck("open", "context", "codex-bash-hook"));
+
+      expect(result.allowed).toBe(false);
+      const denials = listPermissionDenials({ subjectType: "agent", subjectId: "audit", resolved: false });
+      expect(denials).toHaveLength(1);
+      expect(denials[0]).toMatchObject({
+        detail: {
+          context: {
+            actorAuthorizationMode: "user-overlay",
+            userOverlay: "active",
+            userOverlayChat: "chat:chat_group_1",
+            userOverlayGrants: ["permission-reader@chat:chat_group_1"],
+          },
+          diagnosis: {
+            blockType: "user_overlay_missing_grant",
+            missingPrincipals: ["contact:ana"],
+            recommendedGrantSubjects: ["contact:ana", "agent:audit"],
+          },
+        },
+      });
+      expect(JSON.stringify(denials[0].detail)).toContain(
+        "ravi permissions allow <profile> --to contact:ana --chat chat_group_1 --agent audit",
+      );
+    });
   });
 
   // --------------------------------------------------------------------------
