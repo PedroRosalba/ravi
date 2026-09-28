@@ -41,10 +41,25 @@ import {
   PiPermissionBridgeError,
   resolvePiExtensionUiResponse,
 } from "./pi-tool-permissions.js";
+import {
+  classifyPiContextSaturation,
+  createPiRpcTimeoutError,
+  DEFAULT_PI_RESPONSE_TIMEOUT_MS,
+  explainPiCommandFailure,
+  formatPiCompactionStallFailure,
+  formatPiContextSaturationRefusal,
+  formatPiContextSaturationWarning,
+  isPiRpcTimeoutError,
+  piContextSaturationRawEvent,
+  readPiContextUsage,
+  readPiModelContextWindow,
+  resolvePiRpcResponseTimeoutMs,
+  type PiContextSaturation,
+  type PiContextSaturationLevel,
+} from "./pi-context-saturation.js";
 
 const log = logger.child("runtime:pi");
 const DEFAULT_PI_COMMAND = "pi";
-const DEFAULT_PI_RESPONSE_TIMEOUT_MS = 30_000;
 const PI_INTERRUPT_GRACE_MS = 1_000;
 // Backoff schedule for retrying a prompt rejected with "Agent is already processing".
 // Pi's internal isStreaming flag can lag behind the agent_end event ravi observes,
@@ -168,7 +183,7 @@ interface AsyncQueue<T> extends AsyncIterable<T> {
 interface PendingRequest {
   resolve(response: PiRpcResponse): void;
   reject(error: unknown): void;
-  timeout: ReturnType<typeof setTimeout>;
+  timeout?: ReturnType<typeof setTimeout>;
 }
 
 interface PiSessionRuntimeState {
@@ -186,12 +201,18 @@ interface PiSessionRuntimeState {
   requestedModel?: string;
   transport?: PiRpcTransport;
   pendingSteers: string[];
+  /** Latest context fill, used to rewrite a prompt timeout that is really saturation. */
+  contextSaturation?: PiContextSaturation | null;
+  /** Warn notice already delivered for this level until fill drops below it. */
+  saturationNoticeLevel?: PiContextSaturationLevel | null;
 }
 
 interface CreatePiRpcSubprocessTransportOptions {
   command?: string;
   commandArgs?: string[];
   responseTimeoutMs?: number;
+  /** Budget for `compact`. Independent of the short prompt/control RPC timeout. */
+  compactTimeoutMs?: number;
 }
 
 export interface CreatePiRuntimeProviderOptions extends CreatePiRpcSubprocessTransportOptions {
@@ -277,6 +298,7 @@ export function createPiRuntimeProvider(options: CreatePiRuntimeProviderOptions 
                 command: options.command,
                 commandArgs: options.commandArgs,
                 responseTimeoutMs: options.responseTimeoutMs,
+                compactTimeoutMs: options.compactTimeoutMs,
               }));
       const canRestartTransport = Boolean(options.transportFactory) || !options.transport;
       const initialTransport = createTransport();
@@ -303,6 +325,8 @@ export function createPiRuntimeProvider(options: CreatePiRuntimeProviderOptions 
         requestedModel: input.model,
         transport: initialTransport,
         pendingSteers: [],
+        contextSaturation: null,
+        saturationNoticeLevel: null,
       };
 
       const requireTransport = () => {
@@ -407,10 +431,11 @@ function piSkillSlug(value: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-function createPiRpcSubprocessTransport(options: CreatePiRpcSubprocessTransportOptions = {}): PiRpcTransport {
+export function createPiRpcSubprocessTransport(options: CreatePiRpcSubprocessTransportOptions = {}): PiRpcTransport {
   const command = options.command ?? process.env.RAVI_PI_COMMAND ?? DEFAULT_PI_COMMAND;
   const commandArgs = options.commandArgs ?? [];
   const responseTimeoutMs = options.responseTimeoutMs ?? DEFAULT_PI_RESPONSE_TIMEOUT_MS;
+  const compactTimeoutMs = options.compactTimeoutMs;
   const queue = createAsyncQueue<PiRpcEvent>();
   const pending = new Map<string, PendingRequest>();
 
@@ -453,7 +478,7 @@ function createPiRpcSubprocessTransport(options: CreatePiRpcSubprocessTransportO
 
   const failPending = (error: unknown) => {
     for (const request of pending.values()) {
-      clearTimeout(request.timeout);
+      if (request.timeout) clearTimeout(request.timeout);
       request.reject(error);
     }
     pending.clear();
@@ -479,7 +504,7 @@ function createPiRpcSubprocessTransport(options: CreatePiRpcSubprocessTransportO
     if (parsed.type === "response" && typeof parsed.id === "string" && pending.has(parsed.id)) {
       const request = pending.get(parsed.id)!;
       pending.delete(parsed.id);
-      clearTimeout(request.timeout);
+      if (request.timeout) clearTimeout(request.timeout);
       request.resolve(parsed as PiRpcResponse);
       return;
     }
@@ -549,16 +574,23 @@ function createPiRpcSubprocessTransport(options: CreatePiRpcSubprocessTransportO
 
       const id = `pi-${nextRequestId++}`;
       const commandWithId: PiRpcCommand = { ...commandBody, id };
+      const timeoutMs = resolvePiRpcResponseTimeoutMs(commandBody.type, {
+        responseTimeoutMs,
+        compactTimeoutMs,
+      });
 
       return new Promise<PiRpcResponse>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          pending.delete(id);
-          reject(new Error(`Timeout waiting for Pi RPC response to ${commandBody.type}`));
-        }, responseTimeoutMs);
+        const timeout =
+          timeoutMs > 0
+            ? setTimeout(() => {
+                pending.delete(id);
+                reject(createPiRpcTimeoutError(commandBody.type));
+              }, timeoutMs)
+            : undefined;
         pending.set(id, { resolve, reject, timeout });
         writeStdin(`${JSON.stringify(commandWithId)}\n`).catch((error) => {
           pending.delete(id);
-          clearTimeout(timeout);
+          if (timeout) clearTimeout(timeout);
           reject(error);
         });
       });
@@ -800,6 +832,16 @@ async function* runPiTurns(
       let lastTerminalInterrupted = false;
 
       try {
+        const contextGate = await gatePiPromptForContextSaturation(transport, state);
+        context.contextWindow = contextGate.contextWindow;
+        for (const gateEvent of contextGate.events) {
+          if (gateEvent.type === "turn.failed") lastTerminalFailed = true;
+          yield gateEvent;
+        }
+        if (contextGate.stop) {
+          continue;
+        }
+
         let promptResponse: PiRpcResponse;
         try {
           promptResponse = await sendPiPromptOrRecover(transport, prompt, abortSignal, restartTransport, state);
@@ -921,15 +963,25 @@ async function* runPiTurns(
 
         const disconnected = isPiTransportDisconnectedError(error);
         const permissionBridgeFailed = isPiPermissionBridgeError(error);
+        const saturationFailure =
+          !disconnected &&
+          !permissionBridgeFailed &&
+          isPiRpcTimeoutError(error) &&
+          state.contextSaturation?.level === "critical";
         const terminal = terminalTracker.fail({
-          error: error instanceof Error ? error.message : String(error),
+          error: explainPiCommandFailure(error, "prompt", state.contextSaturation ?? null),
           recoverable: true,
           ...(disconnected || permissionBridgeFailed ? { failureKind: "transport" as const } : {}),
           rawEvent: disconnected
             ? { type: "transport.disconnected" }
             : permissionBridgeFailed
               ? { type: "permission.bridge_unavailable" }
-              : undefined,
+              : saturationFailure
+                ? piContextSaturationRawEvent(
+                    state.contextSaturation!,
+                    explainPiCommandFailure(error, "prompt", state.contextSaturation ?? null),
+                  )
+                : undefined,
           metadata: buildPiEventMetadata(
             {
               type: disconnected
@@ -984,6 +1036,7 @@ interface PiEventContext {
   lastAssistantMessage?: PiAgentMessage;
   ignoreStaleTerminals?: boolean;
   lifecycleStarted?: boolean;
+  contextWindow?: number;
 }
 
 function normalizePiEvent(event: PiRpcEvent, context: PiEventContext): RuntimeEvent[] {
@@ -1114,7 +1167,7 @@ async function maybeBuildPiTerminalEvent(
   const lastAssistant = findLastAssistantMessage(messages) ?? context.lastAssistantMessage;
   context.lastAssistantMessage = lastAssistant;
   context.state = await readPiState(transport, context.state);
-  const sessionState = buildPiRuntimeSessionState(context.state, context.cwd);
+  const sessionState = buildPiRuntimeSessionState(context.state, context.cwd, context.contextWindow);
   const providerSessionId = readPiProviderSessionId(context.state);
   const metadata = buildPiEventMetadata(rawEvent, context);
 
@@ -1246,14 +1299,22 @@ async function controlPiRuntime(
         );
       }
       case "session.compact":
-        return okControl(
-          request,
-          await sendPiCommand(transport, {
-            type: "compact",
-            customInstructions: firstString(request.params?.customInstructions, request.text),
-          }),
-          buildState(),
-        );
+        try {
+          return okControl(
+            request,
+            await sendPiCommand(transport, {
+              type: "compact",
+              customInstructions: firstString(request.params?.customInstructions, request.text),
+            }),
+            buildState(),
+          );
+        } catch (error) {
+          return failControl(
+            request,
+            explainPiCommandFailure(error, "compact", state.contextSaturation ?? null),
+            buildState(),
+          );
+        }
       default:
         return failControl(request, `Pi runtime does not support ${request.operation}`, buildState());
     }
@@ -1346,6 +1407,116 @@ async function sendPiCommand(transport: PiRpcTransport, command: PiRpcCommand): 
     throw new Error(response.error ?? `Pi RPC command ${command.type} failed`);
   }
   return response;
+}
+
+interface PiPromptContextGate {
+  stop: boolean;
+  contextWindow?: number;
+  events: RuntimeEvent[];
+}
+
+/**
+ * Read Pi's context estimate before the prompt RPC.
+ * Compaction is a blocking LLM call that Pi runs inside prompt preflight, so a
+ * near-full session must compact on the dedicated budget (or refuse) before
+ * the short prompt timeout starts.
+ */
+async function gatePiPromptForContextSaturation(
+  transport: PiRpcTransport,
+  state: PiSessionRuntimeState,
+): Promise<PiPromptContextGate> {
+  const saturation = await readPiPromptSaturation(transport, state);
+  state.contextSaturation = saturation;
+  if (saturation && saturation.level === "ok") {
+    state.saturationNoticeLevel = null;
+  }
+  const contextWindow = saturation?.limitTokens;
+  if (!saturation || saturation.level === "ok") {
+    return { stop: false, contextWindow, events: [] };
+  }
+
+  const events: RuntimeEvent[] = [];
+  if (saturation.level === "warn") {
+    pushPiSaturationNotice(events, state, saturation);
+    return { stop: false, contextWindow, events };
+  }
+
+  let compactError: unknown;
+  try {
+    await sendPiCommand(transport, { type: "compact" });
+  } catch (error) {
+    compactError = error;
+  }
+  drainPendingPiEvents(transport);
+
+  if (compactError) {
+    const message = explainPiCommandFailure(compactError, "compact", saturation);
+    events.push(piContextSaturationFailureEvent(message, saturation));
+    return { stop: true, contextWindow, events };
+  }
+
+  const after = await readPiPromptSaturation(transport, state);
+  state.contextSaturation = after ?? saturation;
+  const nextWindow = after?.limitTokens ?? contextWindow;
+  if (after?.level === "critical") {
+    events.push(piContextSaturationFailureEvent(formatPiContextSaturationRefusal(after), after));
+    return { stop: true, contextWindow: nextWindow, events };
+  }
+  if (after?.level === "warn") {
+    pushPiSaturationNotice(events, state, after);
+  }
+  return { stop: false, contextWindow: nextWindow, events };
+}
+
+async function readPiPromptSaturation(
+  transport: PiRpcTransport,
+  state: PiSessionRuntimeState,
+): Promise<PiContextSaturation | null> {
+  try {
+    const response = await transport.send({ type: "get_session_stats" });
+    if (!response.success) return null;
+    const reading = readPiContextUsage(response.data) ?? {
+      tokens: null,
+      contextWindow: readPiModelContextWindow(state.currentState),
+      percent: null,
+    };
+    if (reading.contextWindow === null) {
+      reading.contextWindow = readPiModelContextWindow(state.currentState);
+    }
+    return classifyPiContextSaturation(reading);
+  } catch (error) {
+    if (isPiRpcTimeoutError(error)) {
+      log.warn("Pi context stats timed out before prompt", { error: error instanceof Error ? error.message : error });
+    }
+    return null;
+  }
+}
+
+function pushPiSaturationNotice(
+  events: RuntimeEvent[],
+  state: PiSessionRuntimeState,
+  saturation: PiContextSaturation,
+): void {
+  if (state.saturationNoticeLevel === saturation.level) return;
+  state.saturationNoticeLevel = saturation.level;
+  const message = formatPiContextSaturationWarning(saturation);
+  events.push({
+    type: "status",
+    status: "thinking",
+    rawEvent: piContextSaturationRawEvent(saturation, message),
+  });
+}
+
+function piContextSaturationFailureEvent(message: string, saturation: PiContextSaturation): RuntimeEvent {
+  return {
+    type: "turn.failed",
+    error: message,
+    recoverable: true,
+    rawEvent: piContextSaturationRawEvent(
+      saturation,
+      message.startsWith("Context compaction stalled") ? formatPiCompactionStallFailure(saturation) : message,
+    ),
+  };
 }
 
 function resolvePiSetModelCommand(
@@ -1888,15 +2059,16 @@ function buildPiToolUse(event: PiRpcEvent): RuntimeToolUse | null {
 function buildPiRuntimeSessionState(
   state: PiRpcSessionState | undefined,
   cwd: string,
+  contextWindow?: number,
 ): RuntimeSessionState | undefined {
-  if (!state) {
+  if (!state && !contextWindow) {
     return undefined;
   }
 
-  const sessionFile = firstString(state.sessionFile);
-  const sessionId = firstString(state.sessionId);
-  const sessionName = firstString(state.sessionName);
-  const model = isRecord(state.model) ? state.model : undefined;
+  const sessionFile = firstString(state?.sessionFile);
+  const sessionId = firstString(state?.sessionId);
+  const sessionName = firstString(state?.sessionName);
+  const model = isRecord(state?.model) ? state.model : undefined;
   const modelProvider = firstString(model?.provider);
   const modelId = firstString(model?.id);
   const displayId = sessionName ?? sessionId ?? (sessionFile ? basename(sessionFile) : undefined);
@@ -1910,7 +2082,8 @@ function buildPiRuntimeSessionState(
       ...(sessionName ? { sessionName } : {}),
       ...(modelProvider ? { modelProvider } : {}),
       ...(modelId ? { modelId } : {}),
-      ...(firstString(state.thinkingLevel) ? { thinkingLevel: firstString(state.thinkingLevel) } : {}),
+      ...(firstString(state?.thinkingLevel) ? { thinkingLevel: firstString(state?.thinkingLevel) } : {}),
+      ...(contextWindow ? { contextWindow } : {}),
     },
     displayId: displayId ?? null,
   };

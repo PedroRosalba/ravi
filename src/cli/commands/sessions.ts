@@ -3296,6 +3296,10 @@ export class SessionCommands {
     });
     printInspectionField("Provider", payload.provider ?? "-", RUNTIME_SNAPSHOT_META, { labelWidth: 14 });
     printInspectionField("Tokens Used", payload.tokens.used ?? "-", RUNTIME_SNAPSHOT_META, { labelWidth: 14 });
+    printInspectionField("Token Limit", payload.tokens.limit ?? "-", RUNTIME_SNAPSHOT_META, { labelWidth: 14 });
+    printInspectionField("Remaining", payload.tokens.remaining ?? "-", RUNTIME_SNAPSHOT_META, { labelWidth: 14 });
+    printInspectionField("Warn At", payload.compact.threshold ?? "-", RUNTIME_SNAPSHOT_META, { labelWidth: 14 });
+    printInspectionField("Compact At", payload.compact.willCompactAt ?? "-", RUNTIME_SNAPSHOT_META, { labelWidth: 14 });
     printInspectionField("Compact Count", payload.compact.count, RUNTIME_SNAPSHOT_META, { labelWidth: 14 });
     printInspectionField("Loaded Skills", payload.loadedSkills.length, RUNTIME_SNAPSHOT_META, { labelWidth: 14 });
     if (payload.skills.length > 0) {

@@ -6,6 +6,7 @@ import {
   buildPiManagedRuntimeEnvSignature,
   buildPiRpcProcessArgs,
   buildPiRpcSpawnEnv,
+  createPiRpcSubprocessTransport,
   createPiRuntimeProvider,
   listPiManagedRuntimeEnvKeys,
   type PiRpcCommand,
@@ -14,6 +15,7 @@ import {
   type PiRpcStartInput,
   type PiRpcTransport,
 } from "./pi-provider.js";
+import { classifyRuntimeContextWindowFailure } from "./context-window-recovery.js";
 import {
   createPiPermissionHooksReadyEvent,
   formatPiPermissionUiDecisionValue,
@@ -970,6 +972,7 @@ describe("Pi runtime provider", () => {
       "set_model",
       "get_state",
       "set_steering_mode",
+      "get_session_stats",
       "prompt",
       "get_state",
     ]);
@@ -1296,6 +1299,7 @@ describe("Pi runtime provider", () => {
       "get_state",
       "set_steering_mode",
       "steer",
+      "get_session_stats",
       "prompt",
       "get_state",
     ]);
@@ -1629,6 +1633,204 @@ describe("Pi runtime provider", () => {
       }),
     );
     expect(liveTransport.commands.find((command) => command.type === "prompt")).not.toHaveProperty("streamingBehavior");
+  });
+
+  it("warns around 85% context fill and still sends the prompt", async () => {
+    const transport = new FakePiRpcTransport();
+    transport.responseFor = (command) => {
+      if (command.type === "get_session_stats") {
+        return piResponse(command, {
+          contextUsage: { tokens: 870_000, contextWindow: 1_000_000, percent: 87 },
+        });
+      }
+      if (command.type === "prompt") {
+        transport.pushEvent({ type: "agent_end", messages: [assistantMessage("ok")] });
+      }
+      return defaultResponse(command);
+    };
+
+    const events = await collectRuntimeEvents(
+      createPiRuntimeProvider({ transport }).startSession(createStartRequest("continua")).events,
+    );
+
+    const notice = events.find((event) => event.type === "status" && event.rawEvent?.type === "context.saturation");
+    expect(notice).toMatchObject({
+      rawEvent: {
+        level: "warn",
+        usedTokens: 870_000,
+        limitTokens: 1_000_000,
+      },
+    });
+    expect(String((notice as { rawEvent?: { message?: string } }).rawEvent?.message)).toContain("87%");
+    expect(String((notice as { rawEvent?: { message?: string } }).rawEvent?.message)).not.toMatch(
+      /Timeout waiting for Pi RPC/,
+    );
+    expect(transport.commands.some((command) => command.type === "compact")).toBe(false);
+    expect(transport.commands).toContainEqual(expect.objectContaining({ type: "prompt", message: "continua" }));
+    expect(events.at(-1)?.type).toBe("turn.complete");
+    const session = events.find((event) => event.type === "turn.complete");
+    expect(session && session.type === "turn.complete" ? session.session?.params?.contextWindow : undefined).toBe(
+      1_000_000,
+    );
+  });
+
+  it("compacts on its own budget before a saturated prompt and does not start the prompt when compaction stalls", async () => {
+    const transport = new FakePiRpcTransport();
+    transport.responseFor = (command) => {
+      if (command.type === "get_session_stats") {
+        return piResponse(command, {
+          contextUsage: { tokens: 993_099, contextWindow: 1_000_000, percent: 99.3 },
+        });
+      }
+      if (command.type === "compact") {
+        throw new Error("Timeout waiting for Pi RPC response to compact");
+      }
+      if (command.type === "prompt") {
+        transport.pushEvent({ type: "agent_end", messages: [assistantMessage("should-not-run")] });
+      }
+      return defaultResponse(command);
+    };
+
+    const events = await collectRuntimeEvents(
+      createPiRuntimeProvider({ transport }).startSession(createStartRequest("continua")).events,
+    );
+
+    const failed = events.find((event) => event.type === "turn.failed");
+    expect(failed).toMatchObject({ type: "turn.failed", recoverable: true });
+    if (failed?.type === "turn.failed") {
+      expect(failed.error).toContain("993,099");
+      expect(failed.error).toContain("compaction stalled");
+      expect(failed.error).not.toMatch(/Timeout waiting for Pi RPC/);
+      expect(
+        classifyRuntimeContextWindowFailure({
+          runtimeProvider: "pi",
+          error: failed.error,
+          rawEvent: failed.rawEvent,
+        }),
+      ).toBeNull();
+    }
+    expect(transport.commands.some((command) => command.type === "compact")).toBe(true);
+    expect(transport.commands.some((command) => command.type === "prompt")).toBe(false);
+  });
+
+  it("sends the prompt after dedicated compaction brings the session back under the critical line", async () => {
+    const transport = new FakePiRpcTransport();
+    let statsCalls = 0;
+    transport.responseFor = (command) => {
+      if (command.type === "get_session_stats") {
+        statsCalls += 1;
+        const tokens = statsCalls === 1 ? 993_099 : 40_000;
+        return piResponse(command, {
+          contextUsage: { tokens, contextWindow: 1_000_000, percent: tokens / 10_000 },
+        });
+      }
+      if (command.type === "prompt") {
+        transport.pushEvent({ type: "agent_end", messages: [assistantMessage("depois")] });
+      }
+      return defaultResponse(command);
+    };
+
+    const events = await collectRuntimeEvents(
+      createPiRuntimeProvider({ transport }).startSession(createStartRequest("continua")).events,
+    );
+
+    const types = transport.commands.map((command) => command.type);
+    expect(types.indexOf("compact")).toBeGreaterThan(-1);
+    expect(types.indexOf("compact")).toBeLessThan(types.indexOf("prompt"));
+    expect(events.some((event) => event.type === "turn.failed")).toBe(false);
+    expect(events.at(-1)?.type).toBe("turn.complete");
+  });
+
+  it("refuses a still-saturated session after compaction instead of starting the prompt", async () => {
+    const transport = new FakePiRpcTransport();
+    transport.responseFor = (command) => {
+      if (command.type === "get_session_stats") {
+        return piResponse(command, {
+          contextUsage: { tokens: 993_867, contextWindow: 1_000_000, percent: 99.4 },
+        });
+      }
+      return defaultResponse(command);
+    };
+
+    const events = await collectRuntimeEvents(
+      createPiRuntimeProvider({ transport }).startSession(createStartRequest("continua")).events,
+    );
+
+    const failed = events.find((event) => event.type === "turn.failed");
+    expect(failed && failed.type === "turn.failed" ? failed.error : "").toMatch(/saturated at 99\.4%/);
+    expect(failed && failed.type === "turn.failed" ? failed.error : "").not.toMatch(/Timeout waiting for Pi RPC/);
+    expect(transport.commands.some((command) => command.type === "compact")).toBe(true);
+    expect(transport.commands.some((command) => command.type === "prompt")).toBe(false);
+  });
+
+  it("keeps the short prompt RPC timeout and gives compact its own longer budget", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ravi-pi-timeout-"));
+    const scriptPath = join(dir, "pi-rpc-mock.mjs");
+    writeFileSync(
+      scriptPath,
+      [
+        "let buffer = '';",
+        "const promptDelay = Number(process.env.PROMPT_DELAY_MS ?? 0);",
+        "const compactDelay = Number(process.env.COMPACT_DELAY_MS ?? 0);",
+        "process.stdin.on('data', (chunk) => {",
+        "  buffer += chunk.toString();",
+        "  let index;",
+        "  while ((index = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, index).replace(/\\r$/, '');",
+        "    buffer = buffer.slice(index + 1);",
+        "    if (!line.trim()) continue;",
+        "    const command = JSON.parse(line);",
+        "    const delayMs = command.type === 'compact' ? compactDelay : command.type === 'prompt' ? promptDelay : 0;",
+        "    setTimeout(() => {",
+        "      process.stdout.write(JSON.stringify({ id: command.id, type: 'response', command: command.type, success: true, data: {} }) + '\\n');",
+        "    }, delayMs);",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+
+    const promptTimeout = createPiRpcSubprocessTransport({
+      command: process.execPath,
+      commandArgs: [scriptPath],
+      responseTimeoutMs: 80,
+      compactTimeoutMs: 1_000,
+    });
+    const compactTimeout = createPiRpcSubprocessTransport({
+      command: process.execPath,
+      commandArgs: [scriptPath],
+      responseTimeoutMs: 30_000,
+      compactTimeoutMs: 80,
+    });
+    try {
+      await promptTimeout.start({
+        cwd: dir,
+        env: { ...process.env, PROMPT_DELAY_MS: "300", COMPACT_DELAY_MS: "120" },
+      });
+      await expect(promptTimeout.send({ type: "prompt", message: "hi" })).rejects.toThrow(
+        "Timeout waiting for Pi RPC response to prompt",
+      );
+      await expect(promptTimeout.send({ type: "compact" })).resolves.toMatchObject({
+        success: true,
+        command: "compact",
+      });
+
+      await compactTimeout.start({
+        cwd: dir,
+        env: { ...process.env, COMPACT_DELAY_MS: "300" },
+      });
+      try {
+        await compactTimeout.send({ type: "compact" });
+        throw new Error("compact should have exceeded its budget");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).toContain("Context compaction stalled");
+        expect(message).not.toMatch(/Timeout waiting for Pi RPC/);
+      }
+    } finally {
+      await promptTimeout.close().catch(() => {});
+      await compactTimeout.close().catch(() => {});
+    }
   });
 });
 

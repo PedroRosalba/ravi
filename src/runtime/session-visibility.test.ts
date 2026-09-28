@@ -103,6 +103,24 @@ describe("buildRuntimeSessionVisibilityPayload", () => {
     }
   });
 
+  it("reports context fill, the 85% warn line, and the compaction trigger", () => {
+    const payload = buildRuntimeSessionVisibilityPayload(
+      makeSession({
+        contextTokens: 993_099,
+        runtimeProvider: "pi",
+        runtimeSessionParams: { contextWindow: 1_000_000 },
+      }),
+    );
+
+    expect(payload.tokens).toEqual({
+      used: 993_099,
+      limit: 1_000_000,
+      remaining: 6_901,
+    });
+    expect(payload.compact.threshold).toBe(850_000);
+    expect(payload.compact.willCompactAt).toBe(983_616);
+  });
+
   it("uses the session update timestamp for an empty visibility snapshot", () => {
     const payload = buildRuntimeSessionVisibilityPayload(
       makeSession({
