@@ -1,5 +1,6 @@
 import type { SessionEntry } from "../router/types.js";
 import { getRuntimeLiveStateForSession } from "./live-state.js";
+import { piContextCompactionTriggerTokens, piContextWarnThresholdTokens } from "./pi-context-saturation.js";
 import { emptySkillVisibilitySnapshot, readSkillVisibilityFromParams } from "./skill-visibility.js";
 import type { RuntimeProviderId, RuntimeSkillVisibilitySnapshot } from "./types.js";
 
@@ -33,6 +34,8 @@ export function buildRuntimeSessionVisibilityPayload(session: SessionEntry): Run
       : typeof session.totalTokens === "number"
         ? session.totalTokens
         : null;
+  const limitTokens = readSessionContextWindow(session);
+  const remainingTokens = limitTokens !== null && usedTokens !== null ? Math.max(0, limitTokens - usedTokens) : null;
 
   return {
     sessionKey: session.sessionKey,
@@ -40,12 +43,12 @@ export function buildRuntimeSessionVisibilityPayload(session: SessionEntry): Run
     provider: live?.provider ?? session.runtimeProvider ?? null,
     tokens: {
       used: usedTokens,
-      limit: null,
-      remaining: null,
+      limit: limitTokens,
+      remaining: remainingTokens,
     },
     compact: {
-      threshold: null,
-      willCompactAt: null,
+      threshold: limitTokens !== null ? piContextWarnThresholdTokens(limitTokens) : null,
+      willCompactAt: limitTokens !== null ? piContextCompactionTriggerTokens(limitTokens) : null,
       lastCompactedAt: null,
       count: session.compactionCount ?? 0,
     },
@@ -53,6 +56,22 @@ export function buildRuntimeSessionVisibilityPayload(session: SessionEntry): Run
     loadedSkills: skillVisibility.loadedSkills,
     lastUpdatedAt: Math.max(live?.updatedAt ?? 0, skillVisibility.updatedAt, session.updatedAt),
   };
+}
+
+function readSessionContextWindow(session: SessionEntry): number | null {
+  const params = session.runtimeSessionParams;
+  if (!params) return null;
+  const direct = positiveNumber(params.contextWindow);
+  if (direct !== null) return direct;
+  const model = params.model;
+  if (model && typeof model === "object" && !Array.isArray(model)) {
+    return positiveNumber((model as Record<string, unknown>).contextWindow);
+  }
+  return null;
+}
+
+function positiveNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function selectSkillVisibility(

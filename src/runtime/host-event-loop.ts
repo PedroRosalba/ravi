@@ -33,6 +33,7 @@ import {
   RUNTIME_CONTEXT_WINDOW_RECOVERY_REASON,
 } from "./context-window-recovery.js";
 import { compactionAnnouncementForTurn } from "./compaction-announcement.js";
+import { piContextSaturationUserNotice, readPiContextSaturationNotice } from "./pi-context-saturation.js";
 import { classifyRuntimeCredentialFailure } from "./credential-classifier.js";
 import { isRuntimeProviderLoginStub } from "./provider-login-stub.js";
 import {
@@ -2186,6 +2187,34 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
     return runtimeSessionParams;
   };
 
+  const persistPiContextSaturation = (usedTokens: number, limitTokens: number) => {
+    const runtimeSessionParams: Record<string, unknown> = {
+      ...(isRecord(session.runtimeSessionParams) ? session.runtimeSessionParams : {}),
+      contextWindow: limitTokens,
+    };
+    session.runtimeSessionParams = runtimeSessionParams;
+    session.contextTokens = usedTokens;
+    updateTokens(session.sessionKey, session.inputTokens ?? 0, session.outputTokens ?? 0, usedTokens);
+    const persistedSessionId =
+      session.runtimeSessionDisplayId ??
+      session.providerSessionId ??
+      session.sdkSessionId ??
+      (typeof runtimeSessionParams.sessionId === "string" ? runtimeSessionParams.sessionId : undefined);
+    const providerUnset = !session.runtimeProvider;
+    const lastUsedMatchesCurrent = session.runtimeProvider === runtimeSession.provider;
+    if (!lastUsedMatchesCurrent && !providerUnset) return;
+    if (persistedSessionId) {
+      updateProviderSession(session.sessionKey, runtimeSession.provider, persistedSessionId, {
+        runtimeSessionParams,
+        runtimeSessionDisplayId: session.runtimeSessionDisplayId ?? persistedSessionId,
+      });
+      return;
+    }
+    updateRuntimeProviderState(session.sessionKey, runtimeSession.provider, {
+      runtimeSessionParams,
+    });
+  };
+
   /**
    * Publish a skill-load observation to the trace ledger and the runtime
    * stream. `skill.visibility.loaded` is the event the telemetry counts; skill
@@ -2737,6 +2766,16 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
 
       // Track compaction status - block interrupts while compacting
       if (event.type === "status") {
+        const saturationNotice = readPiContextSaturationNotice(event.rawEvent);
+        if (saturationNotice) {
+          persistPiContextSaturation(saturationNotice.usedTokens, saturationNotice.limitTokens);
+          // Warn-band notice only. Critical saturation is a typed turn.failed so
+          // the operator sees the refusal instead of a second status line.
+          const userNotice = piContextSaturationUserNotice(event.rawEvent);
+          if (userNotice && streaming.agentMode !== "sentinel") {
+            emitResponse(userNotice).catch(() => {});
+          }
+        }
         const status = event.status;
         const compactionChanged = streaming.compacting !== wasCompacting;
         // Snapshot whether compaction announcements may be externalized for the
@@ -3611,6 +3650,10 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
       }
 
       if (event.type === "turn.failed") {
+        const saturationFailure = readPiContextSaturationNotice(event.rawEvent);
+        if (saturationFailure) {
+          persistPiContextSaturation(saturationFailure.usedTokens, saturationFailure.limitTokens);
+        }
         const internalAbortReason = receivedFailureClassification?.internalAbortReason;
         const recoveryReason = receivedFailureClassification?.recoveryReason;
         const suppressedRecoverable = receivedFailureClassification?.suppressedRecoverable ?? false;
