@@ -293,6 +293,13 @@ describe("runCoverageGate", () => {
     expect(result.triggeredPrefixes).toEqual(["src/router/"]);
   });
 
+  it("accepts sticky-attach coverage for route agent migration", () => {
+    const result = runCoverageGate(["src/router/route-sticky-attach.ts", "src/router/route-sticky-attach.test.ts"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.triggeredPrefixes).toEqual(["src/router/"]);
+  });
+
   it("accepts announceCompaction coverage for router persistence changes", () => {
     const result = runCoverageGate(["src/router/router-db.ts", "src/router/router-db.announce-compaction.test.ts"]);
 
