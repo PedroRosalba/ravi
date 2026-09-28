@@ -82,6 +82,12 @@ import {
   normalizePhone,
   type AccountPendingEntry,
 } from "../../contacts.js";
+import {
+  detachRouteBookkeepingSubscriptions,
+  listRouteStickyOverrides,
+  sessionHasExplicitAttach,
+  type RouteStickyOverride,
+} from "../../router/route-sticky-attach.js";
 import { listSessions, deleteSession } from "../../router/sessions.js";
 import type { SessionEntry } from "../../router/types.js";
 import { filterItemsByCanonicalTag } from "../../tags/helpers.js";
@@ -198,8 +204,7 @@ function assertInstanceMutationRuntime(name: string, allowRuntimeMismatch?: bool
   const summary = inspectCliRuntimeTarget(name);
   const mismatch = getCliRuntimeMismatchMessage(summary);
   if (mismatch && !allowRuntimeMismatch) {
-    const suggestedAction =
-      "Re-run with the repo CLI/runtime or pass --allow-runtime-mismatch if you really mean it.";
+    const suggestedAction = "Re-run with the repo CLI/runtime or pass --allow-runtime-mismatch if you really mean it.";
     fail(`${mismatch}\nTarget instance: ${name}\n${suggestedAction}`, suggestedAction);
   }
 }
@@ -296,6 +301,49 @@ function printRouteLiveEffect(name: string, pattern: string, expectedAgent: stri
   console.log(`  Live effect:   ${effect.verified ? "verified" : "different winner"}`);
   console.log(`  Winning route: ${effect.winningPattern}`);
   console.log(`  Winning agent: ${effect.winningAgent}`);
+}
+
+function stickyAttachForPattern(name: string, pattern: string, channel?: string) {
+  const overrides = listRouteStickyOverrides({ accountId: name, pattern, channel });
+  return { overrides };
+}
+
+function printStickyAttachWarning(overrides: RouteStickyOverride[]): void {
+  if (overrides.length === 0) return;
+  console.log("  Sticky attach: an active subscription still overrides the live route agent");
+  for (const override of overrides) {
+    const kind = override.explicit ? "explicit attach" : (override.attachedReason ?? override.attachedByType);
+    console.log(`    ${override.chatId} → ${override.sessionKey} (agent ${override.agentId}, ${kind})`);
+    console.log(`    Detach: ${override.detachCommand}`);
+  }
+}
+
+function releaseRouteAgentStickiness(
+  name: string,
+  pattern: string,
+  targetAgent: string,
+  channel: string | undefined,
+  asJson?: boolean,
+): {
+  detachedSubscriptions: number;
+  cleanedSessions: number;
+  stickyAttach: { overrides: RouteStickyOverride[] };
+} {
+  const released = detachRouteBookkeepingSubscriptions({
+    accountId: name,
+    pattern,
+    targetAgent,
+    channel,
+  });
+  const cleanedSessions = deleteConflictingSessions(pattern, targetAgent, {
+    accountId: name,
+    silent: Boolean(asJson),
+  });
+  return {
+    detachedSubscriptions: released.detached,
+    cleanedSessions,
+    stickyAttach: stickyAttachForPattern(name, pattern, channel),
+  };
 }
 
 function getRouteStatusIcon(pattern: string): string {
@@ -509,24 +557,22 @@ function buildRouteExplanationPayload(op: string, name: string, pattern?: string
       channel: channel ?? null,
       configuredRoute: null,
       liveEffect: null,
+      stickyAttach: null,
     };
   }
 
   const routePattern = canonicalizeRoutePatternArg(pattern);
   const configuredRoute = dbGetRoute(routePattern, name);
   if (configuredRoute) {
+    const effectChannel = channel ?? configuredRoute.channel ?? undefined;
     return {
       target,
       instance: name,
       pattern: routePattern,
       channel: channel ?? configuredRoute.channel ?? null,
       configuredRoute,
-      liveEffect: getRouteLiveEffect(
-        name,
-        routePattern,
-        configuredRoute.agent,
-        channel ?? configuredRoute.channel ?? undefined,
-      ),
+      liveEffect: getRouteLiveEffect(name, routePattern, configuredRoute.agent, effectChannel),
+      stickyAttach: stickyAttachForPattern(name, routePattern, effectChannel),
     };
   }
 
@@ -545,6 +591,7 @@ function buildRouteExplanationPayload(op: string, name: string, pattern?: string
           winningAgent: winner.winningAgent,
         }
       : getRouteLiveEffect(name, pattern, undefined, channel),
+    stickyAttach: stickyAttachForPattern(name, routePattern, channel),
   };
 }
 
@@ -567,8 +614,10 @@ function printRouteExplanation(op: string, name: string, pattern?: string, chann
   const routePattern = canonicalizeRoutePatternArg(pattern);
   const configuredRoute = dbGetRoute(routePattern, name);
   if (configuredRoute) {
+    const effectChannel = channel ?? configuredRoute.channel ?? undefined;
     console.log(`  Config route:  ${configuredRoute.pattern} → ${configuredRoute.agent}`);
-    printRouteLiveEffect(name, routePattern, configuredRoute.agent, channel ?? configuredRoute.channel ?? undefined);
+    printRouteLiveEffect(name, routePattern, configuredRoute.agent, effectChannel);
+    printStickyAttachWarning(stickyAttachForPattern(name, routePattern, effectChannel).overrides);
     console.log(`\n  Route details: ravi routes show ${name} "${routePattern}"`);
     console.log(`  Mutate config: ravi instances routes set ${name} "${routePattern}" <key> <value>`);
     return;
@@ -581,6 +630,7 @@ function printRouteExplanation(op: string, name: string, pattern?: string, chann
     } else {
       console.log(`  Live effect:   broad pattern — exact winner check skipped for ${routePattern}`);
     }
+    printStickyAttachWarning(stickyAttachForPattern(name, routePattern, channel).overrides);
     console.log(`\n  Route details: ravi routes show ${name} "${routePattern}"`);
     console.log(`  Mutate config: ravi instances routes add ${name} "${routePattern}" <agent>`);
     return;
@@ -590,8 +640,14 @@ function printRouteExplanation(op: string, name: string, pattern?: string, chann
   console.log("  Live effect:   different winner");
   console.log(`  Winning route: ${winner.winningPattern}`);
   console.log(`  Winning agent: ${winner.winningAgent}`);
+  printStickyAttachWarning(stickyAttachForPattern(name, routePattern, channel).overrides);
   console.log(`\n  Route details: ravi routes show ${name} "${routePattern}"`);
   console.log(`  Mutate config: ravi instances routes add ${name} "${routePattern}" <agent>`);
+}
+
+function sessionKeyHasDmPeer(sessionKey: string, peerId: string): boolean {
+  const escaped = peerId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|:)dm:${escaped}(?:$|:)`, "i").test(sessionKey);
 }
 
 function sessionKeyAccountId(sessionKey: string): string | null {
@@ -645,9 +701,17 @@ function deleteConflictingSessions(
       const regex = new RegExp(canonical.replace(/\*/g, ".*"), "i");
       const match = session.sessionKey.match(/dm:(\d+)/);
       shouldDelete = Boolean(match && regex.test(match[1]));
+    } else if (/^\d+$/.test(canonical)) {
+      // Exact phone DMs (`5511…`) never matched the group/LID/wildcard branches,
+      // so the previous agent's session — and its chat subscription — survived
+      // a route-agent migration.
+      shouldDelete = sessionKeyHasDmPeer(session.sessionKey, canonical);
     }
 
     if (shouldDelete) {
+      // An explicit `sessions attach` on this session must keep winning.
+      // Deleting the row would cascade the subscription away.
+      if (sessionHasExplicitAttach(session.sessionKey)) continue;
       deleteSession(session.sessionKey);
       if (!opts.silent) console.log(`  Deleted conflicting session: ${session.sessionKey}`);
       deleted++;
@@ -1780,8 +1844,9 @@ export class InstancesRoutesCommands {
         }
       }
 
-      // Clean conflicting sessions
-      const cleaned = deleteConflictingSessions(storedPattern, agent, { accountId: name, silent: Boolean(asJson) });
+      // Drop inbound subscriptions that would keep this chat on the previous
+      // agent, then delete sessions the pattern heuristic still owns.
+      const released = releaseRouteAgentStickiness(name, storedPattern, agent, channel, asJson);
 
       const payload = {
         status: "added" as const,
@@ -1790,7 +1855,9 @@ export class InstancesRoutesCommands {
         target: inspectCliRuntimeTarget(name),
         liveEffect: getRouteLiveEffect(name, storedPattern, agent, channel),
         removedPending,
-        cleanedSessions: cleaned,
+        cleanedSessions: released.cleanedSessions,
+        detachedSubscriptions: released.detachedSubscriptions,
+        stickyAttach: released.stickyAttach,
         changedCount: 1,
       };
       if (asJson) {
@@ -1802,7 +1869,13 @@ export class InstancesRoutesCommands {
         console.log(`✓ Route added: ${storedPattern} → ${agent} (instance: ${name})${policyLabel}${channelLabel}`);
         printRouteLiveEffect(name, storedPattern, agent, channel);
         if (removedPending) console.log(`✓ Removed from pending`);
-        if (cleaned > 0) console.log(`✓ Cleaned ${cleaned} conflicting session(s)`);
+        if (released.detachedSubscriptions > 0) {
+          console.log(`✓ Detached ${released.detachedSubscriptions} route subscription(s)`);
+        }
+        printStickyAttachWarning(released.stickyAttach.overrides);
+        if (released.cleanedSessions > 0) {
+          console.log(`✓ Cleaned ${released.cleanedSessions} conflicting session(s)`);
+        }
       }
       return payload;
     } catch (err) {
@@ -1981,10 +2054,11 @@ export class InstancesRoutesCommands {
       const route = dbUpdateRoute(routePattern, updates, name);
       emitConfigChanged();
 
-      let cleaned = 0;
-      if (key === "agent") {
-        cleaned = deleteConflictingSessions(routePattern, value, { accountId: name, silent: Boolean(asJson) });
-      }
+      const routeChannel = typeof route?.channel === "string" ? route.channel : undefined;
+      const released =
+        key === "agent" && !clear
+          ? releaseRouteAgentStickiness(name, routePattern, value, routeChannel, asJson)
+          : { detachedSubscriptions: 0, cleanedSessions: 0, stickyAttach: { overrides: [] as RouteStickyOverride[] } };
 
       const payload = {
         status: "updated" as const,
@@ -1994,8 +2068,10 @@ export class InstancesRoutesCommands {
         value: jsonValue,
         route,
         target: inspectCliRuntimeTarget(name),
-        liveEffect: key === "agent" && !clear ? getRouteLiveEffect(name, routePattern, value, undefined) : null,
-        cleanedSessions: cleaned,
+        liveEffect: key === "agent" && !clear ? getRouteLiveEffect(name, routePattern, value, routeChannel) : null,
+        cleanedSessions: released.cleanedSessions,
+        detachedSubscriptions: released.detachedSubscriptions,
+        stickyAttach: key === "agent" && !clear ? released.stickyAttach : null,
         changedCount: 1,
       };
       if (asJson) {
@@ -2004,9 +2080,15 @@ export class InstancesRoutesCommands {
         printInstanceMutationTarget(name);
         console.log(`✓ ${key} set on route ${routePattern} (instance: ${name}): ${clear ? "(cleared)" : value}`);
         if (key === "agent" && !clear) {
-          printRouteLiveEffect(name, routePattern, value, undefined);
+          printRouteLiveEffect(name, routePattern, value, routeChannel);
+          if (released.detachedSubscriptions > 0) {
+            console.log(`✓ Detached ${released.detachedSubscriptions} route subscription(s)`);
+          }
+          printStickyAttachWarning(released.stickyAttach.overrides);
         }
-        if (cleaned > 0) console.log(`✓ Cleaned ${cleaned} conflicting session(s)`);
+        if (released.cleanedSessions > 0) {
+          console.log(`✓ Cleaned ${released.cleanedSessions} conflicting session(s)`);
+        }
       }
       return payload;
     } catch (err) {
