@@ -430,7 +430,7 @@ function seedRuntimeCredentialAttempt(id: string) {
   };
 }
 
-function seedAdapterTrace(streaming: RuntimeHostStreamingSession, turnId = "turn-1"): void {
+function seedAdapterTrace(streaming: RuntimeHostStreamingSession, turnId = "turn-1", prompt = "hello runtime"): void {
   const trace = recordAdapterRequestTrace({
     sessionKey: SESSION_KEY,
     sessionName: SESSION_NAME,
@@ -439,7 +439,7 @@ function seedAdapterTrace(streaming: RuntimeHostStreamingSession, turnId = "turn
     turnId,
     provider: PROVIDER,
     model: MODEL,
-    prompt: "hello runtime",
+    prompt,
     systemPrompt: "## Identidade\n\nVoce e Ravi.",
     cwd: stateDir ?? "/tmp",
     resume: false,
@@ -3659,6 +3659,113 @@ describe("runtime session trace instrumentation", () => {
     expect(terminals[MAX_INACTIVITY_RECOVERIES]).toBe("turn.failed");
     // Never silently: the last attempt tells the session a human is needed.
     expect(exhaustedNotices).toHaveLength(1);
+  });
+
+  it("includes a task checkpoint on the incompatible-session fallback after tool use", async () => {
+    const previousTimeout = process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS;
+    process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS = "1000";
+    resetInactivityRecoveryBudget(SESSION_NAME);
+    const objective = "Restore the bolao frontend and update artifacts/design.md";
+    const streaming = makeStreamingSession();
+    seedAdapterTrace(streaming, "turn-incompatible-checkpoint", objective);
+    const stashed = new Map<string, RuntimeUserMessage[]>();
+
+    try {
+      await runTraceLoop(
+        streaming,
+        makeRuntimeSessionThenHang([
+          { type: "assistant.message", text: "Checking the design file." },
+          {
+            type: "tool.started",
+            toolUse: { id: "call-design", name: "bash", input: { command: "cat artifacts/design.md" } },
+          },
+          {
+            type: "tool.completed",
+            toolUseId: "call-design",
+            toolName: "bash",
+            content: "wrote artifacts/design.md",
+          },
+        ]),
+        { stashedMessages: stashed },
+      );
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS;
+      } else {
+        process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS = previousTimeout;
+      }
+      resetInactivityRecoveryBudget(SESSION_NAME);
+    }
+
+    const notice = stashed.get(SESSION_NAME)?.[0]?.message.content ?? "";
+    expect(notice).toContain("Inatividade");
+    expect(notice).toContain("[Checkpoint]");
+    expect(notice).toContain("Objective:");
+    expect(notice).toContain(objective);
+    expect(notice).toContain("Verified progress:");
+    expect(notice).toContain("bash completed");
+    expect(notice).toContain("Remaining work:");
+    expect(notice).toContain("Artifact hints:");
+    expect(notice).toContain("artifacts/design.md");
+  });
+
+  it("does not reset the inactivity budget when a recovery completes with @@SILENT@@", async () => {
+    const previousTimeout = process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS;
+    process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS = "1000";
+    resetInactivityRecoveryBudget(SESSION_NAME);
+
+    const hang = () =>
+      makeRuntimeSessionThenHang([
+        { type: "assistant.message", text: "trabalhando" },
+        { type: "tool.started", toolUse: { id: "tool-budget", name: "bash", input: {} } },
+        { type: "tool.completed", toolUseId: "tool-budget", toolName: "bash", content: "ok" },
+      ]);
+    const completeWith = async (turnId: string, text: string) => {
+      const streaming = makeStreamingSession();
+      seedAdapterTrace(streaming, turnId);
+      await runTraceLoop(
+        streaming,
+        makeRuntimeSession([
+          { type: "assistant.message", text },
+          {
+            type: "turn.complete",
+            providerSessionId: `provider-${turnId}`,
+            usage: { inputTokens: 1, outputTokens: 1 },
+          },
+        ]),
+      );
+    };
+    const recover = async (turnId: string) => {
+      const streaming = makeStreamingSession();
+      seedAdapterTrace(streaming, turnId);
+      await runTraceLoop(streaming, hang(), { stashedMessages: new Map() });
+    };
+    const attempts = () =>
+      listSessionEvents(SESSION_KEY)
+        .filter((event) => event.eventType === "turn.interrupted")
+        .map((event) => {
+          const payload = event.payloadJson;
+          return payload && typeof payload === "object" && !Array.isArray(payload) && "attempt" in payload
+            ? Number((payload as { attempt?: unknown }).attempt)
+            : -1;
+        });
+
+    try {
+      await recover("turn-silent-budget-1");
+      await completeWith("turn-silent-budget-silent", "@@SILENT@@");
+      await recover("turn-silent-budget-2");
+      await completeWith("turn-silent-budget-progress", "updated artifacts/design.md");
+      await recover("turn-silent-budget-3");
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS;
+      } else {
+        process.env.RAVI_RUNTIME_PROVIDER_INACTIVITY_MS = previousTimeout;
+      }
+      resetInactivityRecoveryBudget(SESSION_NAME);
+    }
+
+    expect(attempts()).toEqual([1, 2, 1]);
   });
 
   it("does not persist silent heartbeat, no-response, or @@SILENT@@ assistant text", async () => {

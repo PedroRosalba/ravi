@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   buildSkillVisibilitySnapshot,
   diffLoadedSkills,
@@ -155,6 +158,115 @@ describe("skill visibility policy", () => {
 
     expect(isStoredSkillVisibilityCompatible(params, ["allowed"])).toBe(false);
     expect(isStoredSkillVisibilityCompatible(params, ["allowed", "revoked"])).toBe(true);
+  });
+
+  it("treats plugin-qualified catalog ids as the granted bare skill and fails closed otherwise", () => {
+    const known = [
+      {
+        name: "frontend-design",
+        pluginName: "bolao-2026",
+        path: "/plugins/bolao-2026/skills/frontend-design",
+      },
+      {
+        name: "secret-skill",
+        pluginName: "bolao-2026",
+        path: "/plugins/bolao-2026/skills/secret-skill",
+      },
+    ];
+    const visibility = (...ids: string[]) => ({
+      skillVisibility: buildSkillVisibilitySnapshot(
+        ids.map((id) => ({
+          id,
+          provider: "codex" as const,
+          state: "advertised" as const,
+          confidence: "declared" as const,
+          lastSeenAt: 1,
+        })),
+      ),
+    });
+
+    expect(
+      isStoredSkillVisibilityCompatible(visibility("bolao-2026-frontend-design"), ["frontend-design"], known),
+    ).toBe(true);
+    expect(
+      isStoredSkillVisibilityCompatible(visibility("frontend-design"), ["bolao-2026-frontend-design"], known),
+    ).toBe(true);
+    expect(isStoredSkillVisibilityCompatible(visibility("bolao-2026-frontend-design"), ["secret-skill"], known)).toBe(
+      false,
+    );
+    expect(isStoredSkillVisibilityCompatible(visibility("bolao-2026-secret-skill"), ["frontend-design"], known)).toBe(
+      false,
+    );
+    expect(isStoredSkillVisibilityCompatible(visibility("unrelated-frontend-design"), ["frontend-design"], known)).toBe(
+      false,
+    );
+    expect(isStoredSkillVisibilityCompatible(visibility("unmanaged-tiny"), ["tiny"], known)).toBe(false);
+    expect(
+      isStoredSkillVisibilityCompatible(
+        visibility("bolao-2026-frontend-design", "bolao-2026-secret-skill"),
+        ["frontend-design"],
+        known,
+      ),
+    ).toBe(false);
+    expect(
+      filterSkillNamesByAllowlist(
+        ["bolao-2026-frontend-design", "bolao-2026-secret-skill", "unrelated-frontend-design"],
+        ["frontend-design"],
+        known,
+      ),
+    ).toEqual(["bolao-2026-frontend-design"]);
+  });
+
+  it("resolves a non-managed plugin prefix from the installed catalog during resume", () => {
+    const pluginDir = join(homedir(), "ravi", "plugins", "cursor-resume-alias-6596");
+    const writeSkill = (name: string) => {
+      const skillDir = join(pluginDir, "skills", name);
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${name}\n---\n\n# ${name}\n`);
+    };
+    mkdirSync(join(pluginDir, ".claude-plugin"), { recursive: true });
+    writeFileSync(
+      join(pluginDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "cursor-resume-alias-6596", version: "1.0.0" }),
+    );
+    writeSkill("frontend-design");
+    writeSkill("secret-skill");
+
+    const visibility = (id: string) => ({
+      skillVisibility: buildSkillVisibilitySnapshot([
+        {
+          id,
+          provider: "codex",
+          state: "advertised",
+          confidence: "declared",
+          lastSeenAt: 1,
+        },
+      ]),
+    });
+
+    try {
+      expect(
+        isStoredSkillVisibilityCompatible(visibility("cursor-resume-alias-6596-frontend-design"), ["frontend-design"]),
+      ).toBe(true);
+      expect(
+        isStoredSkillVisibilityCompatible(visibility("cursor-resume-alias-6596-secret-skill"), ["frontend-design"]),
+      ).toBe(false);
+      expect(isStoredSkillVisibilityCompatible(visibility("unrelated-frontend-design"), ["frontend-design"])).toBe(
+        false,
+      );
+      expect(
+        filterSkillNamesByAllowlist(
+          [
+            "cursor-resume-alias-6596-frontend-design",
+            "cursor-resume-alias-6596-secret-skill",
+            "unrelated-frontend-design",
+          ],
+          ["frontend-design"],
+        ),
+      ).toEqual(["cursor-resume-alias-6596-frontend-design"]);
+    } finally {
+      rmSync(pluginDir, { recursive: true, force: true });
+    }
   });
 
   it("drops stale catalog entries when a provider publishes its current catalog", () => {
