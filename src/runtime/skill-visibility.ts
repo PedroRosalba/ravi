@@ -181,7 +181,13 @@ export function skillIdentifiersMatch(left: string, right: string): boolean {
 }
 
 /** Match provider-native aliases such as `ravi-system-sessions` to the
- * canonical allowlist entry `sessions`. */
+ * canonical allowlist entry `sessions`.
+ *
+ * Managed prefixes only. Arbitrary suffixes (`unmanaged-tiny` vs `tiny`,
+ * `acme-pages` vs `pages`) stay distinct so a string check cannot widen
+ * permissions. Plugin-qualified ids outside those prefixes are resolved by
+ * {@link skillIdGrantedByAllowlist} against a known catalog identity.
+ */
 export function skillNameMatchesAllowlist(name: string, allowlist: readonly string[]): boolean {
   const nativeSlug = slugifySkillName(name);
   const allowedSlugs = new Set(allowlist.map(slugifySkillName));
@@ -193,37 +199,151 @@ export function skillNameMatchesAllowlist(name: string, allowlist: readonly stri
   return allowedSlugs.has(bareSlug);
 }
 
-export function filterSkillNamesByAllowlist(names: readonly string[], allowlist: readonly string[]): string[] {
+/**
+ * Catalog or installed skill whose plugin-qualified Codex id
+ * (`bolao-2026-frontend-design`) and bare grant (`frontend-design`) name the
+ * same skill. `path` is the skill directory when known.
+ */
+export interface SkillAliasIdentity {
+  name: string;
+  pluginName?: string;
+  path?: string;
+}
+
+/**
+ * Whether `skillId` is the same logical skill as something on `allowlist`.
+ *
+ * String equivalence covers canonical names and managed `ravi-*` aliases.
+ * Any other id matches only when a known skill's own aliases include both the
+ * id and a granted name. Unknown ids and skills the allowlist does not grant
+ * fail closed.
+ */
+export function skillIdGrantedByAllowlist(
+  skillId: string,
+  allowlist: readonly string[],
+  knownSkills: readonly SkillAliasIdentity[] = [],
+): boolean {
+  if (skillNameMatchesAllowlist(skillId, allowlist)) return true;
+  return pluginQualifiedSkillGranted(skillId, allowlist, knownSkills);
+}
+
+export function filterSkillNamesByAllowlist(
+  names: readonly string[],
+  allowlist: readonly string[],
+  knownSkills?: readonly SkillAliasIdentity[],
+): string[] {
   const allowedSlugs = new Set(allowlist.map(slugifySkillName));
   const selected = new Map<string, { name: string; priority: number; index: number }>();
+  const unresolved: Array<{ name: string; index: number }> = [];
+
+  const consider = (name: string, index: number, bareSlug: string, priority: number) => {
+    const candidate = { name, priority, index };
+    const current = selected.get(bareSlug);
+    if (!current || candidate.priority < current.priority) {
+      selected.set(bareSlug, candidate);
+    }
+  };
 
   names.forEach((name, index) => {
     const slug = slugifySkillName(name);
     const prefixIndex = MANAGED_SKILL_PREFIXES.findIndex((prefix) => slug.startsWith(prefix));
     const bareSlug = prefixIndex >= 0 ? slug.slice(MANAGED_SKILL_PREFIXES[prefixIndex]!.length) : slug;
     const exact = allowedSlugs.has(slug);
-    if (!exact && !allowedSlugs.has(bareSlug)) return;
-
-    const candidate = { name, priority: exact ? 0 : prefixIndex + 1, index };
-    const current = selected.get(bareSlug);
-    if (!current || candidate.priority < current.priority) {
-      selected.set(bareSlug, candidate);
+    if (exact || allowedSlugs.has(bareSlug)) {
+      consider(name, index, bareSlug, exact ? 0 : prefixIndex + 1);
+      return;
     }
+    unresolved.push({ name, index });
   });
+
+  if (unresolved.length > 0) {
+    const identities = knownSkills ?? loadPluginSkillIdentities();
+    for (const entry of unresolved) {
+      const bareSlug = pluginQualifiedBareSlug(entry.name, allowlist, identities);
+      if (!bareSlug) continue;
+      consider(entry.name, entry.index, bareSlug, PLUGIN_ALIAS_PRIORITY);
+    }
+  }
 
   return [...selected.values()].sort((left, right) => left.index - right.index).map((entry) => entry.name);
 }
 
+const PLUGIN_ALIAS_PRIORITY = 10;
+
 export function isStoredSkillVisibilityCompatible(
   params: Record<string, unknown> | null | undefined,
   allowedSkills: readonly string[] | undefined,
+  knownSkills?: readonly SkillAliasIdentity[],
 ): boolean {
   if (!allowedSkills) return true;
   if (!isRecord(params?.skillVisibility)) return false;
   const snapshot = readSkillVisibilityFromParams(params);
-  return (
-    snapshot.skills.length > 0 && snapshot.skills.every((skill) => skillNameMatchesAllowlist(skill.id, allowedSkills))
-  );
+  if (snapshot.skills.length === 0) return false;
+  const unresolved = snapshot.skills.filter((skill) => !skillNameMatchesAllowlist(skill.id, allowedSkills));
+  if (unresolved.length === 0) return true;
+  const identities = knownSkills ?? loadPluginSkillIdentities();
+  return unresolved.every((skill) => pluginQualifiedSkillGranted(skill.id, allowedSkills, identities));
+}
+
+function loadPluginSkillIdentities(): SkillAliasIdentity[] {
+  return [...listCatalogSkills(), ...listInstalledSkills({ includeCodex: false })].map((skill) => ({
+    name: skill.name,
+    pluginName: skill.pluginName,
+    path: skill.path,
+  }));
+}
+
+function pluginQualifiedBareSlug(
+  skillId: string,
+  allowlist: readonly string[],
+  knownSkills: readonly SkillAliasIdentity[],
+): string | null {
+  const granted = grantedAliasForSkillId(skillId, allowlist, knownSkills);
+  return granted ? slugifySkillName(logicalSkillKey(granted)) : null;
+}
+
+function pluginQualifiedSkillGranted(
+  skillId: string,
+  allowlist: readonly string[],
+  knownSkills: readonly SkillAliasIdentity[],
+): boolean {
+  return grantedAliasForSkillId(skillId, allowlist, knownSkills) !== null;
+}
+
+/**
+ * Allowlist entry that names the same catalog skill as `skillId`.
+ * Returns null when no known skill proves the id, so a lookalike suffix cannot
+ * inherit another skill's grant.
+ */
+function grantedAliasForSkillId(
+  skillId: string,
+  allowlist: readonly string[],
+  knownSkills: readonly SkillAliasIdentity[],
+): string | null {
+  const wanted = slugifySkillName(skillId);
+  for (const skill of knownSkills) {
+    const aliases = collectSkillAliases(skill);
+    if (!aliases.some((alias) => slugifySkillName(alias) === wanted)) continue;
+    const granted = aliases.find((alias) => skillNameMatchesAllowlist(alias, allowlist));
+    if (granted) return granted;
+  }
+  return null;
+}
+
+function collectSkillAliases(skill: SkillAliasIdentity): string[] {
+  const aliases = [skill.name];
+  const directory = skill.path ? basename(skill.path) : "";
+  if (directory) aliases.push(directory);
+  if (!skill.pluginName) return aliases;
+
+  const pluginSlug = codexManagedSlug(skill.pluginName);
+  const nameSlug = codexManagedSlug(skill.name);
+  const directorySlug = directory ? codexManagedSlug(directory) : "";
+  if (pluginSlug && nameSlug) aliases.push(`${pluginSlug}-${nameSlug}`);
+  if (pluginSlug && directorySlug && directorySlug !== nameSlug) aliases.push(`${pluginSlug}-${directorySlug}`);
+  aliases.push(`${skill.pluginName}:${skill.name}`);
+  if (directory) aliases.push(`${skill.pluginName}:${directory}`);
+  return aliases;
 }
 
 export function buildCodexSkillVisibilitySnapshot(

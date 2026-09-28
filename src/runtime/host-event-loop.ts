@@ -22,6 +22,7 @@ import {
   type AgentConfig,
   type SessionEntry,
 } from "../router/index.js";
+import { getSessionTraceBlob, getSessionTurn, listSessionEvents } from "../session-trace/session-trace-db.js";
 import { recordRuntimeTraceEvent, recordTerminalTurnTrace } from "../session-trace/runtime-trace.js";
 import { applyTaskSessionTtlForAgent, shouldRefreshTaskSessionTtlOnTurnComplete } from "../tasks/session-retention.js";
 import { logger } from "../utils/logger.js";
@@ -33,6 +34,10 @@ import {
   RUNTIME_CONTEXT_WINDOW_RECOVERY_REASON,
 } from "./context-window-recovery.js";
 import { compactionAnnouncementForTurn } from "./compaction-announcement.js";
+import {
+  buildInactivityRecoveryCheckpoint,
+  inactivityRecoveryCompletionHasProgress,
+} from "./inactivity-recovery-checkpoint.js";
 import { piContextSaturationUserNotice, readPiContextSaturationNotice } from "./pi-context-saturation.js";
 import { classifyRuntimeCredentialFailure } from "./credential-classifier.js";
 import { isRuntimeProviderLoginStub } from "./provider-login-stub.js";
@@ -156,7 +161,8 @@ export const MAX_INACTIVITY_RECOVERIES = 3;
  *
  * Module scope on purpose: a recovery restarts the runtime, so a counter kept on
  * the streaming session would reset on every attempt and could never bound the
- * loop. It is cleared when a turn completes, because that is real progress.
+ * loop. It is cleared only when a turn completes with visible task progress.
+ * A silent, empty, or @@SILENT@@ completion leaves the counter in place.
  */
 const inactivityRecoveryAttempts = new Map<string, number>();
 
@@ -1165,6 +1171,25 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
   const IDLE_SESSION_TTL_MS = resolveRuntimeIdleSessionTtlMs();
   let providerInactivityTimer: ReturnType<typeof setTimeout> | undefined;
   let providerInactivityWatchArmed = false;
+  const readInactivityRecoveryCheckpoint = (): string | undefined => {
+    const turnId = streaming.currentTraceTurnId;
+    if (!turnId) return undefined;
+    try {
+      const turn = getSessionTurn(turnId);
+      const objective = turn?.userPromptSha256 ? getSessionTraceBlob(turn.userPromptSha256)?.contentText : undefined;
+      const events = listSessionEvents(session.sessionKey).filter((event) => event.turnId === turnId);
+      return (
+        buildInactivityRecoveryCheckpoint({
+          objective,
+          taskId: streaming.currentTaskBarrierTaskId,
+          events,
+        }) ?? undefined
+      );
+    } catch (error) {
+      log.warn("Failed to build inactivity recovery checkpoint", { runId, sessionName, error });
+      return undefined;
+    }
+  };
   /**
    * Continue the session after an inactivity watchdog fires.
    *
@@ -1188,11 +1213,13 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
     const attempts = (inactivityRecoveryAttempts.get(sessionName) ?? 0) + 1;
     const exhausted = attempts > MAX_INACTIVITY_RECOVERIES;
 
+    const checkpoint = streaming.currentTurnToolStarted === true ? readInactivityRecoveryCheckpoint() : undefined;
     const explain = (lines: string[]): string =>
       [
         `[System] Inatividade: ${subject} ficou ${seconds}s sem produzir evento.`,
         ...lines,
         "Se a tarefa e demorada, rode em background (nohup) e consulte em fatias curtas, declarando `timeout` no comando.",
+        ...(checkpoint ? ["", checkpoint] : []),
       ].join("\n");
 
     const notice = createQueuedRuntimeUserMessage({
@@ -3349,8 +3376,12 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
           sessionId: event.session?.displayId ?? event.providerSessionId,
         });
         const completedCredentialAttemptId = streaming.currentRuntimeCredential?.attemptId;
-        // A completed turn is real progress: the inactivity budget starts over.
-        resetInactivityRecoveryBudget(sessionName);
+        // Visible assistant text is real progress. A silent, empty, or @@SILENT@@
+        // completion — including a recovery that produced nothing — keeps the
+        // consecutive inactivity budget so repeated silence reaches the cap.
+        if (inactivityRecoveryCompletionHasProgress(responseText)) {
+          resetInactivityRecoveryBudget(sessionName);
+        }
         await recordRuntimeCredentialTurnSuccess(
           streaming,
           resolveModelBrokerEffectState(getRuntimeTurnReplaySafety(streaming, crashRecovery)),
