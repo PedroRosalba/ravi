@@ -1,6 +1,6 @@
 # Pages viewer-assertion audiences / CHECKS
 
-- `pages assertion audiences list --site <host>` MUST `GET /api/cli/projects/:project/pages/assertion-audiences?siteRef=<host>` and MUST NOT dry-run.
+- `pages assertion audiences list --site <host>` MUST `GET /api/cli/projects/:project/pages/assertion-audiences?siteRef=<host>` and MUST NOT dry-run. It MUST accept `--limit` and `--offset`.
 - List JSON MUST include `jwksUrl` of `{consoleOrigin}/.well-known/jwks.json` and MUST omit JWT-shaped audiences and token fields from the Console body.
 - `set` without `--execute` MUST exit 3 before credentials and Console. The plan MUST include `site`, `aud`, and `origins`, and MUST NOT include a JWT.
 - `set` with `--execute` MUST `PUT` the collection with `{ siteRef, aud, origins }`. Repeated `--origin` values MUST be unique https origins. `http` origins MUST be `PAYLOAD_INVALID` before the brake.

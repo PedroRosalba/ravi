@@ -12,7 +12,7 @@
   "info": {
     "description": "OpenAPI 3.1 spec auto-generated from the Ravi CLI registry. Each operation maps 1:1 to a `ravi <group> <command>` invocation.",
     "title": "Ravi API",
-    "version": "16a85e64ac06f529"
+    "version": "f39e53b0c16f2b2e"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -60874,6 +60874,14 @@
                     "description": "Console base URL",
                     "type": "string"
                   },
+                  "limit": {
+                    "description": "Maximum audiences to return (default: 50)",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "description": "Number of audiences to skip (default: 0)",
+                    "type": "string"
+                  },
                   "project": {
                     "description": "Console project id or slug; overrides saved Console scope",
                     "type": "string"
@@ -60924,6 +60932,53 @@
                     "jwksUrl": {
                       "type": "string"
                     },
+                    "pagination": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "hasMore": {
+                          "type": "boolean"
+                        },
+                        "limit": {
+                          "type": "number"
+                        },
+                        "nextCommand": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "nextOffset": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "offset": {
+                          "type": "number"
+                        },
+                        "returned": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "limit",
+                        "offset",
+                        "returned",
+                        "total"
+                      ],
+                      "type": "object"
+                    },
                     "projectRef": {
                       "type": "string"
                     },
@@ -60942,6 +60997,7 @@
                     "audiences",
                     "consoleUrl",
                     "jwksUrl",
+                    "pagination",
                     "projectRef",
                     "siteRef",
                     "success",

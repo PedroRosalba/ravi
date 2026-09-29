@@ -1690,7 +1690,7 @@ describe("pages agent-first contract", () => {
     });
     const command = new PagesAssertionAudienceCommands({ client, readCredentials: makeReadCredentials() });
 
-    const { output } = await captureConsole(() => command.list("demo", "proj", undefined, true));
+    const { output } = await captureConsole(() => command.list("demo", "proj", undefined, undefined, undefined, true));
     const payload = JSON.parse(output);
 
     expect(calls).toEqual([

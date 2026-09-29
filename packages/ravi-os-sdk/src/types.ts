@@ -9739,6 +9739,8 @@ export type ObserversShowReturn = {
 /** Input shape for `pages.assertion.audiences.list`. */
 export type PagesAssertionAudiencesListInput = {
   console?: string;
+  limit?: string;
+  offset?: string;
   project?: string;
   site?: string;
 };
@@ -9751,6 +9753,15 @@ export type PagesAssertionAudiencesListReturn = {
   }>;
   consoleUrl: string;
   jwksUrl: string;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
   projectRef: string;
   siteRef: string;
   success: true;

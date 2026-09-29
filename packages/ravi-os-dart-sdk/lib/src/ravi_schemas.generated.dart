@@ -50456,6 +50456,14 @@ class RaviSchemas {
       "description": "Console base URL",
       "type": "string"
     },
+    "limit": {
+      "description": "Maximum audiences to return (default: 50)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Number of audiences to skip (default: 0)",
+      "type": "string"
+    },
     "project": {
       "description": "Console project id or slug; overrides saved Console scope",
       "type": "string"
@@ -50501,6 +50509,53 @@ class RaviSchemas {
     "jwksUrl": {
       "type": "string"
     },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
     "projectRef": {
       "type": "string"
     },
@@ -50519,6 +50574,7 @@ class RaviSchemas {
     "audiences",
     "consoleUrl",
     "jwksUrl",
+    "pagination",
     "projectRef",
     "siteRef",
     "success",

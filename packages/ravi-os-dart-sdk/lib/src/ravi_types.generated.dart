@@ -12688,15 +12688,23 @@ class ObserversShowReturn {
 ObserversShowReturn observersShowReturnFromJson(Object? json) => ObserversShowReturn.fromJsonValue(json);
 
 class PagesAssertionAudiencesListOptions {
-  const PagesAssertionAudiencesListOptions({this.console, this.project, this.site});
+  const PagesAssertionAudiencesListOptions({this.console, this.limit, this.offset, this.project, this.site});
 
   final String? console;
+  final String? limit;
+  final String? offset;
   final String? project;
   final String? site;
 
   void encodeBody(Map<String, RaviJson> into) {
     if (console != null) {
       into["console"] = RaviJson.from(console);
+    }
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
     }
     if (project != null) {
       into["project"] = RaviJson.from(project);
@@ -12708,11 +12716,12 @@ class PagesAssertionAudiencesListOptions {
 }
 
 class PagesAssertionAudiencesListReturn {
-  const PagesAssertionAudiencesListReturn({required this.audiences, required this.consoleUrl, required this.jwksUrl, required this.projectRef, required this.siteRef, required this.success, required this.total});
+  const PagesAssertionAudiencesListReturn({required this.audiences, required this.consoleUrl, required this.jwksUrl, required this.pagination, required this.projectRef, required this.siteRef, required this.success, required this.total});
 
   final List<RaviJson> audiences;
   final String consoleUrl;
   final String jwksUrl;
+  final RaviJson pagination;
   final String projectRef;
   final String siteRef;
   final bool success;
@@ -12723,6 +12732,7 @@ class PagesAssertionAudiencesListReturn {
       audiences: raviJsonAsList(json["audiences"], RaviJson.from),
       consoleUrl: raviJsonAsString(json["consoleUrl"]),
       jwksUrl: raviJsonAsString(json["jwksUrl"]),
+      pagination: RaviJson.from(json["pagination"]),
       projectRef: raviJsonAsString(json["projectRef"]),
       siteRef: raviJsonAsString(json["siteRef"]),
       success: raviJsonAsBool(json["success"]),

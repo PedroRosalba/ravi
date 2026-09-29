@@ -42,7 +42,7 @@ ravi pages assertion audiences remove --site <host> --aud <aud> --execute
 
 ## Invariants
 
-1. `list` MUST be read-only. It MUST NOT accept `--execute` and MUST NOT dry-run.
+1. `list` MUST be read-only. It MUST NOT accept `--execute` and MUST NOT dry-run. It MUST accept `--limit` and `--offset` and return offset pagination.
 2. `set` and `remove` MUST default to dry-run. Without `--execute` they MUST exit 3 with `WRITE_REQUIRES_EXECUTE` before credential reads, project resolution, or any Console call. `--execute` MUST be the last declared option.
 3. `set` MUST require `--site`, `--aud`, and at least one `--origin` before the brake. `remove` MUST require `--site` and `--aud` before the brake. A missing value is `PAYLOAD_INVALID` (exit 2), including on the dry-run path.
 4. Each `--origin` MUST be an `https` origin: scheme, host, optional port. A path, query, fragment, or userinfo MUST be rejected. Repeated `--origin` flags and comma-separated values MUST merge into one unique list. `set` MUST replace the origin list for that `aud`.

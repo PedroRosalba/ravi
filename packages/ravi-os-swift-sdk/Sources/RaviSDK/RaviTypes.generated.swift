@@ -14690,17 +14690,23 @@ public struct ObserversShowReturn: Codable, Sendable {
 
 public struct PagesAssertionAudiencesListOptions: Codable, Sendable {
   public var console: String?
+  public var limit: String?
+  public var offset: String?
   public var project: String?
   public var site: String?
 
-  public init(console: String? = nil, project: String? = nil, site: String? = nil) {
+  public init(console: String? = nil, limit: String? = nil, offset: String? = nil, project: String? = nil, site: String? = nil) {
     self.console = console
+    self.limit = limit
+    self.offset = offset
     self.project = project
     self.site = site
   }
 
   enum CodingKeys: String, CodingKey {
     case console = "console"
+    case limit = "limit"
+    case offset = "offset"
     case project = "project"
     case site = "site"
   }
@@ -14708,6 +14714,12 @@ public struct PagesAssertionAudiencesListOptions: Codable, Sendable {
   func encodeBody(into body: inout [String: RaviJSON]) throws {
     if let value = self.console {
       body["console"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.limit {
+      body["limit"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.offset {
+      body["offset"] = try RaviJSON.fromEncodable(value)
     }
     if let value = self.project {
       body["project"] = try RaviJSON.fromEncodable(value)
@@ -14722,15 +14734,17 @@ public struct PagesAssertionAudiencesListReturn: Codable, Sendable {
   public var audiences: [RaviJSON]
   public var consoleUrl: String
   public var jwksUrl: String
+  public var pagination: RaviJSON
   public var projectRef: String
   public var siteRef: String
   public var success: Bool
   public var total: Double
 
-  public init(audiences: [RaviJSON], consoleUrl: String, jwksUrl: String, projectRef: String, siteRef: String, success: Bool, total: Double) {
+  public init(audiences: [RaviJSON], consoleUrl: String, jwksUrl: String, pagination: RaviJSON, projectRef: String, siteRef: String, success: Bool, total: Double) {
     self.audiences = audiences
     self.consoleUrl = consoleUrl
     self.jwksUrl = jwksUrl
+    self.pagination = pagination
     self.projectRef = projectRef
     self.siteRef = siteRef
     self.success = success
@@ -14741,6 +14755,7 @@ public struct PagesAssertionAudiencesListReturn: Codable, Sendable {
     case audiences = "audiences"
     case consoleUrl = "consoleUrl"
     case jwksUrl = "jwksUrl"
+    case pagination = "pagination"
     case projectRef = "projectRef"
     case siteRef = "siteRef"
     case success = "success"

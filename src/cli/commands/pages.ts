@@ -966,6 +966,8 @@ export class PagesAssertionAudienceCommands {
     @Option({ flags: "--project <ref>", description: "Console project id or slug; overrides saved Console scope" })
     projectOption?: string,
     @Option({ flags: "--console <url>", description: "Console base URL" }) consoleUrl?: string,
+    @Option({ flags: "--limit <n>", description: "Maximum audiences to return (default: 50)" }) limit?: string,
+    @Option({ flags: "--offset <n>", description: "Number of audiences to skip (default: 0)" }) offset?: string,
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
   ) {
     return runPagesCommand("pages assertion audiences list", asJson, async () => {
@@ -975,8 +977,25 @@ export class PagesAssertionAudienceCommands {
         { console: consoleUrl, project: resolved.projectRef, site: siteRef },
         this.deps,
       );
-      const payload = { ...result, scope: resolved.scope };
-      printPayload(payload, asJson, () => printAssertionAudienceList(result));
+      const page = paginateCliItems(result.audiences, { limit, offset });
+      const pagination = buildCliOffsetPagination({
+        baseCommand: ["ravi", "pages", "assertion", "audiences", "list"],
+        limit: page.limit,
+        offset: page.offset,
+        options: ["--site", siteRef, "--project", resolved.projectRef, consoleUrl ? "--console" : null, consoleUrl],
+        returned: page.items.length,
+        total: page.total,
+      });
+      const payload = {
+        ...result,
+        audiences: page.items,
+        pagination,
+        scope: resolved.scope,
+        total: page.total,
+      };
+      printPayload(payload, asJson, () =>
+        printAssertionAudienceList({ ...result, audiences: page.items, total: page.total }),
+      );
       return payload;
     });
   }
@@ -1444,6 +1463,7 @@ const pageAssertionAudienceListReturnSchema = z.object({
   audiences: z.array(pageAssertionAudienceSchema),
   consoleUrl: z.string(),
   jwksUrl: z.string(),
+  pagination: strictCliOffsetPaginationSchema,
   projectRef: z.string(),
   siteRef: z.string(),
   success: z.literal(true),

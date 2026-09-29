@@ -4321,6 +4321,8 @@ export class RaviClient {
         /** List viewer-assertion audiences registered on a Pages host */
         list: async (options?: {
           console?: string;
+          limit?: string;
+          offset?: string;
           project?: string;
           site?: string;
         }): Promise<PagesAssertionAudiencesListReturn> => {
