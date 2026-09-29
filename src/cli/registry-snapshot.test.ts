@@ -268,7 +268,7 @@ describe("buildRegistry", () => {
     });
     expect(
       inferRaviCommandSkillGate(
-        "ravi pages assertion audiences set --site demo --aud api.example --origin https://api.example --execute",
+        "ravi pages assertion audiences set --site demo --aud https://api.example --origin https://demo.ravi.page --execute",
       ),
     ).toMatchObject({
       skill: "ravi-system-pages",

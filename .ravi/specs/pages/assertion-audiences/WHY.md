@@ -9,7 +9,7 @@ status: active
 
 # Why the allowlist is a Pages command
 
-A shipped page is static HTML. The CLI JWT that uploaded it is the operator session, not a credential the browser can show to someone else's API. The viewer assertion has to be minted where Console already decided the browser may read the route, with `aud` limited to an origin the operator registered.
+A shipped page is static HTML. The CLI JWT that uploaded it is the operator session, not a credential the browser can show to someone else's API. The viewer assertion is minted for a viewer on a specific Pages host, where Console already decided the browser may read the route. The operator registers `aud` (who the assertion is for, usually the third-party API) and the Pages host origins allowed to receive it: that site's default hostname or an active custom hostname. The registry binds `(site, aud)` to those origins. The API URL belongs in `aud`. Putting it in `--origin` is rejected by Console.
 
 OSS only records that registration. Signing, TTL, and the JWKS document stay in Console. Putting the token in `pages ship` would publish a credential inside the artifact.
 
