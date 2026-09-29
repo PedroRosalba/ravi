@@ -1698,7 +1698,7 @@ describe("pages agent-first contract", () => {
         accessToken: "access-secret",
         body: undefined,
         method: "GET",
-        path: "/api/cli/projects/proj/pages/assertion-audiences?siteRef=demo",
+        path: "/api/cli/projects/proj/pages/demo/viewer-assertion-audiences",
       },
     ]);
     expect(payload).toMatchObject({
@@ -1711,6 +1711,24 @@ describe("pages agent-first contract", () => {
     });
     expect(output).not.toContain(planted);
     expect(output).not.toContain("access-secret");
+  });
+
+  it("puts a hostname siteRef on the Console viewer-assertion path", async () => {
+    const calls: Array<{ method: string; path: string }> = [];
+    const client = makeClient(async (method, path) => {
+      calls.push({ method, path });
+      return { audiences: [], siteRef: "site_1" };
+    });
+    const command = new PagesAssertionAudienceCommands({ client, readCredentials: makeReadCredentials() });
+
+    await captureConsole(() => command.list("acme-proj.ravi.page", "proj", undefined, undefined, undefined, true));
+
+    expect(calls).toEqual([
+      {
+        method: "GET",
+        path: "/api/cli/projects/proj/pages/acme-proj.ravi.page/viewer-assertion-audiences",
+      },
+    ]);
   });
 
   it("brakes assertion audience set before Console and replaces origins on execute", async () => {
@@ -1748,11 +1766,10 @@ describe("pages agent-first contract", () => {
     expect(calls).toEqual([
       {
         method: "PUT",
-        path: "/api/cli/projects/proj/pages/assertion-audiences",
+        path: "/api/cli/projects/proj/pages/demo/viewer-assertion-audiences",
         body: {
           aud: "api.example",
           origins: ["https://api.example", "https://hooks.example"],
-          siteRef: "demo",
         },
       },
     ]);
@@ -1815,8 +1832,8 @@ describe("pages agent-first contract", () => {
     expect(calls).toEqual([
       {
         method: "DELETE",
-        path: "/api/cli/projects/proj/pages/assertion-audiences",
-        body: { aud: "api.example", siteRef: "demo" },
+        path: "/api/cli/projects/proj/pages/demo/viewer-assertion-audiences",
+        body: { aud: "api.example" },
       },
     ]);
   });

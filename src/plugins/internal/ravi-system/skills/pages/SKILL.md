@@ -121,7 +121,7 @@ ravi pages assertion audiences set --site <host> --aud <aud> --origin https://ap
 ravi pages assertion audiences remove --site <host> --aud <aud> --execute
 ```
 
-`--site` é o slug do host (o mesmo dos outros comandos de pages). `--project` e `--console` seguem o grupo. `--origin` é `https` (esquema, host, porta opcional). Pode repetir. `set` substitui a lista de origins daquele `aud`.
+`--site` é o `siteRef` do Console: slug do host, id do site, ou hostname (`acme-proj.ravi.page`). `--project` e `--console` seguem o grupo. `--origin` é `https` (esquema, host, porta opcional). Pode repetir. `set` substitui a lista de origins daquele `aud`.
 
 Para a page usar a asserção, o ship leva `uses` com `ravi.identity.assertion`:
 

@@ -12,7 +12,7 @@
   "info": {
     "description": "OpenAPI 3.1 spec auto-generated from the Ravi CLI registry. Each operation maps 1:1 to a `ravi <group> <command>` invocation.",
     "title": "Ravi API",
-    "version": "f39e53b0c16f2b2e"
+    "version": "31791b2403112dc1"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -60887,7 +60887,7 @@
                     "type": "string"
                   },
                   "site": {
-                    "description": "Pages host slug or site ref",
+                    "description": "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
                     "type": "string"
                   }
                 },
@@ -61049,7 +61049,7 @@
                     "type": "string"
                   },
                   "site": {
-                    "description": "Pages host slug or site ref",
+                    "description": "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
                     "type": "string"
                   }
                 },
@@ -61185,7 +61185,7 @@
                     "type": "string"
                   },
                   "site": {
-                    "description": "Pages host slug or site ref",
+                    "description": "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
                     "type": "string"
                   }
                 },

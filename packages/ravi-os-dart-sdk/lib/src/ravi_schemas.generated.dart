@@ -50469,7 +50469,7 @@ class RaviSchemas {
       "type": "string"
     },
     "site": {
-      "description": "Pages host slug or site ref",
+      "description": "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
       "type": "string"
     }
   },
@@ -50605,7 +50605,7 @@ class RaviSchemas {
       "type": "string"
     },
     "site": {
-      "description": "Pages host slug or site ref",
+      "description": "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
       "type": "string"
     }
   },
@@ -50715,7 +50715,7 @@ class RaviSchemas {
       "type": "string"
     },
     "site": {
-      "description": "Pages host slug or site ref",
+      "description": "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
       "type": "string"
     }
   },

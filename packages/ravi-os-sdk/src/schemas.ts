@@ -49778,7 +49778,7 @@ export const PagesAssertionAudiencesListInputSchema = {
       "type": "string"
     },
     "site": {
-      "description": "Pages host slug or site ref",
+      "description": "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
       "type": "string"
     }
   },
@@ -49912,7 +49912,7 @@ export const PagesAssertionAudiencesRemoveInputSchema = {
       "type": "string"
     },
     "site": {
-      "description": "Pages host slug or site ref",
+      "description": "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
       "type": "string"
     }
   },
@@ -50020,7 +50020,7 @@ export const PagesAssertionAudiencesSetInputSchema = {
       "type": "string"
     },
     "site": {
-      "description": "Pages host slug or site ref",
+      "description": "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
       "type": "string"
     }
   },

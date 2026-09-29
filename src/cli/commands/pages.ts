@@ -962,7 +962,11 @@ export class PagesAssertionAudienceCommands {
   @Command({ name: "list", description: "List viewer-assertion audiences registered on a Pages host" })
   @CommandAccess({ kind: "read", resource: "pages", action: "assertion-audiences", risk: "low" })
   async list(
-    @Option({ flags: "--site <host>", description: "Pages host slug or site ref" }) site?: string,
+    @Option({
+      flags: "--site <host>",
+      description: "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
+    })
+    site?: string,
     @Option({ flags: "--project <ref>", description: "Console project id or slug; overrides saved Console scope" })
     projectOption?: string,
     @Option({ flags: "--console <url>", description: "Console base URL" }) consoleUrl?: string,
@@ -1013,7 +1017,11 @@ export class PagesAssertionAudienceCommands {
     requiresConfirmation: true,
   })
   async set(
-    @Option({ flags: "--site <host>", description: "Pages host slug or site ref" }) site?: string,
+    @Option({
+      flags: "--site <host>",
+      description: "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
+    })
+    site?: string,
     @Option({ flags: "--aud <aud>", description: "Assertion audience identifier for the third-party API" })
     aud?: string,
     @Option({
@@ -1078,7 +1086,11 @@ export class PagesAssertionAudienceCommands {
     requiresConfirmation: true,
   })
   async remove(
-    @Option({ flags: "--site <host>", description: "Pages host slug or site ref" }) site?: string,
+    @Option({
+      flags: "--site <host>",
+      description: "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
+    })
+    site?: string,
     @Option({ flags: "--aud <aud>", description: "Assertion audience identifier to remove" }) aud?: string,
     @Option({ flags: "--project <ref>", description: "Console project id or slug; overrides saved Console scope" })
     projectOption?: string,
@@ -1119,7 +1131,7 @@ export class PagesAssertionAudienceCommands {
 function requireAssertionSite(site: string | undefined): string {
   const text = site?.trim();
   if (!text) {
-    throw new CloudAuthError("PAYLOAD_INVALID", "Missing --site. Pass the Pages host slug or site ref.");
+    throw new CloudAuthError("PAYLOAD_INVALID", "Missing --site. Pass a Pages host slug, site id, or hostname.");
   }
   return text;
 }

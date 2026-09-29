@@ -3,11 +3,11 @@ import { CloudAuthError } from "../cloud-auth/errors.js";
 import { createAuthenticatedPagesContext, type PagesClientDeps, type PagesClientOptions } from "./client.js";
 
 /**
- * Locked Console contract for viewer-assertion audiences.
- * Sibling Console work owns the handlers. These paths are stable on this side
- * even when that PR is not on Console main yet.
+ * Console contract from ravi-console#31
+ * (`.ravi/specs/console/pages/viewer-assertions/cli/SPEC.md`).
+ * `siteRef` is the path segment and accepts a host slug, site id, or hostname.
  */
-export const PAGE_ASSERTION_AUDIENCES_COLLECTION = "assertion-audiences";
+export const PAGE_ASSERTION_AUDIENCES_COLLECTION = "viewer-assertion-audiences";
 
 /** Capability id a shipped page must list to receive the viewer assertion. */
 export const RAVI_IDENTITY_ASSERTION_USE = "ravi.identity.assertion";
@@ -58,8 +58,8 @@ export interface PageAssertionAudienceMutationResult {
   success: true;
 }
 
-export function pageAssertionAudiencesPath(project: string): string {
-  return `/api/cli/projects/${encodeURIComponent(project)}/pages/${PAGE_ASSERTION_AUDIENCES_COLLECTION}`;
+export function pageAssertionAudiencesPath(project: string, site: string): string {
+  return `/api/cli/projects/${encodeURIComponent(project)}/pages/${encodeURIComponent(site)}/${PAGE_ASSERTION_AUDIENCES_COLLECTION}`;
 }
 
 export function pagesAssertionJwksUrl(consoleUrl: string): string {
@@ -122,10 +122,9 @@ export async function listPageAssertionAudiences(
   const project = requireText(options.project, "project");
   const site = requireText(options.site, "site");
   const auth = await createAuthenticatedPagesContext(options, deps);
-  const query = new URLSearchParams({ siteRef: site });
   const payload = await auth.client.requestJson<unknown>(
     "GET",
-    `${pageAssertionAudiencesPath(project)}?${query.toString()}`,
+    pageAssertionAudiencesPath(project, site),
     undefined,
     auth.accessToken,
   );
@@ -168,10 +167,9 @@ async function mutatePageAssertionAudience(
   const auth = await createAuthenticatedPagesContext(options, deps);
   const payload = await auth.client.requestJson<unknown>(
     method,
-    pageAssertionAudiencesPath(project),
+    pageAssertionAudiencesPath(project, site),
     {
       aud,
-      siteRef: site,
       ...(action === "set" ? { origins } : {}),
     },
     auth.accessToken,
