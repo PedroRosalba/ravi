@@ -13,7 +13,7 @@ import { getCliOnlyMetadata, getCommandsMetadata, getOptionsMetadata } from "../
 import { dbCreateAgent } from "../../router/router-db.js";
 import { dbListTriggers } from "../../triggers/triggers-db.js";
 import { pageCommentFilter } from "../../pages/comment-follow.js";
-import { PagesCommands, PagesPasswordCommands } from "./pages.js";
+import { PagesAssertionAudienceCommands, PagesCommands, PagesPasswordCommands } from "./pages.js";
 
 const tempDirs: string[] = [];
 let stateDir: string | null = null;
@@ -1132,6 +1132,7 @@ describe("pages agent-first contract", () => {
         undefined,
         undefined,
         undefined,
+        undefined,
         true,
         execute,
       );
@@ -1253,6 +1254,7 @@ describe("pages agent-first contract", () => {
         undefined,
         undefined,
         undefined,
+        undefined,
         true,
         true,
       ),
@@ -1325,6 +1327,7 @@ describe("pages agent-first contract", () => {
           "proj",
           "Weekly report",
           "<h1>OK</h1>",
+          undefined,
           undefined,
           undefined,
           undefined,
@@ -1415,6 +1418,7 @@ describe("pages agent-first contract", () => {
         "/",
         "index.html",
         undefined,
+        undefined,
         true,
         true,
       ),
@@ -1494,6 +1498,7 @@ describe("pages agent-first contract", () => {
         "/nome",
         undefined,
         undefined,
+        undefined,
         true,
         true,
       ),
@@ -1556,6 +1561,7 @@ describe("pages agent-first contract", () => {
         "/relatorio",
         undefined,
         undefined,
+        undefined,
         true,
         true,
       ),
@@ -1609,6 +1615,7 @@ describe("pages agent-first contract", () => {
         "/weekly",
         undefined,
         undefined,
+        undefined,
         true,
         true,
       ),
@@ -1640,6 +1647,7 @@ describe("pages agent-first contract", () => {
         "/",
         undefined,
         undefined,
+        undefined,
         true,
         true,
       ),
@@ -1662,6 +1670,280 @@ describe("pages agent-first contract", () => {
 
     expect(payload.sites).toEqual([{ slug: "demo", status: "active" }]);
     expect(payload.items).toEqual([{ slug: "demo", status: "active" }]);
+  });
+
+  it("lists assertion audiences and drops assertion tokens from the Console payload", async () => {
+    const planted = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ2aWV3ZXIifQ.signature";
+    const calls: Array<{ method: string; path: string; body: unknown; accessToken: string }> = [];
+    const client = makeClient(async (method, path, body, accessToken) => {
+      calls.push({ method, path, body, accessToken });
+      return {
+        assertion: planted,
+        audiences: [
+          { audience: "api.example", aud: "stale.example", origins: ["https://api.example"], token: planted },
+          { aud: "legacy.example", origins: ["https://legacy.example"] },
+          { aud: planted, origins: ["https://evil.example"] },
+        ],
+        jwksUrl: "https://console.example/.well-known/jwks.json",
+        siteRef: "demo",
+        token: planted,
+      };
+    });
+    const command = new PagesAssertionAudienceCommands({ client, readCredentials: makeReadCredentials() });
+
+    const { output } = await captureConsole(() => command.list("demo", "proj", undefined, undefined, undefined, true));
+    const payload = JSON.parse(output);
+
+    expect(calls).toEqual([
+      {
+        accessToken: "access-secret",
+        body: undefined,
+        method: "GET",
+        path: "/api/cli/projects/proj/pages/demo/viewer-assertion-audiences",
+      },
+    ]);
+    expect(payload).toMatchObject({
+      audiences: [
+        { aud: "api.example", origins: ["https://api.example"] },
+        { aud: "legacy.example", origins: ["https://legacy.example"] },
+      ],
+      jwksUrl: "https://console.example/api/public/pages/viewer-assertions/jwks",
+      projectRef: "proj",
+      siteRef: "demo",
+      success: true,
+      total: 2,
+    });
+    expect(output).not.toContain("stale.example");
+    expect(output).not.toContain(planted);
+    expect(output).not.toContain("access-secret");
+  });
+
+  it("puts a hostname siteRef on the Console viewer-assertion path", async () => {
+    const calls: Array<{ method: string; path: string }> = [];
+    const client = makeClient(async (method, path) => {
+      calls.push({ method, path });
+      return { audiences: [], siteRef: "site_1" };
+    });
+    const command = new PagesAssertionAudienceCommands({ client, readCredentials: makeReadCredentials() });
+
+    await captureConsole(() => command.list("acme-proj.ravi.page", "proj", undefined, undefined, undefined, true));
+
+    expect(calls).toEqual([
+      {
+        method: "GET",
+        path: "/api/cli/projects/proj/pages/acme-proj.ravi.page/viewer-assertion-audiences",
+      },
+    ]);
+  });
+
+  it("brakes assertion audience set before Console and replaces origins on execute", async () => {
+    const calls: Array<{ method: string; path: string; body: unknown }> = [];
+    const client = makeClient(async (method, path, body) => {
+      calls.push({ method, path, body });
+      return {
+        audiences: [{ audience: "api.example", origins: ["https://api.example", "https://hooks.example"] }],
+        siteRef: "demo",
+      };
+    });
+    const command = new PagesAssertionAudienceCommands({ client, readCredentials: makeReadCredentials() });
+    const set = (execute?: boolean) =>
+      command.set(
+        "demo",
+        "api.example",
+        ["https://api.example", "https://hooks.example"],
+        "proj",
+        undefined,
+        true,
+        execute,
+      );
+
+    const error = await expectContractError(() => set(), "WRITE_REQUIRES_EXECUTE", 3);
+    expect(error.details.plan).toEqual({
+      project: "proj",
+      site: "demo",
+      aud: "api.example",
+      originCount: 2,
+      origins: ["https://api.example", "https://hooks.example"],
+    });
+    expect(calls).toEqual([]);
+
+    const { output } = await captureConsole(() => set(true));
+    expect(calls).toEqual([
+      {
+        method: "PUT",
+        path: "/api/cli/projects/proj/pages/demo/viewer-assertion-audiences",
+        body: {
+          aud: "api.example",
+          origins: ["https://api.example", "https://hooks.example"],
+        },
+      },
+    ]);
+    expect(JSON.parse(output)).toMatchObject({
+      action: "set",
+      aud: "api.example",
+      audiences: [{ aud: "api.example", origins: ["https://api.example", "https://hooks.example"] }],
+      jwksUrl: "https://console.example/api/public/pages/viewer-assertions/jwks",
+      origins: ["https://api.example", "https://hooks.example"],
+      success: true,
+    });
+  });
+
+  it("rejects assertion audience set without an https origin before the brake", async () => {
+    const command = new PagesAssertionAudienceCommands({
+      client: makeClient(async () => {
+        throw new Error("console should not be called");
+      }),
+      readCredentials: makeReadCredentials(),
+    });
+
+    const missingOrigin = await expectCloudError(() =>
+      runWithContext({}, () => command.set("demo", "api.example", undefined, "proj", undefined, true)),
+    );
+    expect(missingOrigin.code).toBe("PAYLOAD_INVALID");
+
+    const httpOrigin = await expectCloudError(() =>
+      runWithContext({}, () => command.set("demo", "api.example", ["http://api.example"], "proj", undefined, true)),
+    );
+    expect(httpOrigin.code).toBe("PAYLOAD_INVALID");
+    expect(httpOrigin.message).toContain("https");
+
+    const tooManyOrigins = await expectCloudError(() =>
+      runWithContext({}, () =>
+        command.set(
+          "demo",
+          "api.example",
+          Array.from({ length: 9 }, (_, index) => `https://origin-${index}.example`),
+          "proj",
+          undefined,
+          true,
+        ),
+      ),
+    );
+    expect(tooManyOrigins.code).toBe("PAYLOAD_INVALID");
+    expect(tooManyOrigins.message).toContain("8");
+  });
+
+  it("brakes assertion audience remove and deletes one aud on execute", async () => {
+    const calls: Array<{ method: string; path: string; body: unknown }> = [];
+    const client = makeClient(async (method, path, body) => {
+      calls.push({ method, path, body });
+      return { audiences: [], siteRef: "demo" };
+    });
+    const command = new PagesAssertionAudienceCommands({ client, readCredentials: makeReadCredentials() });
+
+    const missingAud = await expectCloudError(() =>
+      runWithContext({}, () => command.remove("demo", undefined, "proj", undefined, true)),
+    );
+    expect(missingAud.code).toBe("PAYLOAD_INVALID");
+    expect(calls).toEqual([]);
+
+    const error = await expectContractError(
+      () => command.remove("demo", "api.example", "proj", undefined, true),
+      "WRITE_REQUIRES_EXECUTE",
+      3,
+    );
+    expect(error.details.plan).toEqual({
+      project: "proj",
+      site: "demo",
+      aud: "api.example",
+    });
+    expect(calls).toEqual([]);
+
+    await captureConsole(() => command.remove("demo", "api.example", "proj", undefined, true, true));
+    expect(calls).toEqual([
+      {
+        method: "DELETE",
+        path: "/api/cli/projects/proj/pages/demo/viewer-assertion-audiences",
+        body: { aud: "api.example" },
+      },
+    ]);
+  });
+
+  it("ships with uses including ravi.identity.assertion and does not embed a JWT", async () => {
+    stateDir = await createIsolatedRaviState("ravi-pages-ship-uses-");
+    const planted = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJzaGlwIn0.signature";
+    let finalizeBody: Record<string, unknown> | undefined;
+    const client = {
+      me: mock(async () => ({
+        user: { email: "alice@example.com" },
+        organization: { id: "org_1" },
+      })),
+      requestJson: mock(async (method: string, path: string) => {
+        if (method === "GET" && path === "/api/cli/projects/proj/pages") {
+          return [
+            {
+              id: "site_1",
+              slug: "acme-proj",
+              isDefault: true,
+              defaultHostname: "acme-proj.ravi.page",
+            },
+          ];
+        }
+        throw new Error(`unexpected ${method} ${path}`);
+      }),
+      createPageUploadSession: mock(async () => ({
+        uploadSession: { id: "upl_uses" },
+        uploadPolicy: { directUpload: false },
+      })),
+      finalizeArtifactPublish: mock(async (input: Record<string, unknown>) => {
+        finalizeBody = input;
+        return {
+          artifact: { id: "cloud_art_uses" },
+          site: { id: "site_1", slug: "acme-proj", defaultHostname: "acme-proj.ravi.page" },
+          url: "https://acme-proj.ravi.page/app",
+        };
+      }),
+    } as unknown as ConsoleApiClient;
+    const command = new PagesCommands({ client, readCredentials: makeReadCredentials() });
+
+    const rejected = await expectCloudError(() =>
+      command.ship(
+        [],
+        "proj",
+        "App",
+        "<h1>OK</h1>",
+        undefined,
+        undefined,
+        undefined,
+        "/app",
+        undefined,
+        ["ravi.identity.assertion", planted],
+        undefined,
+        true,
+        true,
+      ),
+    );
+    expect(rejected.code).toBe("PAYLOAD_INVALID");
+    expect(finalizeBody).toBeUndefined();
+
+    const { output } = await captureConsole(() =>
+      command.ship(
+        [],
+        "proj",
+        "App",
+        "<h1>OK</h1>",
+        undefined,
+        undefined,
+        undefined,
+        "/app",
+        undefined,
+        ["ravi.identity.assertion"],
+        undefined,
+        true,
+        true,
+      ),
+    );
+
+    expect(finalizeBody).toMatchObject({
+      publish: { uses: ["ravi.identity.assertion"] },
+    });
+    expect(JSON.parse(output)).toMatchObject({
+      route: "/app",
+      uses: ["ravi.identity.assertion"],
+    });
+    expect(JSON.stringify(finalizeBody)).not.toContain(planted);
+    expect(output).not.toContain(planted);
+    expect(output).not.toContain("access-secret");
   });
 });
 

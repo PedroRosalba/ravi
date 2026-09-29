@@ -9736,6 +9736,89 @@ export type ObserversShowReturn = {
   [k: string]: unknown;
 };
 
+/** Input shape for `pages.assertion.audiences.list`. */
+export type PagesAssertionAudiencesListInput = {
+  console?: string;
+  limit?: string;
+  offset?: string;
+  project?: string;
+  site?: string;
+};
+
+/** Return shape for `pages.assertion.audiences.list`. */
+export type PagesAssertionAudiencesListReturn = {
+  audiences: Array<{
+    aud: string;
+    origins: string[];
+  }>;
+  consoleUrl: string;
+  jwksUrl: string;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  projectRef: string;
+  siteRef: string;
+  success: true;
+  total: number;
+};
+
+/** Input shape for `pages.assertion.audiences.remove`. */
+export type PagesAssertionAudiencesRemoveInput = {
+  aud?: string;
+  console?: string;
+  execute?: boolean;
+  project?: string;
+  site?: string;
+};
+
+/** Return shape for `pages.assertion.audiences.remove`. */
+export type PagesAssertionAudiencesRemoveReturn = {
+  action: "remove" | "set";
+  aud: string;
+  audiences: Array<{
+    aud: string;
+    origins: string[];
+  }>;
+  consoleUrl: string;
+  jwksUrl: string;
+  origins: string[];
+  projectRef: string;
+  siteRef: string;
+  success: true;
+};
+
+/** Input shape for `pages.assertion.audiences.set`. */
+export type PagesAssertionAudiencesSetInput = {
+  aud?: string;
+  console?: string;
+  execute?: boolean;
+  origin?: string[];
+  project?: string;
+  site?: string;
+};
+
+/** Return shape for `pages.assertion.audiences.set`. */
+export type PagesAssertionAudiencesSetReturn = {
+  action: "remove" | "set";
+  aud: string;
+  audiences: Array<{
+    aud: string;
+    origins: string[];
+  }>;
+  consoleUrl: string;
+  jwksUrl: string;
+  origins: string[];
+  projectRef: string;
+  siteRef: string;
+  success: true;
+};
+
 /** Input shape for `pages.create`. */
 export type PagesCreateInput = {
   args: string[];
@@ -9955,6 +10038,7 @@ export type PagesShipInput = {
   project?: string;
   route?: string;
   title?: string;
+  uses?: string[];
   visibility?: string;
 };
 
@@ -9980,6 +10064,7 @@ export type PagesShipReturn = {
   slug: string;
   success: true;
   url: string | null;
+  uses?: string[];
   visibility: string;
 };
 

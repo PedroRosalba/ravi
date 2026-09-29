@@ -28,7 +28,7 @@ Taxonomia de saída:
 - `2` erro de uso (falta `--title`, `--body`/`--html`/`--dir` conflitantes, slug reservado).
 - `3` freio de escrita — não é erro. Nada foi enviado/exposto; o envelope traz `dryRun:true` e `plan`. Revise e repita com `--execute`.
 
-Exit 3 **não** se aplica a `pages ship`, `pages create` nem `pages publish`. Esses ops escrevem na hora. `--execute` nesses três é no-op (aceito por compatibilidade). O freio continua em `password set/remove`, `domains` e `visibility`/`update` para `public`.
+Exit 3 **não** se aplica a `pages ship`, `pages create` nem `pages publish`. Esses ops escrevem na hora. `--execute` nesses três é no-op (aceito por compatibilidade). O freio continua em `password set/remove`, `domains`, `assertion audiences set/remove` e `visibility`/`update` para `public`.
 
 `--json` de sucesso do ship. `slug` é o host do projeto. `route` é a página. O campo `site` é o registro desse host:
 
@@ -41,7 +41,7 @@ Checklist:
 - Publiquei no host default do projeto, sem criar um `*.ravi.page` a partir do título?
 - Listei as rotas antes de escolher `--route`?
 - Usei só `ravi pages ship` para obter a URL, sem `create` + `publish`?
-- Tratei exit 3 como freio só em password/domains/visibility→public, nunca em ship?
+- Tratei exit 3 como freio só em password/domains/assertion audiences set|remove/visibility→public, nunca em ship?
 - Se a rota `/` ficou private explícita, usei `pages visibility <host> public --route / --execute` em vez de re-ship?
 
 ## Happy path: projeto → host → rota
@@ -107,3 +107,30 @@ ravi pages domains <host> docs.example.com --execute
 `pages visibility` sem `--route` muda só o `defaultVisibility` do host. Rotas publicadas com visibility explícita (ex.: `/` private) continuam private. Use `--route /` (ou `/foo`) para mudar a política daquela rota sem reenviar arquivos. Sem `--execute`, o plano mostra host vs rota e current vs target (exit 3 para `public`). Com `--execute`, o JSON/humano reporta a visibility efetiva da rota alvo.
 
 `password set` sem `--execute` nem pede a senha. Automação: `--stdin` com input redirecionado. Nunca coloque a senha em argumento, env, log ou JSON.
+
+## Backend auth / assertion audiences
+
+A page que chama uma API sua não usa o JWT do `ravi login`. Esse token fica no CLI. Quem abre a page, depois que o Console já deixou ver a rota, pode receber uma asserção de curta duração. O `aud` é o que você registrou neste host. A page lê o bootstrap same-origin na hora. O HTML publicado não leva segredo.
+
+Registre a audiência no host. `set` e `remove` sem `--execute` saem 3 com o plano. Nada é enviado. `list` só lê.
+
+```bash
+ravi pages assertion audiences list --site <host> --json
+ravi pages assertion audiences set --site <host> --aud <aud> --origin https://api.exemplo --execute
+ravi pages assertion audiences set --site <host> --aud <aud> --origin https://api.exemplo --origin https://hooks.exemplo --execute
+ravi pages assertion audiences remove --site <host> --aud <aud> --execute
+```
+
+`--site` é o `siteRef` do Console: slug do host, id do site, ou hostname (`acme-proj.ravi.page`). `--project` e `--console` seguem o grupo. `--origin` é `https` (esquema, host, porta opcional). Pode repetir. `set` substitui a lista de origins daquele `aud`.
+
+Para a page usar a asserção, o ship leva `uses` com `ravi.identity.assertion`:
+
+```bash
+ravi pages ship --project <projeto> --title "App" --route /app --dir ./site --uses ravi.identity.assertion --json
+```
+
+`--uses` não grava token no artefacto. Sem esse id, o publish não declara a capability.
+
+A API verifica a assinatura no JWKS do Console que respondeu. O JSON de `list`/`set`/`remove` traz `jwksUrl`. No Console padrão é `https://console.ravi.bot/api/public/pages/viewer-assertions/jwks`. Em outro Console, o mesmo path sai da base configurada.
+
+Nunca grave o JWT da asserção, o access token ou o refresh token em log, argumento, env, HTML ou JSON de saída. O CLI descarta esses campos se o Console os devolver.

@@ -297,6 +297,8 @@ export interface ArtifactPublishFinalizeInput {
     replaceRelease?: boolean;
     reason?: string | null;
     visibility?: string;
+    /** Capability ids such as `ravi.identity.assertion`. Omitted when empty. */
+    uses?: string[];
   };
   source?: Record<string, unknown>;
 }

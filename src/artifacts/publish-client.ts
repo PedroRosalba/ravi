@@ -53,6 +53,8 @@ export interface ArtifactPublishOptions {
   tool?: string;
   publishToPages?: boolean;
   json?: boolean;
+  /** Capability ids forwarded on the Pages publish body. Omitted when empty. */
+  uses?: string[];
 }
 
 export interface ArtifactReleaseActivateOptions {
@@ -228,6 +230,7 @@ export async function publishArtifactToConsole(
                 path: publishOptions.route ?? "/",
                 visibility: publishOptions.visibility,
               },
+              ...(publishOptions.uses && publishOptions.uses.length > 0 ? { uses: publishOptions.uses } : {}),
             },
           }
         : {}),

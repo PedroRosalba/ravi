@@ -112,9 +112,14 @@ contract errors rethrow first, recognizable Console not-found failures map to
 | update / visibility → `private`/`protected_link` | reduces exposure, reversible | not braked (declared) |
 | create | creates a host record in Ravi Console | not braked / executes immediately (`--execute` unused no-op) |
 | domains | changes provider-backed hostname bindings and routing | dry-run + `--execute` |
+| assertion audiences set | registers an origin that may receive a viewer assertion | dry-run + `--execute` (see `pages/assertion-audiences`) |
+| assertion audiences remove | drops one assertion audience | dry-run + `--execute` (see `pages/assertion-audiences`) |
+| assertion audiences list | reads the host allowlist | not braked |
 
 There is no `pages remove`/route-removal command on this surface today; if one
-is added it MUST arrive braked.
+is added it MUST arrive braked. Viewer-assertion audience removal is
+`pages assertion audiences remove`, which is braked, and it does not delete a
+route.
 
 ## Official error cases
 

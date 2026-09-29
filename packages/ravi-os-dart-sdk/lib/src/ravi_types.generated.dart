@@ -12687,6 +12687,194 @@ class ObserversShowReturn {
 
 ObserversShowReturn observersShowReturnFromJson(Object? json) => ObserversShowReturn.fromJsonValue(json);
 
+class PagesAssertionAudiencesListOptions {
+  const PagesAssertionAudiencesListOptions({this.console, this.limit, this.offset, this.project, this.site});
+
+  final String? console;
+  final String? limit;
+  final String? offset;
+  final String? project;
+  final String? site;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (console != null) {
+      into["console"] = RaviJson.from(console);
+    }
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
+    if (project != null) {
+      into["project"] = RaviJson.from(project);
+    }
+    if (site != null) {
+      into["site"] = RaviJson.from(site);
+    }
+  }
+}
+
+class PagesAssertionAudiencesListReturn {
+  const PagesAssertionAudiencesListReturn({required this.audiences, required this.consoleUrl, required this.jwksUrl, required this.pagination, required this.projectRef, required this.siteRef, required this.success, required this.total});
+
+  final List<RaviJson> audiences;
+  final String consoleUrl;
+  final String jwksUrl;
+  final RaviJson pagination;
+  final String projectRef;
+  final String siteRef;
+  final bool success;
+  final double total;
+
+  factory PagesAssertionAudiencesListReturn.fromJson(Map<String, Object?> json) {
+    return PagesAssertionAudiencesListReturn(
+      audiences: raviJsonAsList(json["audiences"], RaviJson.from),
+      consoleUrl: raviJsonAsString(json["consoleUrl"]),
+      jwksUrl: raviJsonAsString(json["jwksUrl"]),
+      pagination: RaviJson.from(json["pagination"]),
+      projectRef: raviJsonAsString(json["projectRef"]),
+      siteRef: raviJsonAsString(json["siteRef"]),
+      success: raviJsonAsBool(json["success"]),
+      total: raviJsonAsDouble(json["total"]),
+    );
+  }
+
+  static PagesAssertionAudiencesListReturn fromJsonValue(Object? json) {
+    return PagesAssertionAudiencesListReturn.fromJson(raviJsonObject(json, "PagesAssertionAudiencesListReturn"));
+  }
+}
+
+PagesAssertionAudiencesListReturn pagesAssertionAudiencesListReturnFromJson(Object? json) => PagesAssertionAudiencesListReturn.fromJsonValue(json);
+
+class PagesAssertionAudiencesRemoveOptions {
+  const PagesAssertionAudiencesRemoveOptions({this.aud, this.console, this.execute, this.project, this.site});
+
+  final String? aud;
+  final String? console;
+  final bool? execute;
+  final String? project;
+  final String? site;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (aud != null) {
+      into["aud"] = RaviJson.from(aud);
+    }
+    if (console != null) {
+      into["console"] = RaviJson.from(console);
+    }
+    if (execute != null) {
+      into["execute"] = RaviJson.from(execute);
+    }
+    if (project != null) {
+      into["project"] = RaviJson.from(project);
+    }
+    if (site != null) {
+      into["site"] = RaviJson.from(site);
+    }
+  }
+}
+
+class PagesAssertionAudiencesRemoveReturn {
+  const PagesAssertionAudiencesRemoveReturn({required this.action, required this.aud, required this.audiences, required this.consoleUrl, required this.jwksUrl, required this.origins, required this.projectRef, required this.siteRef, required this.success});
+
+  final String action;
+  final String aud;
+  final List<RaviJson> audiences;
+  final String consoleUrl;
+  final String jwksUrl;
+  final List<String> origins;
+  final String projectRef;
+  final String siteRef;
+  final bool success;
+
+  factory PagesAssertionAudiencesRemoveReturn.fromJson(Map<String, Object?> json) {
+    return PagesAssertionAudiencesRemoveReturn(
+      action: raviJsonAsString(json["action"]),
+      aud: raviJsonAsString(json["aud"]),
+      audiences: raviJsonAsList(json["audiences"], RaviJson.from),
+      consoleUrl: raviJsonAsString(json["consoleUrl"]),
+      jwksUrl: raviJsonAsString(json["jwksUrl"]),
+      origins: raviJsonAsList(json["origins"], raviJsonAsString),
+      projectRef: raviJsonAsString(json["projectRef"]),
+      siteRef: raviJsonAsString(json["siteRef"]),
+      success: raviJsonAsBool(json["success"]),
+    );
+  }
+
+  static PagesAssertionAudiencesRemoveReturn fromJsonValue(Object? json) {
+    return PagesAssertionAudiencesRemoveReturn.fromJson(raviJsonObject(json, "PagesAssertionAudiencesRemoveReturn"));
+  }
+}
+
+PagesAssertionAudiencesRemoveReturn pagesAssertionAudiencesRemoveReturnFromJson(Object? json) => PagesAssertionAudiencesRemoveReturn.fromJsonValue(json);
+
+class PagesAssertionAudiencesSetOptions {
+  const PagesAssertionAudiencesSetOptions({this.aud, this.console, this.execute, this.origin, this.project, this.site});
+
+  final String? aud;
+  final String? console;
+  final bool? execute;
+  final List<String>? origin;
+  final String? project;
+  final String? site;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (aud != null) {
+      into["aud"] = RaviJson.from(aud);
+    }
+    if (console != null) {
+      into["console"] = RaviJson.from(console);
+    }
+    if (execute != null) {
+      into["execute"] = RaviJson.from(execute);
+    }
+    if (origin != null) {
+      into["origin"] = RaviJson.from(origin);
+    }
+    if (project != null) {
+      into["project"] = RaviJson.from(project);
+    }
+    if (site != null) {
+      into["site"] = RaviJson.from(site);
+    }
+  }
+}
+
+class PagesAssertionAudiencesSetReturn {
+  const PagesAssertionAudiencesSetReturn({required this.action, required this.aud, required this.audiences, required this.consoleUrl, required this.jwksUrl, required this.origins, required this.projectRef, required this.siteRef, required this.success});
+
+  final String action;
+  final String aud;
+  final List<RaviJson> audiences;
+  final String consoleUrl;
+  final String jwksUrl;
+  final List<String> origins;
+  final String projectRef;
+  final String siteRef;
+  final bool success;
+
+  factory PagesAssertionAudiencesSetReturn.fromJson(Map<String, Object?> json) {
+    return PagesAssertionAudiencesSetReturn(
+      action: raviJsonAsString(json["action"]),
+      aud: raviJsonAsString(json["aud"]),
+      audiences: raviJsonAsList(json["audiences"], RaviJson.from),
+      consoleUrl: raviJsonAsString(json["consoleUrl"]),
+      jwksUrl: raviJsonAsString(json["jwksUrl"]),
+      origins: raviJsonAsList(json["origins"], raviJsonAsString),
+      projectRef: raviJsonAsString(json["projectRef"]),
+      siteRef: raviJsonAsString(json["siteRef"]),
+      success: raviJsonAsBool(json["success"]),
+    );
+  }
+
+  static PagesAssertionAudiencesSetReturn fromJsonValue(Object? json) {
+    return PagesAssertionAudiencesSetReturn.fromJson(raviJsonObject(json, "PagesAssertionAudiencesSetReturn"));
+  }
+}
+
+PagesAssertionAudiencesSetReturn pagesAssertionAudiencesSetReturnFromJson(Object? json) => PagesAssertionAudiencesSetReturn.fromJsonValue(json);
+
 class PagesCreateOptions {
   const PagesCreateOptions({this.console, this.defaultSite, this.execute, this.project, this.visibility});
 
@@ -13162,7 +13350,7 @@ class PagesPublishedReturn {
 PagesPublishedReturn pagesPublishedReturnFromJson(Object? json) => PagesPublishedReturn.fromJsonValue(json);
 
 class PagesShipOptions {
-  const PagesShipOptions({this.body, this.console, this.dir, this.entrypoint, this.execute, this.html, this.project, this.route, this.title, this.visibility});
+  const PagesShipOptions({this.body, this.console, this.dir, this.entrypoint, this.execute, this.html, this.project, this.route, this.title, this.uses, this.visibility});
 
   final String? body;
   final String? console;
@@ -13173,6 +13361,7 @@ class PagesShipOptions {
   final String? project;
   final String? route;
   final String? title;
+  final List<String>? uses;
   final String? visibility;
 
   void encodeBody(Map<String, RaviJson> into) {
@@ -13203,6 +13392,9 @@ class PagesShipOptions {
     if (title != null) {
       into["title"] = RaviJson.from(title);
     }
+    if (uses != null) {
+      into["uses"] = RaviJson.from(uses);
+    }
     if (visibility != null) {
       into["visibility"] = RaviJson.from(visibility);
     }
@@ -13210,7 +13402,7 @@ class PagesShipOptions {
 }
 
 class PagesShipReturn {
-  const PagesShipReturn({required this.artifactId, required this.commentFollow, required this.route, required this.site, required this.slug, required this.success, required this.url, required this.visibility});
+  const PagesShipReturn({required this.artifactId, required this.commentFollow, required this.route, required this.site, required this.slug, required this.success, required this.url, this.uses, required this.visibility});
 
   final RaviJson artifactId;
   final RaviJson commentFollow;
@@ -13219,6 +13411,7 @@ class PagesShipReturn {
   final String slug;
   final bool success;
   final RaviJson url;
+  final List<String>? uses;
   final String visibility;
 
   factory PagesShipReturn.fromJson(Map<String, Object?> json) {
@@ -13230,6 +13423,7 @@ class PagesShipReturn {
       slug: raviJsonAsString(json["slug"]),
       success: raviJsonAsBool(json["success"]),
       url: RaviJson.from(json["url"]),
+      uses: json["uses"] == null ? null : raviJsonAsList(json["uses"], raviJsonAsString),
       visibility: raviJsonAsString(json["visibility"]),
     );
   }

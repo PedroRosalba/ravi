@@ -34,6 +34,16 @@ import {
   type PublishedPagePayload,
 } from "../../pages/client.js";
 import {
+  listPageAssertionAudiences,
+  normalizeAssertionAud,
+  normalizeAssertionOrigins,
+  normalizePageUses,
+  removePageAssertionAudience,
+  setPageAssertionAudience,
+  type PageAssertionAudienceListResult,
+  type PageAssertionAudienceMutationResult,
+} from "../../pages/assertion-audiences.js";
+import {
   ensurePageCommentFollow,
   pageCommentCreatorFromContext,
   type PageCommentFollowDeps,
@@ -82,6 +92,8 @@ Happy path:
   A positional slug is a legacy extra host. Prefixes ravi and ravi-* are reserved.
   --title is required. Pass exactly one of --body, --html, or --dir.
   Public visibility is allowed in the same call.
+  --uses ravi.identity.assertion opts the page into the Console viewer assertion.
+  It does not embed a JWT. Register audiences with pages assertion audiences.
 
 Write brake:
   Dry-run by default. Without --execute nothing is uploaded and no release is
@@ -327,6 +339,12 @@ export class PagesCommands {
     route?: string,
     @Option({ flags: "--entrypoint <path>", description: "Package entrypoint path (default: index.html)" })
     entrypoint?: string,
+    @Option({
+      flags: "--uses <id...>",
+      description:
+        "Capability ids to declare on the publish, such as ravi.identity.assertion. Repeat or comma-separate. Does not embed a JWT",
+    })
+    uses?: string[],
     @Option({ flags: "--console <url>", description: "Console base URL" }) consoleUrl?: string,
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
     @Option({
@@ -341,6 +359,7 @@ export class PagesCommands {
       const resolvedRoute = stringValue(route) ?? "/";
       const resolvedEntrypoint = stringValue(entrypoint) ?? "index.html";
       const normalizedVisibility = normalizePageVisibility(visibility) ?? "private";
+      const normalizedUses = normalizePageUses(uses);
       const legacySlug = parsed.slug;
       if (legacySlug && isReservedPageHostSlug(legacySlug)) {
         throw new CloudAuthError(
@@ -367,6 +386,7 @@ export class PagesCommands {
             entrypoint: resolvedEntrypoint,
             visibility: normalizedVisibility,
             source: describeShipSource({ body, dir, html }),
+            ...(normalizedUses ? { uses: normalizedUses } : {}),
           },
           { asJson },
         );
@@ -405,6 +425,7 @@ export class PagesCommands {
             route: resolvedRoute,
             site: slug,
             tool: "ravi pages ship",
+            uses: normalizedUses,
             visibility: normalizedVisibility,
           },
           this.deps,
@@ -428,6 +449,7 @@ export class PagesCommands {
           slug,
           success: true as const,
           url: result.url,
+          ...(normalizedUses ? { uses: normalizedUses } : {}),
           visibility: normalizedVisibility,
         };
         printPayload(payload, asJson, () => printShipResult(payload));
@@ -907,6 +929,213 @@ export class PagesPasswordCommands {
   }
 }
 
+const PAGES_ASSERTION_AUDIENCES_SET_HELP = `
+Examples:
+  ravi pages assertion audiences set --site demo --aud https://api.example --origin https://api.example --execute
+  ravi pages assertion audiences set --site demo --aud api.example --origin https://api.example --origin https://hooks.example --json --execute
+
+Write brake:
+  Without --execute the command is a dry-run: it prints the plan and exits 3.
+  Nothing is sent to Console.
+
+Security:
+  Registers who may receive a short-lived viewer assertion for this host.
+  Do not pass a JWT as --aud or --origin. Output never contains an assertion token.
+`;
+
+const PAGES_ASSERTION_AUDIENCES_REMOVE_HELP = `
+Examples:
+  ravi pages assertion audiences remove --site demo --aud https://api.example --execute
+
+Without --execute the command is a dry-run (exit 3). Removing an audience stops
+new viewer assertions for that aud. It does not change route visibility.
+`;
+
+@Group({
+  name: "pages.assertion.audiences",
+  description: "Register viewer-assertion audiences for a Pages host",
+  scope: "open",
+})
+export class PagesAssertionAudienceCommands {
+  constructor(private readonly deps: PagesCommandDeps = {}) {}
+
+  @Command({ name: "list", description: "List viewer-assertion audiences registered on a Pages host" })
+  @CommandAccess({ kind: "read", resource: "pages", action: "assertion-audiences", risk: "low" })
+  async list(
+    @Option({
+      flags: "--site <host>",
+      description: "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
+    })
+    site?: string,
+    @Option({ flags: "--project <ref>", description: "Console project id or slug; overrides saved Console scope" })
+    projectOption?: string,
+    @Option({ flags: "--console <url>", description: "Console base URL" }) consoleUrl?: string,
+    @Option({ flags: "--limit <n>", description: "Maximum audiences to return (default: 50)" }) limit?: string,
+    @Option({ flags: "--offset <n>", description: "Number of audiences to skip (default: 0)" }) offset?: string,
+    @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
+  ) {
+    return runPagesCommand("pages assertion audiences list", asJson, async () => {
+      const siteRef = requireAssertionSite(site);
+      const resolved = await resolvePagesProject(undefined, projectOption, consoleUrl, this.deps);
+      const result = await listPageAssertionAudiences(
+        { console: consoleUrl, project: resolved.projectRef, site: siteRef },
+        this.deps,
+      );
+      const page = paginateCliItems(result.audiences, { limit, offset });
+      const pagination = buildCliOffsetPagination({
+        baseCommand: ["ravi", "pages", "assertion", "audiences", "list"],
+        limit: page.limit,
+        offset: page.offset,
+        options: ["--site", siteRef, "--project", resolved.projectRef, consoleUrl ? "--console" : null, consoleUrl],
+        returned: page.items.length,
+        total: page.total,
+      });
+      const payload = {
+        ...result,
+        audiences: page.items,
+        pagination,
+        scope: resolved.scope,
+        total: page.total,
+      };
+      printPayload(payload, asJson, () =>
+        printAssertionAudienceList({ ...result, audiences: page.items, total: page.total }),
+      );
+      return payload;
+    });
+  }
+
+  @Command({
+    name: "set",
+    description: "Replace the https origins allowed to receive a viewer assertion for one audience",
+    helpAfter: PAGES_ASSERTION_AUDIENCES_SET_HELP,
+  })
+  @CommandAccess({
+    kind: "mutate",
+    resource: "pages",
+    action: "assertion-audiences",
+    risk: "high",
+    requiresConfirmation: true,
+  })
+  async set(
+    @Option({
+      flags: "--site <host>",
+      description: "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
+    })
+    site?: string,
+    @Option({ flags: "--aud <aud>", description: "Assertion audience identifier for the third-party API" })
+    aud?: string,
+    @Option({
+      flags: "--origin <origin...>",
+      description: "HTTPS origin allowed to receive the assertion. Repeat or comma-separate",
+    })
+    origins?: string[],
+    @Option({ flags: "--project <ref>", description: "Console project id or slug; overrides saved Console scope" })
+    projectOption?: string,
+    @Option({ flags: "--console <url>", description: "Console base URL" }) consoleUrl?: string,
+    @Option({ flags: "--json", description: "Print a token-free JSON result" }) asJson?: boolean,
+    @Option({
+      flags: "--execute",
+      description: "Register the audience; default is a dry-run that only shows the plan (exit 3)",
+    })
+    execute?: boolean,
+  ) {
+    return runPagesCommand("pages assertion audiences set", asJson, async () => {
+      const siteRef = requireAssertionSite(site);
+      const normalizedAud = normalizeAssertionAud(aud);
+      const normalizedOrigins = normalizeAssertionOrigins(origins);
+      if (execute !== true) {
+        contractDryRun(
+          "pages assertion audiences set",
+          {
+            project: projectOption ?? "(Console scope default)",
+            site: siteRef,
+            aud: normalizedAud,
+            originCount: normalizedOrigins.length,
+            origins: normalizedOrigins,
+          },
+          { asJson },
+        );
+      }
+      const resolved = await resolvePagesProject(undefined, projectOption, consoleUrl, this.deps);
+      const result = await setPageAssertionAudience(
+        {
+          aud: normalizedAud,
+          console: consoleUrl,
+          origins: normalizedOrigins,
+          project: resolved.projectRef,
+          site: siteRef,
+        },
+        this.deps,
+      );
+      const payload = { ...result, scope: resolved.scope };
+      printPayload(payload, asJson, () => printAssertionAudienceMutation(result));
+      return payload;
+    });
+  }
+
+  @Command({
+    name: "remove",
+    description: "Remove one viewer-assertion audience from a Pages host",
+    helpAfter: PAGES_ASSERTION_AUDIENCES_REMOVE_HELP,
+  })
+  @CommandAccess({
+    kind: "mutate",
+    resource: "pages",
+    action: "assertion-audiences",
+    risk: "high",
+    requiresConfirmation: true,
+  })
+  async remove(
+    @Option({
+      flags: "--site <host>",
+      description: "Pages host slug, site id, or hostname. Console accepts all three as siteRef",
+    })
+    site?: string,
+    @Option({ flags: "--aud <aud>", description: "Assertion audience identifier to remove" }) aud?: string,
+    @Option({ flags: "--project <ref>", description: "Console project id or slug; overrides saved Console scope" })
+    projectOption?: string,
+    @Option({ flags: "--console <url>", description: "Console base URL" }) consoleUrl?: string,
+    @Option({ flags: "--json", description: "Print a token-free JSON result" }) asJson?: boolean,
+    @Option({
+      flags: "--execute",
+      description: "Remove the audience; default is a dry-run that only shows the plan (exit 3)",
+    })
+    execute?: boolean,
+  ) {
+    return runPagesCommand("pages assertion audiences remove", asJson, async () => {
+      const siteRef = requireAssertionSite(site);
+      const normalizedAud = normalizeAssertionAud(aud);
+      if (execute !== true) {
+        contractDryRun(
+          "pages assertion audiences remove",
+          {
+            project: projectOption ?? "(Console scope default)",
+            site: siteRef,
+            aud: normalizedAud,
+          },
+          { asJson },
+        );
+      }
+      const resolved = await resolvePagesProject(undefined, projectOption, consoleUrl, this.deps);
+      const result = await removePageAssertionAudience(
+        { aud: normalizedAud, console: consoleUrl, project: resolved.projectRef, site: siteRef },
+        this.deps,
+      );
+      const payload = { ...result, scope: resolved.scope };
+      printPayload(payload, asJson, () => printAssertionAudienceMutation(result));
+      return payload;
+    });
+  }
+}
+
+function requireAssertionSite(site: string | undefined): string {
+  const text = site?.trim();
+  if (!text) {
+    throw new CloudAuthError("PAYLOAD_INVALID", "Missing --site. Pass a Pages host slug, site id, or hostname.");
+  }
+  return text;
+}
+
 function defaultPagesDeps(): PagesCommandDeps {
   return {};
 }
@@ -1233,7 +1462,36 @@ const pageShipReturnSchema = z.object({
   slug: z.string(),
   success: z.literal(true),
   url: z.string().nullable(),
+  uses: z.array(z.string()).optional(),
   visibility: z.string(),
+});
+
+const pageAssertionAudienceSchema = z.object({
+  aud: z.string(),
+  origins: z.array(z.string()),
+});
+
+const pageAssertionAudienceListReturnSchema = z.object({
+  audiences: z.array(pageAssertionAudienceSchema),
+  consoleUrl: z.string(),
+  jwksUrl: z.string(),
+  pagination: strictCliOffsetPaginationSchema,
+  projectRef: z.string(),
+  siteRef: z.string(),
+  success: z.literal(true),
+  total: z.number(),
+});
+
+const pageAssertionAudienceMutationReturnSchema = z.object({
+  action: z.enum(["remove", "set"]),
+  aud: z.string(),
+  audiences: z.array(pageAssertionAudienceSchema),
+  consoleUrl: z.string(),
+  jwksUrl: z.string(),
+  origins: z.array(z.string()),
+  projectRef: z.string(),
+  siteRef: z.string(),
+  success: z.literal(true),
 });
 
 declareCommandReturns(PagesCommands, {
@@ -1251,6 +1509,12 @@ declareCommandReturns(PagesPasswordCommands, {
   set: pagePasswordReturnSchema,
   status: pagePasswordReturnSchema,
   remove: pagePasswordReturnSchema,
+});
+
+declareCommandReturns(PagesAssertionAudienceCommands, {
+  list: pageAssertionAudienceListReturnSchema,
+  set: pageAssertionAudienceMutationReturnSchema,
+  remove: pageAssertionAudienceMutationReturnSchema,
 });
 
 async function runPagesCommand<T>(op: string, asJson: boolean | undefined, run: () => Promise<T>): Promise<T> {
@@ -1471,6 +1735,7 @@ function printShipResult(result: {
   site: PageSitePayload;
   slug: string;
   url: string | null;
+  uses?: string[];
   visibility: string;
 }): void {
   console.log("✓ Pages shipped");
@@ -1478,9 +1743,31 @@ function printShipResult(result: {
   console.log(`  Slug       ${result.slug}`);
   console.log(`  Route      ${result.route}`);
   console.log(`  Visibility ${result.visibility}`);
+  if (result.uses?.length) console.log(`  Uses       ${result.uses.join(", ")}`);
   if (result.artifactId) console.log(`  Artifact   ${result.artifactId}`);
   console.log(`  URL        ${result.url ?? "not returned by Console"}`);
   printCommentFollow(result.commentFollow);
+}
+
+function printAssertionAudienceList(result: PageAssertionAudienceListResult): void {
+  console.log(`Viewer assertion audiences for ${result.siteRef} (${result.total})`);
+  if (result.audiences.length === 0) {
+    console.log("  No audiences registered.");
+  }
+  for (const audience of result.audiences) {
+    console.log(`  - ${audience.aud}`);
+    console.log(`      origins: ${audience.origins.join(", ") || "(none)"}`);
+  }
+  console.log(`JWKS ${result.jwksUrl}`);
+}
+
+function printAssertionAudienceMutation(result: PageAssertionAudienceMutationResult): void {
+  const verb = result.action === "set" ? "set" : "removed";
+  console.log(`✓ Assertion audience ${verb}`);
+  console.log(`  Site    ${result.siteRef}`);
+  console.log(`  Aud     ${result.aud}`);
+  if (result.action === "set") console.log(`  Origins ${result.origins.join(", ")}`);
+  console.log(`  JWKS    ${result.jwksUrl}`);
 }
 
 function printCommentFollow(follow: PageCommentFollowResult | undefined): void {
