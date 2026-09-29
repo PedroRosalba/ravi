@@ -1680,7 +1680,8 @@ describe("pages agent-first contract", () => {
       return {
         assertion: planted,
         audiences: [
-          { aud: "api.example", origins: ["https://api.example"], token: planted },
+          { audience: "api.example", aud: "stale.example", origins: ["https://api.example"], token: planted },
+          { aud: "legacy.example", origins: ["https://legacy.example"] },
           { aud: planted, origins: ["https://evil.example"] },
         ],
         jwksUrl: "https://console.example/.well-known/jwks.json",
@@ -1702,13 +1703,17 @@ describe("pages agent-first contract", () => {
       },
     ]);
     expect(payload).toMatchObject({
-      audiences: [{ aud: "api.example", origins: ["https://api.example"] }],
-      jwksUrl: "https://console.example/.well-known/jwks.json",
+      audiences: [
+        { aud: "api.example", origins: ["https://api.example"] },
+        { aud: "legacy.example", origins: ["https://legacy.example"] },
+      ],
+      jwksUrl: "https://console.example/api/public/pages/viewer-assertions/jwks",
       projectRef: "proj",
       siteRef: "demo",
       success: true,
-      total: 1,
+      total: 2,
     });
+    expect(output).not.toContain("stale.example");
     expect(output).not.toContain(planted);
     expect(output).not.toContain("access-secret");
   });
@@ -1736,7 +1741,7 @@ describe("pages agent-first contract", () => {
     const client = makeClient(async (method, path, body) => {
       calls.push({ method, path, body });
       return {
-        audiences: [{ aud: "api.example", origins: ["https://api.example", "https://hooks.example"] }],
+        audiences: [{ audience: "api.example", origins: ["https://api.example", "https://hooks.example"] }],
         siteRef: "demo",
       };
     });
@@ -1776,7 +1781,8 @@ describe("pages agent-first contract", () => {
     expect(JSON.parse(output)).toMatchObject({
       action: "set",
       aud: "api.example",
-      jwksUrl: "https://console.example/.well-known/jwks.json",
+      audiences: [{ aud: "api.example", origins: ["https://api.example", "https://hooks.example"] }],
+      jwksUrl: "https://console.example/api/public/pages/viewer-assertions/jwks",
       origins: ["https://api.example", "https://hooks.example"],
       success: true,
     });
@@ -1800,6 +1806,21 @@ describe("pages agent-first contract", () => {
     );
     expect(httpOrigin.code).toBe("PAYLOAD_INVALID");
     expect(httpOrigin.message).toContain("https");
+
+    const tooManyOrigins = await expectCloudError(() =>
+      runWithContext({}, () =>
+        command.set(
+          "demo",
+          "api.example",
+          Array.from({ length: 9 }, (_, index) => `https://origin-${index}.example`),
+          "proj",
+          undefined,
+          true,
+        ),
+      ),
+    );
+    expect(tooManyOrigins.code).toBe("PAYLOAD_INVALID");
+    expect(tooManyOrigins.message).toContain("8");
   });
 
   it("brakes assertion audience remove and deletes one aud on execute", async () => {

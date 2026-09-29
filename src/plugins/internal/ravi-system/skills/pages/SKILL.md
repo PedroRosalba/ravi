@@ -131,6 +131,6 @@ ravi pages ship --project <projeto> --title "App" --route /app --dir ./site --us
 
 `--uses` não grava token no artefacto. Sem esse id, o publish não declara a capability.
 
-A API verifica a assinatura no JWKS do Console que respondeu. O JSON de `list`/`set`/`remove` traz `jwksUrl`. No Console padrão é `https://console.ravi.bot/.well-known/jwks.json`.
+A API verifica a assinatura no JWKS do Console que respondeu. O JSON de `list`/`set`/`remove` traz `jwksUrl`. No Console padrão é `https://console.ravi.bot/api/public/pages/viewer-assertions/jwks`. Em outro Console, o mesmo path sai da base configurada.
 
 Nunca grave o JWT da asserção, o access token ou o refresh token em log, argumento, env, HTML ou JSON de saída. O CLI descarta esses campos se o Console os devolver.

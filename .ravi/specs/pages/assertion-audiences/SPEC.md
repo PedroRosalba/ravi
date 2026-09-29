@@ -45,10 +45,10 @@ ravi pages assertion audiences remove --site <host> --aud <aud> --execute
 1. `list` MUST be read-only. It MUST NOT accept `--execute` and MUST NOT dry-run. It MUST accept `--limit` and `--offset` and return offset pagination.
 2. `set` and `remove` MUST default to dry-run. Without `--execute` they MUST exit 3 with `WRITE_REQUIRES_EXECUTE` before credential reads, project resolution, or any Console call. `--execute` MUST be the last declared option.
 3. `set` MUST require `--site`, `--aud`, and at least one `--origin` before the brake. `remove` MUST require `--site` and `--aud` before the brake. A missing value is `PAYLOAD_INVALID` (exit 2), including on the dry-run path.
-4. Each `--origin` MUST be an `https` origin: scheme, host, optional port. A path, query, fragment, or userinfo MUST be rejected. Repeated `--origin` flags and comma-separated values MUST merge into one unique list. `set` MUST replace the origin list for that `aud`.
-5. `--aud` and `--origin` MUST NOT accept a JWT. Success JSON and human output MUST allowlist `aud` and `origins` only. Fields named like tokens, and any JWT-shaped audience returned by Console, MUST be dropped. The CLI MUST NOT log the assertion, the access token, or the refresh token.
+4. Each `--origin` MUST be an `https` origin: scheme, host, optional port. A path, query, fragment, or userinfo MUST be rejected. Repeated `--origin` flags and comma-separated values MUST merge into one unique list of at most 8 origins. `set` MUST replace the origin list for that `aud`. More than 8 origins is `PAYLOAD_INVALID` before any Console call.
+5. `--aud` and `--origin` MUST NOT accept a JWT. Requests MUST send `aud`. Console responses use `audience` and MAY also send `aud`. The parser MUST accept both and MUST prefer `audience` when both are present. Success JSON and human output MUST allowlist `aud` and `origins` only. Fields named like tokens, and any JWT-shaped audience returned by Console, MUST be dropped. The CLI MUST NOT log the assertion, the access token, or the refresh token.
 6. `list` MUST `GET /api/cli/projects/:projectRef/pages/:siteRef/viewer-assertion-audiences`. `set` MUST `PUT` that path with `{ aud, origins }`. `remove` MUST `DELETE` that path with `{ aud }`. `siteRef` is only the path segment. These paths are the contract in ravi-console#31. The CLI MUST NOT invent a fallback path when Console returns 404.
-7. Success JSON MUST include `jwksUrl`. That URL MUST be `{consoleOrigin}/.well-known/jwks.json` unless Console returns the same path on the same origin. A `jwksUrl` on another origin MUST be ignored.
+7. Success JSON MUST include `jwksUrl`. That URL MUST be `{consoleOrigin}/api/public/pages/viewer-assertions/jwks`, derived from the configured Console base URL. A Console `jwksUrl` is used only when it is that path on the same origin. Any other value MUST be ignored.
 8. `pages ship --uses ravi.identity.assertion` MUST put that id on the finalize publish body as `uses`. Omitting `--uses` MUST leave `uses` off the publish body. An id that is not a dotted capability token, including a JWT, MUST be `PAYLOAD_INVALID` before any Console call. The ship MUST NOT embed an assertion or a CLI JWT in the artifact.
 9. The skill `pages` MUST document this group, the `ravi.identity.assertion` use, the JWKS URL, and the rule against logging the JWT.
 
@@ -82,7 +82,7 @@ Handlers live in [ravi-console#31](https://github.com/filipexyz/ravi-console/pul
 GET    /api/cli/projects/:projectRef/pages/:siteRef/viewer-assertion-audiences
 PUT    /api/cli/projects/:projectRef/pages/:siteRef/viewer-assertion-audiences
 DELETE /api/cli/projects/:projectRef/pages/:siteRef/viewer-assertion-audiences
-GET    {consoleOrigin}/.well-known/jwks.json
+GET    {consoleOrigin}/api/public/pages/viewer-assertions/jwks
 ```
 
-`siteRef` accepts a host slug, site id, or hostname. `PUT` body is `{ aud, origins: string[] }`. `DELETE` body is `{ aud }`. `pages ship` MAY send `publish.uses: string[]` when `--uses` is set. Until #31 is deployed, execute calls fail at Console and the dry-run still exits 3 locally.
+`siteRef` accepts a host slug, site id, or hostname. `PUT` body is `{ aud, origins: string[] }` (at most 8 origins). `DELETE` body is `{ aud }`. Console serializes each row as `audience`. `pages ship` MAY send `publish.uses: string[]` when `--uses` is set. The dry-run still exits 3 locally.

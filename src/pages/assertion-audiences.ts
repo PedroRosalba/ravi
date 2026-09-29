@@ -12,7 +12,8 @@ export const PAGE_ASSERTION_AUDIENCES_COLLECTION = "viewer-assertion-audiences";
 /** Capability id a shipped page must list to receive the viewer assertion. */
 export const RAVI_IDENTITY_ASSERTION_USE = "ravi.identity.assertion";
 
-export const PAGES_ASSERTION_JWKS_PATH = "/.well-known/jwks.json";
+export const PAGES_ASSERTION_JWKS_PATH = "/api/public/pages/viewer-assertions/jwks";
+export const PAGE_ASSERTION_AUDIENCE_ORIGIN_LIMIT = 8;
 
 const AUDIENCE_USE_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 const JWT_PATTERN = /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
@@ -88,8 +89,11 @@ export function normalizeAssertionOrigins(values: readonly string[] | string | u
     throw new CloudAuthError("PAYLOAD_INVALID", "Missing --origin. Pass one or more https origins.");
   }
   const origins = [...new Set(parts.map(normalizeHttpsOrigin))];
-  if (origins.length > 20) {
-    throw new CloudAuthError("PAYLOAD_INVALID", "Set at most 20 origins on one audience.");
+  if (origins.length > PAGE_ASSERTION_AUDIENCE_ORIGIN_LIMIT) {
+    throw new CloudAuthError(
+      "PAYLOAD_INVALID",
+      `Set at most ${PAGE_ASSERTION_AUDIENCE_ORIGIN_LIMIT} origins on one audience.`,
+    );
   }
   return origins;
 }
@@ -222,7 +226,7 @@ function readAudiences(payload: unknown): PageAssertionAudience[] {
       ? record.audiences
       : Array.isArray(record?.items)
         ? record.items
-        : record?.aud
+        : record?.audience || record?.aud
           ? [record]
           : [];
   const audiences: PageAssertionAudience[] = [];
@@ -241,7 +245,8 @@ function readAudiences(payload: unknown): PageAssertionAudience[] {
 
 function readAudience(payload: unknown): PageAssertionAudience | null {
   const record = objectValue(payload);
-  const aud = typeof record?.aud === "string" ? record.aud.trim() : "";
+  if (!record) return null;
+  const aud = readAudienceId(record);
   if (!aud || looksLikeJwt(aud) || /\s/.test(aud)) return null;
   const rawOrigins = Array.isArray(record?.origins) ? record.origins : [];
   const origins: string[] = [];
@@ -275,6 +280,13 @@ function resolveJwksUrl(consoleUrl: string, payload: unknown): string {
     return derived;
   }
   return derived;
+}
+
+/** Console responses use `audience`. `aud` remains a response alias. Prefer `audience`. */
+function readAudienceId(record: Record<string, unknown>): string {
+  const audience = typeof record.audience === "string" ? record.audience.trim() : "";
+  if (audience) return audience;
+  return typeof record.aud === "string" ? record.aud.trim() : "";
 }
 
 function readSiteRef(payload: unknown): string | null {
