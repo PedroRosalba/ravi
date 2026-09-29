@@ -84,7 +84,14 @@ contract errors rethrow first, recognizable Console not-found failures map to
     proves Console is up. Isolated CLIs MAY use the host unix-socket CLI
     gateway when `RAVI_CONTEXT_KEY` is set and `~/.ravi/cli-gateway.sock` is
     reachable. They MUST NOT auto-open raw `127.0.0.1`.
-11. `pages domains --execute` MUST be one idempotent setup command. When
+11. `pages ship` without a positional slug MUST publish a route on the
+    project's default Pages host: a listed site with `isDefault`, otherwise
+    the project-owned slug `<orgSlug>-<projectSlug>` (created once, with
+    `isDefault`, when it is missing and the slug is computable). `--title`
+    MUST NOT become a host slug. `--route` defaults to `/`. A positional slug
+    is a legacy extra host: it MAY create or reuse that slug and MUST warn.
+    Host slugs `ravi` and `ravi-*` MUST NOT be created.
+12. `pages domains --execute` MUST be one idempotent setup command. When
     ownership or Pages DNS is not ready, the CLI MUST recognize
     `DOMAIN_SETUP_REQUIRED`, surface the Console-authored DNS instruction, exit
     1, and tell the operator to rerun the same command after propagation. This
@@ -96,7 +103,7 @@ contract errors rethrow first, recognizable Console not-found failures map to
 
 | op | class | brake |
 |---|---|---|
-| ship | ensures a host (create-or-reuse) then uploads bytes and activates a hosted route | not braked / executes immediately (`--execute` unused no-op) |
+| ship | publishes a route on the project default host (creates that one host when missing). A positional slug is a legacy extra host | not braked / executes immediately (`--execute` unused no-op) |
 | publish | uploads bytes and (default) activates a hosted route | not braked / executes immediately (`--execute` unused no-op) |
 | password set | flips the route access policy on a live site (high) | dry-run + `--execute`, braked before the secret prompt |
 | password remove | widens who can reach the route, up to fully public (high) | dry-run + `--execute`, visibility validated first |
@@ -148,8 +155,9 @@ MUST load the skill for `ravi pages …` and `pages.password`.
 
 - `bun test src/cli/commands/pages.test.ts` green (contract block included),
   no new failures vs the `dev` baseline.
-- Live checks on the local CLI: `pages ship --title T --body "<p>x</p>" --json`
-  → ensure-site + publish and JSON `{url,site,slug,route,visibility,artifactId}`
+- Live checks on the local CLI: `pages ship --title T --route /weekly --body "<p>x</p>" --json`
+  → project default host + that route and JSON `{url,site,slug,route,visibility,artifactId}`.
+  `slug` is the host, not a slug derived from the title.
   (passing leftover `--execute` is a no-op); `pages create p s --json` →
   writes the host immediately; `pages publish p s ./site --json` → publishes;
   `pages domains p s docs.example.com --json` → exit 3 before credentials;

@@ -51715,7 +51715,7 @@ class RaviSchemas {
   "additionalProperties": false,
   "properties": {
     "args": {
-      "description": "[project] [slug]; project defaults to Console scope and slug defaults from --title",
+      "description": "[project] [slug]; project defaults to Console scope. A slug is a legacy extra host. Omit it to use the project default host",
       "items": {
         "type": "string"
       },
@@ -51754,7 +51754,7 @@ class RaviSchemas {
       "type": "string"
     },
     "title": {
-      "description": "Page title; also used to generate the slug when omitted",
+      "description": "Page title. Does not create a host slug",
       "type": "string"
     },
     "visibility": {

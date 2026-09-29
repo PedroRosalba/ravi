@@ -5,9 +5,12 @@ import { join } from "node:path";
 import { runWithContext } from "../cli/context.js";
 import { CloudAuthError } from "../cloud-auth/errors.js";
 import {
+  isReservedPageHostSlug,
   materializeShipSource,
+  projectOwnedHostSlug,
   requireShipTitle,
   resolveShipContentKind,
+  selectProjectDefaultHost,
   slugifyPageTitle,
   validateShipSourceInput,
   wrapHtml5Document,
@@ -34,6 +37,26 @@ describe("pages ship helpers", () => {
   it("slugifies titles and falls back to page", () => {
     expect(slugifyPageTitle("Relatório Semanal")).toBe("relatorio-semanal");
     expect(slugifyPageTitle("  ")).toBe("page");
+  });
+
+  it("resolves the project-owned host and ignores a title slug", () => {
+    expect(projectOwnedHostSlug("Acme", "proj")).toBe("acme-proj");
+    expect(projectOwnedHostSlug("acme", "f983301a-e4b2-4ffc-9b9e-83d4f2bee318")).toBeNull();
+    expect(projectOwnedHostSlug("ravi", "bot")).toBe("ravi-bot");
+    expect(isReservedPageHostSlug("ravi")).toBe(true);
+    expect(isReservedPageHostSlug("ravi-bot")).toBe(true);
+    expect(isReservedPageHostSlug("bravo")).toBe(false);
+
+    const sites = [
+      { id: "site_title", slug: "relatorio-semanal", isDefault: false },
+      { id: "site_default", slug: "acme-proj", isDefault: true, defaultHostname: "acme-proj.ravi.page" },
+    ];
+    expect(selectProjectDefaultHost(sites, "acme-proj")?.id).toBe("site_default");
+    expect(selectProjectDefaultHost([{ slug: "relatorio-semanal", isDefault: false }], "acme-proj")).toBeNull();
+    expect(selectProjectDefaultHost([{ id: "by-host", defaultHostname: "acme-proj.ravi.page" }], "acme-proj")?.id).toBe(
+      "by-host",
+    );
+    expect(selectProjectDefaultHost(sites, null)?.id).toBe("site_default");
   });
 
   it("requires exactly one content source", () => {
