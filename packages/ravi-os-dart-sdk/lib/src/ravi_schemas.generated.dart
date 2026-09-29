@@ -50448,6 +50448,299 @@ class RaviSchemas {
 }
 ''';
 
+  static const pagesAssertionAudiencesListInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "project": {
+      "description": "Console project id or slug; overrides saved Console scope",
+      "type": "string"
+    },
+    "site": {
+      "description": "Pages host slug or site ref",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const pagesAssertionAudiencesListReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "audiences": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "aud": {
+            "type": "string"
+          },
+          "origins": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "aud",
+          "origins"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "consoleUrl": {
+      "type": "string"
+    },
+    "jwksUrl": {
+      "type": "string"
+    },
+    "projectRef": {
+      "type": "string"
+    },
+    "siteRef": {
+      "type": "string"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "audiences",
+    "consoleUrl",
+    "jwksUrl",
+    "projectRef",
+    "siteRef",
+    "success",
+    "total"
+  ],
+  "type": "object"
+}
+''';
+
+  static const pagesAssertionAudiencesRemoveInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "aud": {
+      "description": "Assertion audience identifier to remove",
+      "type": "string"
+    },
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "execute": {
+      "description": "Remove the audience; default is a dry-run that only shows the plan (exit 3)",
+      "type": "boolean"
+    },
+    "project": {
+      "description": "Console project id or slug; overrides saved Console scope",
+      "type": "string"
+    },
+    "site": {
+      "description": "Pages host slug or site ref",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const pagesAssertionAudiencesRemoveReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "enum": [
+        "remove",
+        "set"
+      ],
+      "type": "string"
+    },
+    "aud": {
+      "type": "string"
+    },
+    "audiences": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "aud": {
+            "type": "string"
+          },
+          "origins": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "aud",
+          "origins"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "consoleUrl": {
+      "type": "string"
+    },
+    "jwksUrl": {
+      "type": "string"
+    },
+    "origins": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "projectRef": {
+      "type": "string"
+    },
+    "siteRef": {
+      "type": "string"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "action",
+    "aud",
+    "audiences",
+    "consoleUrl",
+    "jwksUrl",
+    "origins",
+    "projectRef",
+    "siteRef",
+    "success"
+  ],
+  "type": "object"
+}
+''';
+
+  static const pagesAssertionAudiencesSetInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "aud": {
+      "description": "Assertion audience identifier for the third-party API",
+      "type": "string"
+    },
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "execute": {
+      "description": "Register the audience; default is a dry-run that only shows the plan (exit 3)",
+      "type": "boolean"
+    },
+    "origin": {
+      "description": "HTTPS origin allowed to receive the assertion. Repeat or comma-separate",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "project": {
+      "description": "Console project id or slug; overrides saved Console scope",
+      "type": "string"
+    },
+    "site": {
+      "description": "Pages host slug or site ref",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const pagesAssertionAudiencesSetReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "enum": [
+        "remove",
+        "set"
+      ],
+      "type": "string"
+    },
+    "aud": {
+      "type": "string"
+    },
+    "audiences": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "aud": {
+            "type": "string"
+          },
+          "origins": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "aud",
+          "origins"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "consoleUrl": {
+      "type": "string"
+    },
+    "jwksUrl": {
+      "type": "string"
+    },
+    "origins": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "projectRef": {
+      "type": "string"
+    },
+    "siteRef": {
+      "type": "string"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "action",
+    "aud",
+    "audiences",
+    "consoleUrl",
+    "jwksUrl",
+    "origins",
+    "projectRef",
+    "siteRef",
+    "success"
+  ],
+  "type": "object"
+}
+''';
+
   static const pagesCreateInputSchema = r'''
 {
   "additionalProperties": false,
@@ -51757,6 +52050,13 @@ class RaviSchemas {
       "description": "Page title. Does not create a host slug",
       "type": "string"
     },
+    "uses": {
+      "description": "Capability ids to declare on the publish, such as ravi.identity.assertion. Repeat or comma-separate. Does not embed a JWT",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "visibility": {
       "description": "Pages visibility: private|protected_link|public (default: private)",
       "type": "string"
@@ -51913,6 +52213,12 @@ class RaviSchemas {
           "type": "null"
         }
       ]
+    },
+    "uses": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     },
     "visibility": {
       "type": "string"

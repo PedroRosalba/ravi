@@ -3382,6 +3382,10 @@ public struct PagesNamespace: Sendable {
     self.transport = transport
   }
 
+  public var assertion: PagesAssertionNamespace {
+    PagesAssertionNamespace(transport: transport)
+  }
+
   public var password: PagesPasswordNamespace {
     PagesPasswordNamespace(transport: transport)
   }
@@ -3446,6 +3450,44 @@ public struct PagesNamespace: Sendable {
     requestBody["args"] = try RaviJSON.fromEncodable(args)
     try options.encodeBody(into: &requestBody)
     return try await transport.call(groupSegments: ["pages"], command: "visibility", body: requestBody, as: PagesVisibilityReturn.self)
+  }
+}
+
+public struct PagesAssertionNamespace: Sendable {
+  private let transport: any RaviTransport
+
+  init(transport: any RaviTransport) {
+    self.transport = transport
+  }
+
+  public var audiences: PagesAssertionAudiencesNamespace {
+    PagesAssertionAudiencesNamespace(transport: transport)
+  }
+}
+
+public struct PagesAssertionAudiencesNamespace: Sendable {
+  private let transport: any RaviTransport
+
+  init(transport: any RaviTransport) {
+    self.transport = transport
+  }
+
+  public func list(_ options: PagesAssertionAudiencesListOptions = .init()) async throws -> PagesAssertionAudiencesListReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["pages","assertion","audiences"], command: "list", body: requestBody, as: PagesAssertionAudiencesListReturn.self)
+  }
+
+  public func remove(_ options: PagesAssertionAudiencesRemoveOptions = .init()) async throws -> PagesAssertionAudiencesRemoveReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["pages","assertion","audiences"], command: "remove", body: requestBody, as: PagesAssertionAudiencesRemoveReturn.self)
+  }
+
+  public func set(_ options: PagesAssertionAudiencesSetOptions = .init()) async throws -> PagesAssertionAudiencesSetReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["pages","assertion","audiences"], command: "set", body: requestBody, as: PagesAssertionAudiencesSetReturn.self)
   }
 }
 

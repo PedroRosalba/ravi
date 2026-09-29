@@ -14688,6 +14688,228 @@ public struct ObserversShowReturn: Codable, Sendable {
   }
 }
 
+public struct PagesAssertionAudiencesListOptions: Codable, Sendable {
+  public var console: String?
+  public var project: String?
+  public var site: String?
+
+  public init(console: String? = nil, project: String? = nil, site: String? = nil) {
+    self.console = console
+    self.project = project
+    self.site = site
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case console = "console"
+    case project = "project"
+    case site = "site"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.console {
+      body["console"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.project {
+      body["project"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.site {
+      body["site"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct PagesAssertionAudiencesListReturn: Codable, Sendable {
+  public var audiences: [RaviJSON]
+  public var consoleUrl: String
+  public var jwksUrl: String
+  public var projectRef: String
+  public var siteRef: String
+  public var success: Bool
+  public var total: Double
+
+  public init(audiences: [RaviJSON], consoleUrl: String, jwksUrl: String, projectRef: String, siteRef: String, success: Bool, total: Double) {
+    self.audiences = audiences
+    self.consoleUrl = consoleUrl
+    self.jwksUrl = jwksUrl
+    self.projectRef = projectRef
+    self.siteRef = siteRef
+    self.success = success
+    self.total = total
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case audiences = "audiences"
+    case consoleUrl = "consoleUrl"
+    case jwksUrl = "jwksUrl"
+    case projectRef = "projectRef"
+    case siteRef = "siteRef"
+    case success = "success"
+    case total = "total"
+  }
+}
+
+public struct PagesAssertionAudiencesRemoveOptions: Codable, Sendable {
+  public var aud: String?
+  public var console: String?
+  public var execute: Bool?
+  public var project: String?
+  public var site: String?
+
+  public init(aud: String? = nil, console: String? = nil, execute: Bool? = nil, project: String? = nil, site: String? = nil) {
+    self.aud = aud
+    self.console = console
+    self.execute = execute
+    self.project = project
+    self.site = site
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case aud = "aud"
+    case console = "console"
+    case execute = "execute"
+    case project = "project"
+    case site = "site"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.aud {
+      body["aud"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.console {
+      body["console"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.execute {
+      body["execute"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.project {
+      body["project"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.site {
+      body["site"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct PagesAssertionAudiencesRemoveReturn: Codable, Sendable {
+  public var action: String
+  public var aud: String
+  public var audiences: [RaviJSON]
+  public var consoleUrl: String
+  public var jwksUrl: String
+  public var origins: [String]
+  public var projectRef: String
+  public var siteRef: String
+  public var success: Bool
+
+  public init(action: String, aud: String, audiences: [RaviJSON], consoleUrl: String, jwksUrl: String, origins: [String], projectRef: String, siteRef: String, success: Bool) {
+    self.action = action
+    self.aud = aud
+    self.audiences = audiences
+    self.consoleUrl = consoleUrl
+    self.jwksUrl = jwksUrl
+    self.origins = origins
+    self.projectRef = projectRef
+    self.siteRef = siteRef
+    self.success = success
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case action = "action"
+    case aud = "aud"
+    case audiences = "audiences"
+    case consoleUrl = "consoleUrl"
+    case jwksUrl = "jwksUrl"
+    case origins = "origins"
+    case projectRef = "projectRef"
+    case siteRef = "siteRef"
+    case success = "success"
+  }
+}
+
+public struct PagesAssertionAudiencesSetOptions: Codable, Sendable {
+  public var aud: String?
+  public var console: String?
+  public var execute: Bool?
+  public var origin: [String]?
+  public var project: String?
+  public var site: String?
+
+  public init(aud: String? = nil, console: String? = nil, execute: Bool? = nil, origin: [String]? = nil, project: String? = nil, site: String? = nil) {
+    self.aud = aud
+    self.console = console
+    self.execute = execute
+    self.origin = origin
+    self.project = project
+    self.site = site
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case aud = "aud"
+    case console = "console"
+    case execute = "execute"
+    case origin = "origin"
+    case project = "project"
+    case site = "site"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.aud {
+      body["aud"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.console {
+      body["console"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.execute {
+      body["execute"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.origin {
+      body["origin"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.project {
+      body["project"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.site {
+      body["site"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct PagesAssertionAudiencesSetReturn: Codable, Sendable {
+  public var action: String
+  public var aud: String
+  public var audiences: [RaviJSON]
+  public var consoleUrl: String
+  public var jwksUrl: String
+  public var origins: [String]
+  public var projectRef: String
+  public var siteRef: String
+  public var success: Bool
+
+  public init(action: String, aud: String, audiences: [RaviJSON], consoleUrl: String, jwksUrl: String, origins: [String], projectRef: String, siteRef: String, success: Bool) {
+    self.action = action
+    self.aud = aud
+    self.audiences = audiences
+    self.consoleUrl = consoleUrl
+    self.jwksUrl = jwksUrl
+    self.origins = origins
+    self.projectRef = projectRef
+    self.siteRef = siteRef
+    self.success = success
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case action = "action"
+    case aud = "aud"
+    case audiences = "audiences"
+    case consoleUrl = "consoleUrl"
+    case jwksUrl = "jwksUrl"
+    case origins = "origins"
+    case projectRef = "projectRef"
+    case siteRef = "siteRef"
+    case success = "success"
+  }
+}
+
 public struct PagesCreateOptions: Codable, Sendable {
   public var console: String?
   public var defaultSite: Bool?
@@ -15304,9 +15526,10 @@ public struct PagesShipOptions: Codable, Sendable {
   public var project: String?
   public var route: String?
   public var title: String?
+  public var uses: [String]?
   public var visibility: String?
 
-  public init(body: String? = nil, console: String? = nil, dir: String? = nil, entrypoint: String? = nil, execute: Bool? = nil, html: String? = nil, project: String? = nil, route: String? = nil, title: String? = nil, visibility: String? = nil) {
+  public init(body: String? = nil, console: String? = nil, dir: String? = nil, entrypoint: String? = nil, execute: Bool? = nil, html: String? = nil, project: String? = nil, route: String? = nil, title: String? = nil, uses: [String]? = nil, visibility: String? = nil) {
     self.body = body
     self.console = console
     self.dir = dir
@@ -15316,6 +15539,7 @@ public struct PagesShipOptions: Codable, Sendable {
     self.project = project
     self.route = route
     self.title = title
+    self.uses = uses
     self.visibility = visibility
   }
 
@@ -15329,6 +15553,7 @@ public struct PagesShipOptions: Codable, Sendable {
     case project = "project"
     case route = "route"
     case title = "title"
+    case uses = "uses"
     case visibility = "visibility"
   }
 
@@ -15360,6 +15585,9 @@ public struct PagesShipOptions: Codable, Sendable {
     if let value = self.title {
       body["title"] = try RaviJSON.fromEncodable(value)
     }
+    if let value = self.uses {
+      body["uses"] = try RaviJSON.fromEncodable(value)
+    }
     if let value = self.visibility {
       body["visibility"] = try RaviJSON.fromEncodable(value)
     }
@@ -15374,9 +15602,10 @@ public struct PagesShipReturn: Codable, Sendable {
   public var slug: String
   public var success: Bool
   public var url: RaviJSON
+  public var uses: [String]?
   public var visibility: String
 
-  public init(artifactId: RaviJSON, commentFollow: RaviJSON, route: String, site: [String: RaviJSON], slug: String, success: Bool, url: RaviJSON, visibility: String) {
+  public init(artifactId: RaviJSON, commentFollow: RaviJSON, route: String, site: [String: RaviJSON], slug: String, success: Bool, url: RaviJSON, uses: [String]? = nil, visibility: String) {
     self.artifactId = artifactId
     self.commentFollow = commentFollow
     self.route = route
@@ -15384,6 +15613,7 @@ public struct PagesShipReturn: Codable, Sendable {
     self.slug = slug
     self.success = success
     self.url = url
+    self.uses = uses
     self.visibility = visibility
   }
 
@@ -15395,6 +15625,7 @@ public struct PagesShipReturn: Codable, Sendable {
     case slug = "slug"
     case success = "success"
     case url = "url"
+    case uses = "uses"
     case visibility = "visibility"
   }
 }

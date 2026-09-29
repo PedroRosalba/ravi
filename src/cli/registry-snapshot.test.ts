@@ -266,6 +266,15 @@ describe("buildRegistry", () => {
       source: "inferred",
       ruleId: "pages",
     });
+    expect(
+      inferRaviCommandSkillGate(
+        "ravi pages assertion audiences set --site demo --aud api.example --origin https://api.example --execute",
+      ),
+    ).toMatchObject({
+      skill: "ravi-system-pages",
+      source: "inferred",
+      ruleId: "pages",
+    });
     expect(inferRaviCommandSkillGate('echo "ravi tasks list"', { executables: ["echo"] })).toBeUndefined();
   });
 

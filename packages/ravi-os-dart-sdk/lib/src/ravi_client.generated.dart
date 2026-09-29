@@ -4694,6 +4694,8 @@ class PagesNamespace {
 
   final RaviTransport _transport;
 
+  PagesAssertionNamespace get assertion => PagesAssertionNamespace(_transport);
+
   PagesPasswordNamespace get password => PagesPasswordNamespace(_transport);
 
   Future<PagesCreateReturn> create(List<String> args, [PagesCreateOptions options = const PagesCreateOptions()]) async {
@@ -4795,6 +4797,53 @@ class PagesNamespace {
       command: "visibility",
       body: requestBody,
       decode: pagesVisibilityReturnFromJson,
+    );
+  }
+}
+
+class PagesAssertionNamespace {
+  const PagesAssertionNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  PagesAssertionAudiencesNamespace get audiences => PagesAssertionAudiencesNamespace(_transport);
+}
+
+class PagesAssertionAudiencesNamespace {
+  const PagesAssertionAudiencesNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  Future<PagesAssertionAudiencesListReturn> list([PagesAssertionAudiencesListOptions options = const PagesAssertionAudiencesListOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["pages", "assertion", "audiences"],
+      command: "list",
+      body: requestBody,
+      decode: pagesAssertionAudiencesListReturnFromJson,
+    );
+  }
+
+  Future<PagesAssertionAudiencesRemoveReturn> remove([PagesAssertionAudiencesRemoveOptions options = const PagesAssertionAudiencesRemoveOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["pages", "assertion", "audiences"],
+      command: "remove",
+      body: requestBody,
+      decode: pagesAssertionAudiencesRemoveReturnFromJson,
+    );
+  }
+
+  Future<PagesAssertionAudiencesSetReturn> set_([PagesAssertionAudiencesSetOptions options = const PagesAssertionAudiencesSetOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["pages", "assertion", "audiences"],
+      command: "set",
+      body: requestBody,
+      decode: pagesAssertionAudiencesSetReturnFromJson,
     );
   }
 }

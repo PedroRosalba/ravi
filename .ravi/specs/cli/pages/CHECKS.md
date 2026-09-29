@@ -58,6 +58,9 @@
 - `ravi skills show pages` and `ravi skills show ravi-system-pages` MUST
   resolve to the same skill. The default gate `pages` MUST load
   `ravi-system-pages` for `ravi pages` and `pages.password`.
+- `pages assertion audiences set` and `remove` without `--execute` MUST exit 3
+  before credentials or Console. `list` MUST stay read-only. The contract is
+  `pages/assertion-audiences`.
 - The `pages` skill MUST teach `ravi pages ship … --json` as the only happy
   path to get a URL, without required `--execute`, and MUST NOT teach
   `create` + `publish` choreography. The happy path MUST be project → default
