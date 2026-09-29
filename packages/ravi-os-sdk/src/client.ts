@@ -4424,7 +4424,7 @@ export class RaviClient {
         body: { project, ...(options ?? {}) },
       });
     },
-    /** One-shot: ensure a Pages host and publish HTML or a site directory */
+    /** One-shot: publish a route on the project default Pages host */
     ship: async (args?: string[], options?: {
       body?: string;
       console?: string;

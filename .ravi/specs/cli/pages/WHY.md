@@ -18,6 +18,10 @@ Decisions specific to this domain:
 - **Unify around `ship`.** The skill, CLI help and AGENTS.md teach only
   `ravi pages ship` to get a URL. `create` + `publish` choreography is the
   failure mode this surface exists to stop.
+- **One host per project.** `ship` without a positional slug publishes a
+  route on the project default host (`isDefault`, else
+  `<orgSlug>-<projectSlug>`). `--title` names the page. It does not mint a
+  `*.ravi.page` host. A positional slug is a legacy extra host.
 - **Unbraked write verbs.** `ship`, `create` and `publish` execute
   immediately. `--execute` stays accepted as a compatibility no-op so
   existing agent scripts do not break.

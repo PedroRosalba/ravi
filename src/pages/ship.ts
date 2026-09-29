@@ -28,6 +28,10 @@ export function requireShipTitle(value: string | undefined): string {
   return title;
 }
 
+/**
+ * Path-shaped label for a page title. This is not a Pages host slug.
+ * `pages ship` must not create a `*.ravi.page` host from a title.
+ */
 export function slugifyPageTitle(title: string): string {
   const slug = title
     .normalize("NFKD")
@@ -37,6 +41,74 @@ export function slugifyPageTitle(title: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
   return slug || "page";
+}
+
+/** `ravi` and `ravi-*` host slugs are reserved and must not be created by the CLI. */
+export function isReservedPageHostSlug(slug: string): boolean {
+  const normalized = slug.trim().toLowerCase();
+  return normalized === "ravi" || normalized.startsWith("ravi-");
+}
+
+/**
+ * Project-owned default host slug: `<orgSlug>-<projectSlug>`.
+ * Returns null when either part is missing, not a DNS label, or a UUID.
+ * Callers still reject reserved `ravi` / `ravi-*` results before create.
+ */
+export function projectOwnedHostSlug(
+  orgSlug: string | null | undefined,
+  projectSlug: string | null | undefined,
+): string | null {
+  const org = dnsHostLabel(orgSlug);
+  const project = dnsHostLabel(projectSlug);
+  if (!org || !project) return null;
+  const slug = `${org}-${project}`;
+  if (slug.length > 63) return null;
+  return slug;
+}
+
+export interface ProjectHostCandidate {
+  defaultHostname?: unknown;
+  hostname?: unknown;
+  id?: unknown;
+  isDefault?: unknown;
+  slug?: unknown;
+}
+
+/**
+ * Pick the one host a project owns.
+ * Prefer `isDefault`. Otherwise match the project-owned slug or its hostname.
+ * A title-derived slug is never a match by itself.
+ */
+export function selectProjectDefaultHost<T extends ProjectHostCandidate>(
+  sites: readonly T[],
+  conventionSlug: string | null,
+): T | null {
+  const defaults = sites.filter((site) => site.isDefault === true);
+  if (defaults.length > 0) {
+    if (conventionSlug) {
+      const matched = defaults.find((site) => hostMatchesConvention(site, conventionSlug));
+      if (matched) return matched;
+    }
+    return defaults[0] ?? null;
+  }
+  if (!conventionSlug) return null;
+  return sites.find((site) => hostMatchesConvention(site, conventionSlug)) ?? null;
+}
+
+function hostMatchesConvention(site: ProjectHostCandidate, conventionSlug: string): boolean {
+  const slug = typeof site.slug === "string" ? site.slug : "";
+  const id = typeof site.id === "string" ? site.id : "";
+  const hostname =
+    (typeof site.defaultHostname === "string" ? site.defaultHostname : "") ||
+    (typeof site.hostname === "string" ? site.hostname : "");
+  return slug === conventionSlug || id === conventionSlug || hostname === `${conventionSlug}.ravi.page`;
+}
+
+function dnsHostLabel(value: string | null | undefined): string | null {
+  const slug = value?.trim().toLowerCase() ?? "";
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return null;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(slug)) return null;
+  return slug;
 }
 
 export function resolveShipContentKind(input: Pick<ShipSourceInput, "body" | "dir" | "html">): ShipContentKind {

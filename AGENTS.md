@@ -52,10 +52,19 @@ ravi skills show pages
 ```
 
 Happy path is one command — `ravi pages ship`. Do not choreograph `create` + `publish`.
+One project owns one default host (`<orgSlug>-<projectSlug>.ravi.page`). Pages are
+routes on that host. `--title` is the page title and does not create a host.
+List routes before choosing `--route`. Do not create one site per page.
+Prefixes `ravi` and `ravi-*` are reserved and are not user-creatable.
 
 ```bash
+ravi pages published --project <project> --json
+ravi pages ship --project <project> --title "Weekly report" --route /weekly --body "<h1>OK</h1>" --json
 ravi pages ship --title "Weekly report" --body "<h1>OK</h1>" --json
 ```
+
+The command without `--route` publishes the project home `/` on the default host.
+A positional slug is a legacy extra host, not the happy path.
 
 `create` is host-only compatibility. `publish` is the advanced upload primitive
 (including an existing local `art_*`). They stay available; the agent happy

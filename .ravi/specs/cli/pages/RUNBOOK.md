@@ -40,7 +40,7 @@ bun test src/cli/commands/pages.test.ts
 Live checks against the local CLI (read-only or dry-run):
 
 ```bash
-ravi pages ship --title "Demo" --body "<h1>OK</h1>" --json               # happy path: ensure-host + publish immediately
+ravi pages ship --title "Demo" --route /demo --body "<h1>OK</h1>" --json # happy path: project default host + route
 ravi pages create proj site --visibility private --json                   # advanced/compat: writes the host immediately
 ravi pages publish proj site ./dist --route / --visibility public --json  # advanced/compat: publishes immediately
 ravi pages domains proj site docs.example.com --json                      # expect exit 3 before credentials

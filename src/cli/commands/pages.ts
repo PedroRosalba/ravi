@@ -40,9 +40,11 @@ import {
   type PageCommentFollowResult,
 } from "../../pages/comment-follow.js";
 import {
+  isReservedPageHostSlug,
   materializeShipSource,
+  projectOwnedHostSlug,
   requireShipTitle,
-  slugifyPageTitle,
+  selectProjectDefaultHost,
   validateShipSourceInput,
 } from "../../pages/ship.js";
 import { ContractError, contractDryRun, contractFail, pickFields } from "../agent-contract.js";
@@ -66,15 +68,19 @@ export interface PagesPasswordCommandDeps extends PagesCommandDeps {
 const PAGES_SHIP_HELP = `
 Examples:
   ravi pages ship --title "Weekly report" --body "<h1>OK</h1>" --json
-  ravi pages ship demo --title "Landing" --html ./landing.html --visibility public
-  ravi pages ship proj docs --title "Docs" --dir ./site --route / --json
+  ravi pages ship --project demo --title "Landing" --route /landing --html ./landing.html --visibility public
+  ravi pages published --project demo --json
 
 A successful ship arms or reuses a page.comment.created trigger for the current agent, filtered to this page.
 
 Happy path:
   One command. Do not choreograph pages create + pages publish.
+  Publishes a route on the project's default host (<orgSlug>-<projectSlug>.ravi.page).
+  --title is the page title. It does not create a *.ravi.page host.
+  --route defaults to /. Pass --route for any page that is not the project home.
+  List routes with pages published before choosing a path.
+  A positional slug is a legacy extra host. Prefixes ravi and ravi-* are reserved.
   --title is required. Pass exactly one of --body, --html, or --dir.
-  Omit <slug> to generate it from --title. Existing slugs are reused.
   Public visibility is allowed in the same call.
 
 Write brake:
@@ -292,7 +298,7 @@ export class PagesCommands {
 
   @Command({
     name: "ship",
-    description: "One-shot: ensure a Pages host and publish HTML or a site directory",
+    description: "One-shot: publish a route on the project default Pages host",
     helpAfter: PAGES_SHIP_HELP,
   })
   @CommandAccess({ kind: "mutate", resource: "pages", action: "ship", risk: "high", requiresConfirmation: true })
@@ -300,12 +306,13 @@ export class PagesCommands {
     @Arg("args", {
       variadic: true,
       required: false,
-      description: "[project] [slug]; project defaults to Console scope and slug defaults from --title",
+      description:
+        "[project] [slug]; project defaults to Console scope. A slug is a legacy extra host. Omit it to use the project default host",
     })
     args: string[] = [],
     @Option({ flags: "--project <ref>", description: "Console project id or slug; overrides saved Console scope" })
     projectOption?: string,
-    @Option({ flags: "--title <title>", description: "Page title; also used to generate the slug when omitted" })
+    @Option({ flags: "--title <title>", description: "Page title. Does not create a host slug" })
     titleOption?: string,
     @Option({ flags: "--body <html>", description: "HTML body fragment wrapped in a simple HTML5 document" })
     body?: string,
@@ -334,10 +341,17 @@ export class PagesCommands {
       const resolvedRoute = stringValue(route) ?? "/";
       const resolvedEntrypoint = stringValue(entrypoint) ?? "index.html";
       const normalizedVisibility = normalizePageVisibility(visibility) ?? "private";
-      const slug = parsed.slug ?? slugifyPageTitle(title);
+      const legacySlug = parsed.slug;
+      if (legacySlug && isReservedPageHostSlug(legacySlug)) {
+        throw new CloudAuthError(
+          "PAYLOAD_INVALID",
+          `Host slug "${legacySlug}" is reserved. Prefixes ravi and ravi-* cannot be created from pages ship. Publish a route on the project default host instead.`,
+        );
+      }
       // Validation stays BEFORE the brake: an invalid source is a payload error
       // even on the dry-run path.
       await validateShipSourceInput({ body, dir, html });
+      if (legacySlug) warnLegacyPageHost(legacySlug);
       if (execute !== true) {
         // Write brake (Manual v2 7.8): a ship creates a real Pages release on a
         // reachable URL. Dry-run by default and exit 3 before any Console call,
@@ -346,8 +360,9 @@ export class PagesCommands {
           "pages ship",
           {
             project: parsed.project ?? "(Console scope default)",
-            slug,
-            title,
+            slug: legacySlug ?? "(project default host)",
+            host: legacySlug ?? "(project default host)",
+            legacyHost: Boolean(legacySlug),
             route: resolvedRoute,
             entrypoint: resolvedEntrypoint,
             visibility: normalizedVisibility,
@@ -357,15 +372,18 @@ export class PagesCommands {
         );
       }
       const resolved = await resolvePagesProject(parsed.project, undefined, consoleUrl, this.deps);
-      const site = await ensurePageSite(
+      const host = await resolveShipHost(
         {
           console: consoleUrl,
           defaultVisibility: normalizedVisibility,
+          legacySlug,
           project: resolved.projectRef,
-          slug,
+          scope: resolved.scope,
         },
         this.deps,
       );
+      const site = host.site;
+      const slug = host.slug;
       const source = await materializeShipSource({
         body,
         dir,
@@ -1331,6 +1349,73 @@ function printPublishedPageList(
     console.log("\nNext page:");
     console.log(`  ${pagination.nextCommand}`);
   }
+}
+
+const MISSING_DEFAULT_HOST =
+  "This project has no default Pages host. pages ship publishes a route on that host and does not create a *.ravi.page host from --title. Mark the project-owned host <orgSlug>-<projectSlug> as default, or pass a positional slug only to target a legacy extra host.";
+
+async function resolveShipHost(
+  input: {
+    console?: string;
+    defaultVisibility: string;
+    legacySlug?: string;
+    project: string;
+    scope: ResolvedConsoleScope;
+  },
+  deps: PagesCommandDeps,
+): Promise<{ site: PageSitePayload; slug: string }> {
+  if (input.legacySlug) {
+    const site = await ensurePageSite(
+      {
+        console: input.console,
+        defaultVisibility: input.defaultVisibility,
+        project: input.project,
+        slug: input.legacySlug,
+      },
+      deps,
+    );
+    return { site, slug: input.legacySlug };
+  }
+
+  const listed = await listPageSites({ console: input.console, project: input.project }, deps);
+  const convention = projectOwnedHostSlug(input.scope.organization?.slug, input.scope.project?.slug);
+  const existing = selectProjectDefaultHost(listed.sites, convention);
+  if (existing) {
+    const slug = stringValue(existing.slug) ?? stringValue(existing.id);
+    if (!slug) {
+      throw new CloudAuthError("PAYLOAD_INVALID", "Project default Pages host is missing a slug.");
+    }
+    return { site: existing, slug };
+  }
+
+  if (convention && isReservedPageHostSlug(convention)) {
+    throw new CloudAuthError(
+      "PAYLOAD_INVALID",
+      `Project-owned host slug "${convention}" is reserved. Prefixes ravi and ravi-* are not user-creatable, and this project has no default Pages host.`,
+    );
+  }
+
+  if (!convention) {
+    throw new CloudAuthError("PAYLOAD_INVALID", MISSING_DEFAULT_HOST);
+  }
+
+  const created = await createPageSite(
+    {
+      console: input.console,
+      defaultVisibility: normalizePageVisibility(input.defaultVisibility),
+      isDefault: true,
+      project: input.project,
+      slug: convention,
+    },
+    deps,
+  );
+  return { site: created.site, slug: convention };
+}
+
+function warnLegacyPageHost(slug: string): void {
+  console.error(
+    `Legacy Pages host "${slug}": publishing to an extra *.ravi.page host. The happy path publishes a route on the project default host. Do not create one host per page.`,
+  );
 }
 
 async function ensurePageSite(

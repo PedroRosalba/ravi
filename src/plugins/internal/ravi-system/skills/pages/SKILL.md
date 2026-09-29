@@ -1,17 +1,21 @@
 ---
 name: pages
 description: |
-  Gerencia Ravi Pages: hospeda HTML e devolve uma URL. Use quando precisar:
-  - Criar, publicar ou hospedar uma page/página/site/landing/relatório
-  - Subir HTML e obter um URL público ou privado
-  - page, pages, HTML, site, URL, publish, hospedar, landing, relatório
+  Publica uma página no host default do projeto (rota, não um host novo). Use quando precisar:
+  - Criar, publicar ou hospedar uma página, landing ou relatório
+  - Subir HTML e obter um URL no host do projeto
+  - page, pages, HTML, rota, URL, publish, hospedar, landing, relatório
   Não use para o ledger genérico de artifacts (isso é a skill artifacts).
+  Não crie um host *.ravi.page por página.
 ---
 
 # Ravi Pages
 
-`ravi pages ship` é o one-shot. Um comando. Não orquestre `create` + `publish`.
-Não use `artifacts publish` para hospedar HTML.
+Um projeto tem um host default (`<orgSlug>-<projectSlug>.ravi.page`). Páginas são rotas nesse host. A URL é `https://<host><rota>`. Domínio custom é um binding em cima desse host.
+
+Não crie um site por página. Não crie um host por página. `--title` é o título da página. Ele não vira slug de host.
+
+`ravi pages ship` publica uma rota no host default. Um comando. Não orquestre `create` + `publish`. Não use `artifacts publish` para hospedar HTML.
 
 ## Contrato Do CLI
 
@@ -21,69 +25,85 @@ Taxonomia de saída:
 
 - `0` sucesso.
 - `1` erro de execução (`SITE_NOT_FOUND`, `ROUTE_NOT_FOUND`, auth/provider).
-- `2` erro de uso (falta `--title`, `--body`/`--html`/`--dir` conflitantes, slug inválido).
+- `2` erro de uso (falta `--title`, `--body`/`--html`/`--dir` conflitantes, slug reservado).
 - `3` freio de escrita — não é erro. Nada foi enviado/exposto; o envelope traz `dryRun:true` e `plan`. Revise e repita com `--execute`.
 
 Exit 3 **não** se aplica a `pages ship`, `pages create` nem `pages publish`. Esses ops escrevem na hora. `--execute` nesses três é no-op (aceito por compatibilidade). O freio continua em `password set/remove`, `domains` e `visibility`/`update` para `public`.
 
-`--json` de sucesso do ship:
+`--json` de sucesso do ship. `slug` é o host do projeto. `route` é a página. O campo `site` é o registro desse host:
 
 ```json
-{ "url": "https://demo.ravi.page/", "site": {}, "slug": "demo", "route": "/", "visibility": "private", "artifactId": "art_xxx" }
+{ "url": "https://acme-proj.ravi.page/relatorio", "site": {}, "slug": "acme-proj", "route": "/relatorio", "visibility": "private", "artifactId": "art_xxx" }
 ```
 
 Checklist:
 
+- Publiquei no host default do projeto, sem criar um `*.ravi.page` a partir do título?
+- Listei as rotas antes de escolher `--route`?
 - Usei só `ravi pages ship` para obter a URL, sem `create` + `publish`?
 - Tratei exit 3 como freio só em password/domains/visibility→public, nunca em ship?
-- Se a rota `/` ficou private explícita, usei `pages visibility <slug> public --route / --execute` em vez de re-ship?
+- Se a rota `/` ficou private explícita, usei `pages visibility <host> public --route / --execute` em vez de re-ship?
 
-## One-shot
+## Happy path: projeto → host → rota
 
 ```bash
+ravi pages published --project <projeto> --json
+ravi pages ship --project <projeto> --title "Relatório semanal" --route /relatorio --body "<h1>OK</h1>" --json
 ravi pages ship --title "Relatório semanal" --body "<h1>OK</h1>" --json
-ravi pages ship --title "Landing" --html ./landing.html --visibility public --json
-ravi pages ship --title "Docs" --dir ./site --entrypoint index.html --json
+ravi pages ship --project <projeto> --title "Landing" --route / --html ./landing.html --visibility public --json
+ravi pages ship --project <projeto> --title "Docs" --route /docs --dir ./site --entrypoint index.html --json
 ```
 
 Regras:
 
-- `--title` é obrigatório. Sem `<slug>`, o slug sai do título.
-- Conteúdo: exatamente um de `--body` (fragmento, wrap HTML5), `--html` (arquivo) ou `--dir` (diretório + entrypoint).
-- Defaults: `--visibility private`, `--route /`, `--entrypoint index.html`.
-- Slug existente: reusa o host. Não falha.
+- Sem slug posicional, o ship usa o host default do projeto: o site com `isDefault`, ou o slug `<orgSlug>-<projectSlug>`. Se esse host ainda não existe, o CLI cria só esse, com `isDefault`. Não cria outro.
+- `--title` é obrigatório e não gera host. Conteúdo: exatamente um de `--body` (fragmento, wrap HTML5), `--html` (arquivo) ou `--dir` (diretório + entrypoint).
+- Defaults: `--visibility private`, `--route /` (home do projeto), `--entrypoint index.html`.
+- Liste rotas com `ravi pages published` antes de publicar. `--route /` substitui a home. Outra página precisa de outra rota (`/relatorio`, `/docs`).
+- `[project]` posicional junto com um segundo argumento é host legado. O projeto entra por `--project` ou pelo scope do Console.
 - Depois de um ship com sucesso, o Ravi cria ou reusa um trigger `page-comment:<site id>` no tópico `ravi.watch.console.page.comment.created`, filtrado a essa page e ligado ao agent que fez o ship. Um segundo ship não troca o agent. Comentário do próprio creator ainda acorda o agent. Sem agent no contexto, o ship segue e `commentFollow.skipped` fica `missing_creator`.
-- `[project]` é opcional (scope do Console). `--project` também vale.
 - `--visibility public` vale no mesmo comando. Não precisa de `--execute`.
+
+Prefixos reservados de host: `ravi` e `ravi-*`. O CLI não cria esses slugs. Não tente usá-los como host novo.
 
 ## Listar
 
 ```bash
-ravi pages list --json
-ravi pages published --json
+ravi pages list --project <projeto> --json
+ravi pages published --project <projeto> --json
 ```
 
-## Avançado / legado
+`pages list` lista hosts do projeto. O host default tem `isDefault: true`. `pages published` lista rotas e URLs. Leia isso antes de escolher `--route`.
 
-Não é o happy path. `create` só cria o host. `publish` sobe bytes num host já existente, ou publica um `art_*` que **já** está no ledger local. Prefira `ship` salvo o HTML já ser um `art_*`.
+## Host legado
+
+Não é o happy path. Um argumento posicional de slug cria ou reusa um host `*.ravi.page` extra e emite aviso. Não use isso para uma página nova.
+
+```bash
+ravi pages ship <slug-legado> --title "Página antiga" --route / --body "<h1>OK</h1>" --json
+```
+
+`create` só cria o registro do host. `publish` sobe bytes num host já existente, ou publica um `art_*` que **já** está no ledger local. Prefira `ship` salvo o HTML já ser um `art_*`.
 
 ```bash
 ravi pages create <slug> --json
-ravi pages publish <project-ref> <site-slug> <artifact-id> --route / --json
+ravi pages publish <project-ref> <host> <artifact-id> --route / --json
 ```
 
 ## Password / visibility / domain
 
+O argumento ainda é o slug do host. A página é a rota.
+
 ```bash
-ravi pages password set <slug> --route / --execute
-ravi pages password status <slug> --route / --json
-ravi pages password remove <slug> --route / --visibility private --execute
-ravi pages visibility <slug> private
-ravi pages visibility <slug> public --execute
-ravi pages visibility <slug> public --route / --execute
-ravi pages domains <slug> docs.example.com --execute
+ravi pages password set <host> --route /relatorio --execute
+ravi pages password status <host> --route /relatorio --json
+ravi pages password remove <host> --route /relatorio --visibility private --execute
+ravi pages visibility <host> private
+ravi pages visibility <host> public --execute
+ravi pages visibility <host> public --route /relatorio --execute
+ravi pages domains <host> docs.example.com --execute
 ```
 
-`pages visibility` sem `--route` muda só o `defaultVisibility` do site. Rotas publicadas com visibility explícita (ex.: `/` private) continuam private. Use `--route /` (ou `/foo`) para mudar a política daquela rota sem reenviar arquivos. Sem `--execute`, o plano mostra site vs rota e current vs target (exit 3 para `public`). Com `--execute`, o JSON/humano reporta a visibility efetiva da rota alvo.
+`pages visibility` sem `--route` muda só o `defaultVisibility` do host. Rotas publicadas com visibility explícita (ex.: `/` private) continuam private. Use `--route /` (ou `/foo`) para mudar a política daquela rota sem reenviar arquivos. Sem `--execute`, o plano mostra host vs rota e current vs target (exit 3 para `public`). Com `--execute`, o JSON/humano reporta a visibility efetiva da rota alvo.
 
 `password set` sem `--execute` nem pede a senha. Automação: `--stdin` com input redirecionado. Nunca coloque a senha em argumento, env, log ou JSON.

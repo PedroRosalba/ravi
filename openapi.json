@@ -12,7 +12,7 @@
   "info": {
     "description": "OpenAPI 3.1 spec auto-generated from the Ravi CLI registry. Each operation maps 1:1 to a `ravi <group> <command>` invocation.",
     "title": "Ravi API",
-    "version": "0bf9c85757cac2aa"
+    "version": "770a8d8079377a76"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -62315,7 +62315,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "args": {
-                    "description": "[project] [slug]; project defaults to Console scope and slug defaults from --title",
+                    "description": "[project] [slug]; project defaults to Console scope. A slug is a legacy extra host. Omit it to use the project default host",
                     "items": {
                       "type": "string"
                     },
@@ -62354,7 +62354,7 @@
                     "type": "string"
                   },
                   "title": {
-                    "description": "Page title; also used to generate the slug when omitted",
+                    "description": "Page title. Does not create a host slug",
                     "type": "string"
                   },
                   "visibility": {
@@ -62547,7 +62547,7 @@
           }
         },
         "security": [],
-        "summary": "One-shot: ensure a Pages host and publish HTML or a site directory",
+        "summary": "One-shot: publish a route on the project default Pages host",
         "tags": [
           "pages"
         ]

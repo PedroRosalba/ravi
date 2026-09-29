@@ -2,8 +2,15 @@
 
 ## Checks
 
-- `pages ship` without `--execute` MUST ensure the host (reuse an existing
-  slug; do not fail) then publish+activate. It MUST NOT exit 3 with
+- `pages ship` without a positional slug MUST publish onto the project
+  default host (a listed site with `isDefault`, otherwise the project-owned
+  slug `<orgSlug>-<projectSlug>`, created once with `isDefault` when that
+  slug can be computed) and the requested `--route` (default `/`). `--title`
+  alone MUST NOT become a new host slug. A positional slug remains a legacy
+  extra host: it MAY create or reuse that slug and MUST warn. Slugs `ravi`
+  and `ravi-*` MUST NOT be created.
+- `pages ship` without `--execute` MUST ensure the host (the project default
+  host, or the explicit legacy slug) then publish+activate. It MUST NOT exit 3 with
   `WRITE_REQUIRES_EXECUTE` and MUST talk to Console when args are valid.
   `--execute` MUST be accepted as an unused no-op. `--body` MUST be wrapped
   in a simple HTML5 document. Success JSON MUST include
@@ -53,7 +60,9 @@
   `ravi-system-pages` for `ravi pages` and `pages.password`.
 - The `pages` skill MUST teach `ravi pages ship … --json` as the only happy
   path to get a URL, without required `--execute`, and MUST NOT teach
-  `create` + `publish` choreography. `create`/`publish` MAY appear only under
-  an advanced/compat section.
+  `create` + `publish` choreography. The happy path MUST be project → default
+  host → route, MUST say not to create one host per page, and MUST tell the
+  caller to list routes before publish. `create`/`publish` MAY appear only under
+  an advanced/compat or legacy section.
 - `bun test src/cli/commands/pages.test.ts` SHOULD pass after any change to
   the pages contract surface.
