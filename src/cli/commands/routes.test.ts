@@ -31,6 +31,13 @@ let liveWinner: { route?: { pattern?: string | null } | null; agentId: string } 
 let matchRouteCalls: Array<{ phone?: string; isGroup?: boolean; groupId?: string }> = [];
 let sessions: Array<Partial<SessionEntry> & Pick<SessionEntry, "sessionKey" | "agentId">> = [];
 let deletedSessionKeys: string[] = [];
+let detachCalls: Array<{ accountId: string; pattern: string; targetAgent: string; channel?: string }> = [];
+let stickyDetachResult: { detached: number; preserved: Array<Record<string, unknown>> } = {
+  detached: 0,
+  preserved: [],
+};
+let stickyOverrides: Array<Record<string, unknown>> = [];
+let explicitSessionKeys = new Set<string>();
 let pendingEntries: Array<{
   accountId: string;
   phone: string;
@@ -235,6 +242,21 @@ mock.module("../../router/sessions.js", () => ({
   },
 }));
 
+mock.module("../../router/route-sticky-attach.js", () => ({
+  detachRouteBookkeepingSubscriptions: (input: {
+    accountId: string;
+    pattern: string;
+    targetAgent: string;
+    channel?: string;
+  }) => {
+    detachCalls.push(input);
+    return stickyDetachResult;
+  },
+  listRouteStickyOverrides: () => stickyOverrides,
+  sessionHasExplicitAttach: (sessionKey: string) => explicitSessionKeys.has(sessionKey),
+  isExplicitSessionAttach: (attachedByType: string) => attachedByType === "user" || attachedByType === "agent",
+}));
+
 mock.module("../runtime-target.js", () => ({
   inspectCliRuntimeTarget: (name: string) => ({
     name,
@@ -279,6 +301,10 @@ describe("RoutesCommands", () => {
     matchRouteCalls = [];
     sessions = [];
     deletedSessionKeys = [];
+    detachCalls = [];
+    stickyDetachResult = { detached: 0, preserved: [] };
+    stickyOverrides = [];
+    explicitSessionKeys = new Set();
     pendingEntries = [];
     deleteRouteCalls = [];
   });
@@ -458,6 +484,14 @@ describe("RoutesCommands", () => {
     expect(payload.removedPending).toBe(true);
     expect((payload.route as Record<string, unknown>).priority).toBe(7);
     expect((payload.liveEffect as Record<string, unknown>).status).toBe("verified");
+    expect(detachCalls).toEqual([
+      expect.objectContaining({
+        accountId: "main",
+        pattern: "5511999999999",
+        targetAgent: "sales",
+        channel: "whatsapp",
+      }),
+    ]);
   });
 
   it("cleans conflicting sessions only inside the mutated instance", () => {
@@ -755,6 +789,139 @@ describe("RoutesCommands", () => {
     expect(deletedSessionKeys.sort()).toEqual(["agent:alex:whatsapp:main:dm:999", "agent:main:dm:224420715061374"]);
     expect(sessions.map((session) => session.sessionKey)).toEqual(["agent:main:main"]);
   });
+
+  it("deletes an exact phone DM session and asks route subscriptions to detach", () => {
+    routes = [
+      {
+        id: 1,
+        accountId: "main",
+        pattern: "5511999999999",
+        agent: "michael-test",
+        channel: "whatsapp",
+      },
+    ];
+    sessions = [
+      {
+        sessionKey: "agent:michael-test:whatsapp:main:dm:5511999999999",
+        agentId: "michael-test",
+        accountId: "main",
+        lastAccountId: "main",
+      },
+      {
+        sessionKey: "agent:michael-test:whatsapp:main:dm:55119999999999",
+        agentId: "michael-test",
+        accountId: "main",
+        lastAccountId: "main",
+      },
+      {
+        sessionKey: "agent:nba-front-user:whatsapp:main:dm:5511999999999",
+        agentId: "nba-front-user",
+        accountId: "main",
+        lastAccountId: "main",
+      },
+    ];
+
+    const payload = captureJson(() => {
+      new InstancesRoutesCommands().set("main", "5511999999999", "agent", "nba-front-user", undefined, true);
+    });
+
+    expect(payload.cleanedSessions).toBe(1);
+    expect(payload.detachedSubscriptions).toBe(0);
+    expect(deletedSessionKeys).toEqual(["agent:michael-test:whatsapp:main:dm:5511999999999"]);
+    expect(detachCalls).toEqual([
+      expect.objectContaining({
+        accountId: "main",
+        pattern: "5511999999999",
+        targetAgent: "nba-front-user",
+        channel: "whatsapp",
+      }),
+    ]);
+    expect(sessions.map((session) => session.sessionKey).sort()).toEqual([
+      "agent:michael-test:whatsapp:main:dm:55119999999999",
+      "agent:nba-front-user:whatsapp:main:dm:5511999999999",
+    ]);
+  });
+
+  it("keeps a session that still has an explicit attach when the route agent changes", () => {
+    routes = [
+      {
+        id: 1,
+        accountId: "main",
+        pattern: "5511999999999",
+        agent: "michael-test",
+      },
+    ];
+    const sessionKey = "agent:michael-test:whatsapp:main:dm:5511999999999";
+    explicitSessionKeys.add(sessionKey);
+    sessions = [
+      {
+        sessionKey,
+        agentId: "michael-test",
+        accountId: "main",
+        lastAccountId: "main",
+      },
+    ];
+    stickyDetachResult = { detached: 0, preserved: [{ chatId: "chat_dm", explicit: true }] };
+    stickyOverrides = [
+      {
+        chatId: "chat_dm",
+        sessionKey,
+        agentId: "michael-test",
+        attachedByType: "user",
+        attachedReason: "cli-attach",
+        explicit: true,
+        detachCommand: `ravi sessions detach ${sessionKey} --chat chat_dm`,
+      },
+    ];
+
+    const payload = captureJson(() => {
+      new InstancesRoutesCommands().set("main", "5511999999999", "agent", "nba-front-user", undefined, true);
+    });
+
+    expect(deletedSessionKeys).toEqual([]);
+    expect(payload.cleanedSessions).toBe(0);
+    expect(payload.detachedSubscriptions).toBe(0);
+    const sticky = payload.stickyAttach as { overrides: Array<Record<string, unknown>> };
+    expect(sticky.overrides[0]?.explicit).toBe(true);
+    expect(sticky.overrides[0]?.agentId).toBe("michael-test");
+  });
+
+  it("warns in routes explain when a subscription still overrides the live winner", () => {
+    routes = [
+      {
+        id: 1,
+        accountId: "main",
+        pattern: "5511999999999",
+        agent: "nba-front-user",
+        channel: "whatsapp",
+      },
+    ];
+    liveWinner = {
+      route: { pattern: "5511999999999" },
+      agentId: "nba-front-user",
+    };
+    stickyOverrides = [
+      {
+        chatId: "chat_dm",
+        sessionKey: "agent:michael-test:whatsapp:main:dm:5511999999999",
+        agentId: "michael-test",
+        attachedByType: "user",
+        attachedReason: "cli-attach",
+        explicit: true,
+        detachCommand: "ravi sessions detach agent:michael-test:whatsapp:main:dm:5511999999999 --chat chat_dm",
+      },
+    ];
+
+    const output = captureLogs(() => {
+      new RoutesCommands().explain("main", "5511999999999", "whatsapp");
+    });
+
+    expect(output).toContain("Live effect:   verified");
+    expect(output).toContain("Winning agent: nba-front-user");
+    expect(output).toContain("Sticky attach: an active subscription still overrides the live route agent");
+    expect(output).toContain("agent michael-test, explicit attach");
+    expect(output).toContain("ravi sessions detach agent:michael-test:whatsapp:main:dm:5511999999999 --chat chat_dm");
+  });
 });
 
 describe("instances/routes agent-first contract", () => {
@@ -768,6 +935,10 @@ describe("instances/routes agent-first contract", () => {
     matchRouteCalls = [];
     sessions = [];
     deletedSessionKeys = [];
+    detachCalls = [];
+    stickyDetachResult = { detached: 0, preserved: [] };
+    stickyOverrides = [];
+    explicitSessionKeys = new Set();
     pendingEntries = [];
     deleteRouteCalls = [];
   });

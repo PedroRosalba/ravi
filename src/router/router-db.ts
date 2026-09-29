@@ -8747,6 +8747,28 @@ export function dbFindActiveSubscriptionByChat(chatId: string): SessionChatSubsc
 }
 
 /**
+ * Active subscription chat ids on the given instance ids.
+ * Chats store the Omni instance UUID (and sometimes the account name).
+ */
+export function dbListActiveSubscriptionChatIds(instanceIds: string[]): string[] {
+  const ids = [...new Set(instanceIds.map((id) => id.trim()).filter((id) => id.length > 0))];
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = getDb()
+    .prepare(
+      `
+      SELECT s.chat_id AS chat_id
+      FROM session_chat_subscriptions s
+      JOIN chats c ON c.id = s.chat_id
+      WHERE s.detached_at IS NULL
+        AND c.instance_id IN (${placeholders})
+    `,
+    )
+    .all(...ids) as Array<{ chat_id: string }>;
+  return rows.map((row) => row.chat_id);
+}
+
+/**
  * Current output attachment for a session. This is the chat that receives
  * emitted responses from the session until another attach selects a new one
  * or detach clears it.
