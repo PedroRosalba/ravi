@@ -87,6 +87,9 @@ try {
     depth: 50,
     ...(githubToken ? { username: "x-access-token", password: githubToken } : {}),
   });
+  // Ravi writes .claude/settings.json into the agent cwd; keep it out of the
+  // patch unless the repo already tracks that file.
+  await sh(`echo .claude/settings.json >> ${REPO_DIR}/.git/info/exclude`);
 
   step("Starting Ravi daemon");
   await sandbox.commands.run("ravi daemon run </dev/null > /home/user/.ravi/daemon.log 2>&1", {
