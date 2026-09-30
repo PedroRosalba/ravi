@@ -20,6 +20,9 @@
   and never required.
 - No remote-login discovery, post-login provider, or remote installation
   credential module is present in the root auth implementation.
+- Login polling retries `AUTH_PENDING`, `RATE_LIMITED`, and `SERVER_UNAVAILABLE`
+  on the same device code until the timeout, and does not retry other auth
+  errors.
 
 ## Login Smoke
 

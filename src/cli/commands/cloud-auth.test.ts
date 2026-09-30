@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import type { ConsoleApiClient } from "../../cloud-auth/client.js";
+import { ConsoleApiClient } from "../../cloud-auth/client.js";
 import { CloudAuthError } from "../../cloud-auth/errors.js";
 import type { CloudCredentials, CredentialExchangeInput } from "../../cloud-auth/types.js";
 import { closeConsoleScopeStore, getConsoleScopeDefault } from "../../console-scope/store.js";
@@ -437,6 +437,123 @@ describe("cloud auth root command handlers", () => {
   });
 });
 
+describe("cloud auth login polling", () => {
+  it("retries AUTH_PENDING on the same device code until exchange succeeds", async () => {
+    const harness = scriptedLoginHarness({
+      exchanges: [loginErrorResponse("AUTH_PENDING", 409), loginSuccessResponse()],
+    });
+
+    const { result } = await harness.run();
+
+    expect(result).toMatchObject({ success: true });
+    expect(harness.sleeps).toEqual([5_000]);
+    expect(harness.exchangeBodies).toHaveLength(2);
+    expectSameDeviceGrant(harness.exchangeBodies, harness.deviceStarts());
+  });
+
+  it("retries RATE_LIMITED using Retry-After and keeps the device code", async () => {
+    const harness = scriptedLoginHarness({
+      exchanges: [loginErrorResponse("RATE_LIMITED", 429, { "Retry-After": "15" }), loginSuccessResponse()],
+    });
+
+    await harness.run();
+
+    expect(harness.sleeps).toEqual([15_000]);
+    expect(harness.exchangeBodies).toHaveLength(2);
+    expectSameDeviceGrant(harness.exchangeBodies, harness.deviceStarts());
+  });
+
+  it("backs off RATE_LIMITED with jitter when Retry-After is absent", async () => {
+    const rolls = [0, 1];
+    const harness = scriptedLoginHarness({
+      exchanges: [
+        loginErrorResponse("RATE_LIMITED", 429),
+        loginErrorResponse("RATE_LIMITED", 429),
+        loginSuccessResponse(),
+      ],
+      random: () => rolls.shift() ?? 0,
+    });
+
+    await harness.run();
+
+    expect(harness.sleeps).toEqual([5_000, 12_500]);
+    expect(harness.exchangeBodies).toHaveLength(3);
+    expectSameDeviceGrant(harness.exchangeBodies, harness.deviceStarts());
+  });
+
+  it("retries SERVER_UNAVAILABLE then succeeds on the same device code", async () => {
+    const harness = scriptedLoginHarness({
+      exchanges: [loginErrorResponse("SERVER_UNAVAILABLE", 503), loginSuccessResponse()],
+    });
+
+    await harness.run();
+
+    expect(harness.sleeps).toEqual([5_000]);
+    expect(harness.exchangeBodies).toHaveLength(2);
+    expectSameDeviceGrant(harness.exchangeBodies, harness.deviceStarts());
+  });
+
+  it("throws non-retryable auth errors without sleeping", async () => {
+    const harness = scriptedLoginHarness({
+      exchanges: [loginErrorResponse("AUTH_EXPIRED", 401)],
+    });
+
+    await expect(harness.run()).rejects.toMatchObject({ code: "AUTH_EXPIRED" });
+    expect(harness.sleeps).toEqual([]);
+    expect(harness.exchangeBodies).toHaveLength(1);
+    expect(harness.deviceStarts()).toBe(1);
+  });
+
+  it("does not retry when polling is disabled", async () => {
+    const harness = scriptedLoginHarness({
+      exchanges: [loginErrorResponse("AUTH_PENDING", 409)],
+      options: { poll: false },
+    });
+
+    await expect(harness.run()).rejects.toMatchObject({ code: "AUTH_PENDING" });
+    expect(harness.sleeps).toEqual([]);
+    expect(harness.exchangeBodies).toHaveLength(1);
+  });
+
+  it("stops AUTH_PENDING retries once the login deadline is reached", async () => {
+    let now = 1_000_000;
+    const harness = scriptedLoginHarness({
+      exchanges: [
+        loginErrorResponse("AUTH_PENDING", 409),
+        loginErrorResponse("AUTH_PENDING", 409),
+        loginErrorResponse("AUTH_PENDING", 409),
+      ],
+      options: { timeoutSeconds: "10", intervalSeconds: "5" },
+      clock: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+    });
+
+    await expect(harness.run()).rejects.toMatchObject({ code: "AUTH_PENDING" });
+    expect(harness.sleeps).toEqual([5_000, 5_000]);
+    expect(harness.exchangeBodies).toHaveLength(3);
+    expectSameDeviceGrant(harness.exchangeBodies, harness.deviceStarts());
+  });
+
+  it("does not sleep past the deadline when Retry-After exceeds the remaining timeout", async () => {
+    let now = 1_000_000;
+    const harness = scriptedLoginHarness({
+      exchanges: [loginErrorResponse("RATE_LIMITED", 429, { "Retry-After": "15" })],
+      options: { timeoutSeconds: "10" },
+      clock: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+    });
+
+    await expect(harness.run()).rejects.toMatchObject({ code: "RATE_LIMITED", retryAfterMs: 15_000 });
+    expect(harness.sleeps).toEqual([]);
+    expect(harness.exchangeBodies).toHaveLength(1);
+    expect(harness.deviceStarts()).toBe(1);
+  });
+});
+
 async function captureConsole<T>(run: () => T | Promise<T>): Promise<{ output: string; result: T }> {
   const originalLog = console.log;
   const lines: string[] = [];
@@ -449,6 +566,128 @@ async function captureConsole<T>(run: () => T | Promise<T>): Promise<{ output: s
   } finally {
     console.log = originalLog;
   }
+}
+
+function scriptedLoginHarness(input: {
+  exchanges: Response[];
+  options?: { poll?: boolean; timeoutSeconds?: string; intervalSeconds?: string };
+  sleep?: (ms: number) => Promise<void>;
+  clock?: () => number;
+  random?: () => number;
+}) {
+  const exchangeBodies: Array<Record<string, unknown>> = [];
+  const sleeps: number[] = [];
+  let deviceStarts = 0;
+  let exchangeIndex = 0;
+  const client = new ConsoleApiClient({
+    consoleUrl: "https://console.example",
+    fetch: async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/cli/auth/config") return loginConfigResponse();
+      if (path === "/api/cli/auth/device") {
+        deviceStarts += 1;
+        return loginDeviceResponse();
+      }
+      if (path === "/api/cli/auth/exchange") {
+        const raw = typeof init?.body === "string" ? init.body : "{}";
+        exchangeBodies.push(JSON.parse(raw) as Record<string, unknown>);
+        const response = input.exchanges[exchangeIndex];
+        exchangeIndex += 1;
+        return response ?? loginErrorResponse("SERVER_UNAVAILABLE", 503);
+      }
+      return loginErrorResponse("SERVER_UNAVAILABLE", 503);
+    },
+  });
+
+  return {
+    exchangeBodies,
+    sleeps,
+    deviceStarts: () => deviceStarts,
+    run: () =>
+      captureConsole(() =>
+        runLogin(
+          {
+            console: "https://console.example",
+            json: true,
+            open: false,
+            poll: true,
+            intervalSeconds: "5",
+            timeoutSeconds: "300",
+            ...input.options,
+          },
+          {
+            client,
+            readCredentials: () => null,
+            writeCredentials: () => {},
+            listProjects: async () => ({
+              success: true,
+              consoleUrl: "https://console.example",
+              total: 0,
+              projects: [],
+              items: [],
+            }),
+            sleep: async (ms) => {
+              sleeps.push(ms);
+              await input.sleep?.(ms);
+            },
+            clock: input.clock,
+            random: input.random ?? (() => 0),
+          },
+        ),
+      ),
+  };
+}
+
+function expectSameDeviceGrant(bodies: Array<Record<string, unknown>>, deviceStarts: number) {
+  expect(deviceStarts).toBe(1);
+  expect(bodies.length).toBeGreaterThan(0);
+  expect(bodies.every((body) => body.deviceCode === "device-secret")).toBe(true);
+  expect(new Set(bodies.map((body) => body.installationId)).size).toBe(1);
+}
+
+function loginJson(payload: unknown, status = 200, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "Content-Type": "application/json", ...headers },
+  });
+}
+
+function loginConfigResponse(): Response {
+  return loginJson({
+    configured: true,
+    clientId: "ravi-cli",
+    mode: "console_device",
+    endpoints: {
+      deviceAuthorization: "https://console.example/api/cli/auth/device",
+      token: null,
+    },
+  });
+}
+
+function loginDeviceResponse(): Response {
+  return loginJson({
+    device_code: "device-secret",
+    user_code: "ABC",
+    verification_uri: "https://console.example/device",
+    verification_uri_complete: "https://console.example/device?user_code=ABC",
+    expires_in: 600,
+    interval: 5,
+  });
+}
+
+function loginErrorResponse(code: string, status: number, headers: Record<string, string> = {}): Response {
+  return loginJson({ error: { code, message: code } }, status, headers);
+}
+
+function loginSuccessResponse(): Response {
+  return loginJson({
+    accessToken: "login-access-secret",
+    refreshToken: "login-refresh-secret",
+    accessTokenExpiresAt: "2026-05-10T00:00:00.000Z",
+    scopes: ["artifacts:publish"],
+    user: { email: "alice@example.com" },
+    organization: { id: "org_123", name: "Acme" },
+  });
 }
 
 function makeCredentials(): CloudCredentials {

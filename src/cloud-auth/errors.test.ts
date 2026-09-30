@@ -7,6 +7,19 @@ import {
   normalizeCloudAuthErrorCode,
 } from "./errors.js";
 
+describe("CloudAuthError retry hints", () => {
+  it("keeps Retry-After off the public error JSON", () => {
+    const error = new CloudAuthError("RATE_LIMITED", "limited", { status: 429, retryAfterMs: 15_000 });
+
+    expect(error.retryAfterMs).toBe(15_000);
+    expect(error.toJSON()).toEqual({
+      code: "RATE_LIMITED",
+      message: "limited",
+      status: 429,
+    });
+  });
+});
+
 describe("cloudAuthErrorFromUnknown", () => {
   it("preserves an already classified cloud error", () => {
     const classified = new CloudAuthError("RATE_LIMITED", "Provider rate limit reached.", { status: 429 });

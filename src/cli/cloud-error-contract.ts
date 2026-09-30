@@ -1,10 +1,8 @@
 import { stripVTControlCharacters } from "node:util";
-import { CloudAuthError } from "../cloud-auth/errors.js";
+import { CloudAuthError, isRetryableCloudAuthCode } from "../cloud-auth/errors.js";
 import { ContractError, CONTRACT_EXIT_ERROR, CONTRACT_EXIT_USAGE } from "./agent-contract.js";
 import { getContext } from "./context.js";
 import { payloadInvalidIssues, sanitizePayloadInvalidMessage } from "./payload-error-message.js";
-
-const RETRYABLE_CODES = new Set(["AUTH_PENDING", "RATE_LIMITED", "SERVER_UNAVAILABLE"]);
 
 export function commandOperation(group: string, command: string): string {
   if (group === "_root") return command;
@@ -20,7 +18,7 @@ export function cloudErrorToContractError(op: string, error: CloudAuthError): Co
     publicMessage(error.code, error.message),
     error.code === "PAYLOAD_INVALID" ? CONTRACT_EXIT_USAGE : CONTRACT_EXIT_ERROR,
     {
-      retryable: RETRYABLE_CODES.has(error.code),
+      retryable: isRetryableCloudAuthCode(error.code),
       ...(error.status !== undefined ? { status: error.status } : {}),
       ...(issues ? { issues } : {}),
       suggestedAction: suggestedAction(error.code),

@@ -22,6 +22,20 @@ export const CLOUD_AUTH_ERROR_CODES = [
 
 export type CloudAuthErrorCode = (typeof CLOUD_AUTH_ERROR_CODES)[number];
 
+/**
+ * Single source of truth for retryable Console auth failures.
+ * The CLI exit contract (`retryable`) and `ravi login` polling both use this set.
+ */
+export const RETRYABLE_CLOUD_AUTH_CODES: ReadonlySet<CloudAuthErrorCode> = new Set([
+  "AUTH_PENDING",
+  "RATE_LIMITED",
+  "SERVER_UNAVAILABLE",
+]);
+
+export function isRetryableCloudAuthCode(code: CloudAuthErrorCode): boolean {
+  return RETRYABLE_CLOUD_AUTH_CODES.has(code);
+}
+
 const KNOWN_CODES = new Set<string>(CLOUD_AUTH_ERROR_CODES);
 
 /** Console `/api/cli/link` codes → CLI codes already exposed to agents. */
@@ -34,18 +48,27 @@ const CONSOLE_LINK_ERROR_ALIASES: Record<string, CloudAuthErrorCode> = {
 export class CloudAuthError extends Error {
   readonly code: CloudAuthErrorCode;
   readonly status?: number;
+  /** Wait hint from Retry-After or a provider body. Omitted when the server did not say how long to wait. */
+  readonly retryAfterMs?: number;
   readonly issues?: PublicValidationIssue[];
   readonly exitCode: number;
 
   constructor(
     code: CloudAuthErrorCode,
     message: string,
-    options: { status?: number; exitCode?: number; cause?: unknown; issues?: PublicValidationIssue[] } = {},
+    options: {
+      status?: number;
+      exitCode?: number;
+      cause?: unknown;
+      issues?: PublicValidationIssue[];
+      retryAfterMs?: number;
+    } = {},
   ) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "CloudAuthError";
     this.code = code;
     this.status = options.status;
+    this.retryAfterMs = normalizeRetryAfterMs(options.retryAfterMs);
     this.issues = options.issues;
     this.exitCode = options.exitCode ?? defaultExitCode(code);
   }
@@ -119,6 +142,11 @@ export function formatCloudAuthError(error: CloudAuthError): {
     success: false,
     error: error.toJSON(),
   };
+}
+
+function normalizeRetryAfterMs(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.round(value);
 }
 
 function defaultExitCode(code: CloudAuthErrorCode): number {
