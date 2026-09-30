@@ -74,6 +74,9 @@ EXAMPLES
   ravi runtime env get CLAUDE_CODE_OAUTH_TOKEN --json
   ravi runtime env get CODEX_HOME --json
 
+present is the managed env file. origin=process means the key is only on this
+process (shell, pm2, daemon). Unset does not clear that inherited copy.
+
 ON ERROR
   ENV_KEY_NOT_ALLOWED → key is outside the v1 allowlist
 
@@ -92,14 +95,19 @@ function failEnv(op: string, err: unknown, asJson?: boolean): never {
     contractFail(op, err.code, err.message, {
       asJson,
       exitCode:
-        err.code === "ENV_KEY_NOT_ALLOWED" || err.code === "ENV_KEY_INVALID" || err.code === "ENV_VALUE_INVALID"
+        err.code === "ENV_KEY_NOT_ALLOWED" ||
+        err.code === "ENV_KEY_INVALID" ||
+        err.code === "ENV_VALUE_INVALID" ||
+        err.code === "SECRET_SHAPE_MISMATCH"
           ? CONTRACT_EXIT_USAGE
           : undefined,
       details: {
         suggestedAction:
           err.code === "ENV_KEY_NOT_ALLOWED"
             ? `Use an allowlisted key: ${RAVI_ENV_ALLOWLIST.join(", ")}`
-            : "Inspect the key/value constraints and retry",
+            : err.code === "SECRET_SHAPE_MISMATCH"
+              ? "Use CLAUDE_CODE_OAUTH_TOKEN for sk-ant-oat tokens and ANTHROPIC_API_KEY for sk-ant-api keys"
+              : "Inspect the key/value constraints and retry",
         ...(err.code === "ENV_KEY_NOT_ALLOWED" ? { allowedKeys: [...RAVI_ENV_ALLOWLIST] } : {}),
       },
     });
@@ -112,13 +120,28 @@ function failEnv(op: string, err: unknown, asJson?: boolean): never {
   });
 }
 
-function printEnvHuman(entry: { key: string; present: boolean; value: string | null; action?: string }): void {
+function printEnvHuman(entry: {
+  key: string;
+  present: boolean;
+  processPresent?: boolean;
+  origin?: string;
+  value: string | null;
+  path?: string;
+  action?: string;
+}): void {
   const action = entry.action ? `${entry.action} ` : "";
+  if (entry.origin === "process") {
+    console.log(
+      `${action}${entry.key} is not in the Ravi env file${entry.path ? ` (${entry.path})` : ""}, but it is set on this process. \`ravi runtime env unset\` only edits the managed file. Remove the key from the daemon or pm2 environment and restart the daemon.`,
+    );
+    return;
+  }
   if (!entry.present) {
     console.log(`${action}${entry.key} is not set`);
     return;
   }
-  console.log(`${action}${entry.key}=${entry.value ?? "[REDACTED]"}`);
+  const processNote = entry.origin === "file+process" ? " (also set on this process)" : "";
+  console.log(`${action}${entry.key}=${entry.value ?? "[REDACTED]"}${processNote}`);
 }
 
 @Group({

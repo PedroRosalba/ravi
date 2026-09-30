@@ -51,6 +51,41 @@ describe("ravi-env-file", () => {
     expect(JSON.stringify(got)).not.toContain(token);
   });
 
+  it("reports process-only secrets without treating unset as a file change", () => {
+    const inherited = "sk-ant-api03-fake-not-a-real-key";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = inherited;
+    const got = getRaviEnvKey("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(got.present).toBe(false);
+    expect(got.processPresent).toBe(true);
+    expect(got.origin).toBe("process");
+    expect(got.value).toBeNull();
+    expect(JSON.stringify(got)).not.toContain(inherited);
+
+    const unset = unsetRaviEnvKey("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(unset.present).toBe(false);
+    expect(unset.processPresent).toBe(true);
+    expect(unset.origin).toBe("process");
+    expect(unset.daemonReloadRequired).toBe(false);
+    expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(inherited);
+    const path = getRaviEnvFilePath();
+    if (existsSync(path)) {
+      expect(readFileSync(path, "utf8")).not.toContain("CLAUDE_CODE_OAUTH_TOKEN=");
+    }
+  });
+
+  it("rejects an API key written into the OAuth env key", () => {
+    const secret = "sk-ant-api03-fake-not-a-real-key";
+    expect(() => setRaviEnvKey("CLAUDE_CODE_OAUTH_TOKEN", secret)).toThrow(RaviEnvFileError);
+    try {
+      setRaviEnvKey("CLAUDE_CODE_OAUTH_TOKEN", secret);
+    } catch (err) {
+      expect(err).toBeInstanceOf(RaviEnvFileError);
+      expect((err as RaviEnvFileError).code).toBe("SECRET_SHAPE_MISMATCH");
+      expect((err as Error).message).not.toContain(secret);
+    }
+    expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
   it("returns non-secret allowlisted values and fails closed on unknown keys", () => {
     setRaviEnvKey("CODEX_HOME", "/tmp/ravi-codex");
     expect(getRaviEnvKey("CODEX_HOME").value).toBe("/tmp/ravi-codex");

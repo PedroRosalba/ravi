@@ -19,6 +19,7 @@ import {
   listRuntimeProviderHealth,
   recordRuntimeCredentialLimitPressure,
   recordRuntimeCredentialFailure,
+  reconcileRuntimeCredentialSecretShapes,
   resetRuntimeCredentialHealth,
   serializeRuntimeCredential,
   setRuntimeCredentialEnabled,
@@ -236,6 +237,7 @@ export class RuntimeCredentialsCommands {
     @Option({ flags: "--fields <a,b,c>", description: "Compact mode: keep only these fields of each item" })
     fields?: string,
   ) {
+    reconcileRuntimeCredentialSecretShapes();
     const page = listRuntimeCredentials({
       runtimeProvider: provider,
       upstreamProvider: upstream,
@@ -265,9 +267,12 @@ export class RuntimeCredentialsCommands {
       for (const credential of serialized) {
         console.log(`  ${credential.id}  ${credential.label}`);
         console.log(
-          `    provider=${credential.runtimeProvider} upstream=${credential.upstreamProvider ?? "-"} status=${credential.status}`,
+          `    provider=${credential.runtimeProvider} upstream=${credential.upstreamProvider ?? "-"} status=${credential.status} auth=${credential.authMethod ?? "-"}`,
         );
         console.log(`    priority=${credential.priority} fingerprint=${credential.fingerprint}`);
+        if (credential.lastErrorMessageRedacted && credential.status !== "healthy") {
+          console.log(`    error=${credential.lastErrorMessageRedacted}`);
+        }
       }
       if (pagination.nextCommand) {
         console.log("\nNext page:");
@@ -281,7 +286,8 @@ export class RuntimeCredentialsCommands {
   @CommandAccess({ kind: "mutate", resource: "runtime.credentials", action: "add", risk: "medium" })
   @Returns(runtimeCredentialEnvelopeReturnSchema)
   add(
-    @Option({ flags: "--provider <id>", description: "Runtime provider id, e.g. claude, codex, pi, grok" }) provider?: string,
+    @Option({ flags: "--provider <id>", description: "Runtime provider id, e.g. claude, codex, pi, grok" })
+    provider?: string,
     @Option({ flags: "--label <label>", description: "Human label that does not contain secrets" }) label?: string,
     @Option({ flags: "--upstream <id>", description: "Upstream provider id, e.g. anthropic, openai" })
     upstream?: string,
@@ -326,7 +332,12 @@ export class RuntimeCredentialsCommands {
     );
     const payload = { credential: serializeRuntimeCredential(credential, { includeBindings: true }) };
     printPayload(payload, asJson, () => {
-      console.log(`Added runtime credential ${credential.id} (${credential.label})`);
+      console.log(
+        `Added runtime credential ${credential.id} (${credential.label}) status=${credential.status} auth=${credential.authMethod ?? "-"}`,
+      );
+      if (credential.status === "invalid" && credential.lastErrorMessageRedacted) {
+        console.log(credential.lastErrorMessageRedacted);
+      }
     });
     return payload;
   }
@@ -385,6 +396,7 @@ export class RuntimeCredentialsCommands {
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson = false,
   ) {
     if (id) {
+      reconcileRuntimeCredentialSecretShapes();
       const credential = getRuntimeCredential(id);
       if (!credential) failRuntimeCredentialNotFound("runtime credentials status", id, asJson);
       const payload = {
@@ -393,7 +405,12 @@ export class RuntimeCredentialsCommands {
       };
       printPayload(payload, asJson, () => {
         console.log(`${credential.id} (${credential.label})`);
-        console.log(`  status=${credential.status} provider=${credential.runtimeProvider}`);
+        console.log(
+          `  status=${credential.status} provider=${credential.runtimeProvider} auth=${credential.authMethod ?? "-"}`,
+        );
+        if (credential.lastErrorMessageRedacted && credential.status !== "healthy") {
+          console.log(`  error=${credential.lastErrorMessageRedacted}`);
+        }
         console.log(`  health=${JSON.stringify(payload.health)}`);
       });
       return payload;

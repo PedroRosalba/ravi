@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { SQLQueryBindings } from "bun:sqlite";
+import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { getDb } from "../router/router-db.js";
 import { executeWrite } from "../db/write-retry.js";
 import { normalizeLimitOffsetPage, type ListPage } from "../utils/pagination.js";
+import { findRuntimeCredentialSecretShapeMismatch } from "./credential-secret-shape.js";
 import type {
   RuntimeCredentialFailureSignal,
   RuntimeCredentialHealth,
@@ -226,7 +227,12 @@ export function createRuntimeCredential(input: RuntimeCredentialInput): RuntimeC
   const now = Date.now();
   const id = input.id?.trim() || `rcred_${randomUUID()}`;
   const enabled = input.enabled ?? true;
-  const status: RuntimeCredentialStatus = enabled ? (input.status ?? "healthy") : "disabled";
+  const shapeMismatch = enabled ? findRuntimeCredentialSecretShapeMismatch(input) : null;
+  const status: RuntimeCredentialStatus = !enabled
+    ? "disabled"
+    : shapeMismatch
+      ? "invalid"
+      : (input.status ?? "healthy");
   const fingerprint = computeRuntimeCredentialFingerprint({ ...input, id });
   const sensitiveEnvKeys = input.sensitiveEnvKeys ?? inferSensitiveEnvKeys(input);
   const remoteForwardEnvKeys = input.remoteForwardEnvKeys ?? inferRemoteForwardEnvKeys(input);
@@ -299,6 +305,10 @@ export function createRuntimeCredential(input: RuntimeCredentialInput): RuntimeC
         ) VALUES (?, 0, 0, ?)
       `,
       ).run(id, now);
+
+      if (shapeMismatch) {
+        applyRuntimeCredentialShapeInvalid(db, id, shapeMismatch.message, now);
+      }
     },
     { label: "runtime-credential-create" },
   );
@@ -396,13 +406,19 @@ export function setRuntimeCredentialEnabled(id: string, enabled: boolean): Runti
         | { id: string; status: RuntimeCredentialStatus }
         | undefined;
       if (!existing) throw new Error(`Runtime credential not found: ${id}`);
-      const status = enabled && existing.status === "disabled" ? "healthy" : !enabled ? "disabled" : existing.status;
+      let status: RuntimeCredentialStatus =
+        enabled && existing.status === "disabled" ? "healthy" : !enabled ? "disabled" : existing.status;
+      const current = getRuntimeCredential(id);
+      const shapeMismatch =
+        enabled && status === "healthy" && current ? findRuntimeCredentialSecretShapeMismatch(current) : null;
+      if (shapeMismatch) status = "invalid";
       db.prepare("UPDATE runtime_credentials SET enabled = ?, status = ?, updated_at = ? WHERE id = ?").run(
         enabled ? 1 : 0,
         status,
         now,
         id,
       );
+      if (shapeMismatch) applyRuntimeCredentialShapeInvalid(db, id, shapeMismatch.message, now);
     },
     { label: "runtime-credential-enabled" },
   );
@@ -442,6 +458,9 @@ export function resetRuntimeCredentialHealth(id: string): RuntimeCredentialHealt
         WHERE credential_id = ?
       `,
       ).run(now, id);
+      const refreshed = getRuntimeCredential(id);
+      const shapeMismatch = refreshed?.enabled ? findRuntimeCredentialSecretShapeMismatch(refreshed) : null;
+      if (shapeMismatch) applyRuntimeCredentialShapeInvalid(db, id, shapeMismatch.message, now);
     },
     { label: "runtime-credential-reset-health" },
   );
@@ -449,6 +468,49 @@ export function resetRuntimeCredentialHealth(id: string): RuntimeCredentialHealt
     credential: getRuntimeCredential(id) ?? failMissingCredential(id),
     health: getRuntimeCredentialHealth(id) ?? failMissingHealth(id),
   };
+}
+
+/**
+ * Re-read healthy credentials whose bound secret is present and mark shape
+ * mismatches invalid. `ravi runtime credentials list` calls this so an API key
+ * stored as OAuth does not stay `healthy` until the next turn.
+ */
+export function reconcileRuntimeCredentialSecretShapes(env: Record<string, string | undefined> = process.env): number {
+  ensureRuntimeCredentialTables();
+  const pending = listRuntimeCredentials({ includeDisabled: true, limit: 500 }).items.flatMap((credential) => {
+    if (!credential.enabled || (credential.status !== "healthy" && credential.status !== "unknown")) return [];
+    const mismatch = findRuntimeCredentialSecretShapeMismatch(credential, env);
+    return mismatch ? [{ id: credential.id, message: mismatch.message }] : [];
+  });
+  if (!pending.length) return 0;
+  const now = Date.now();
+  executeWrite(
+    getDb(),
+    (db) => {
+      for (const item of pending) applyRuntimeCredentialShapeInvalid(db, item.id, item.message, now);
+    },
+    { label: "runtime-credential-shape-reconcile" },
+  );
+  return pending.length;
+}
+
+export function applyRuntimeCredentialShapeInvalid(
+  db: Database,
+  credentialId: string,
+  message: string,
+  now = Date.now(),
+): void {
+  db.prepare(
+    `
+    UPDATE runtime_credentials
+    SET status = CASE WHEN enabled = 1 THEN 'invalid' ELSE status END,
+        last_error_code = 'secret_shape_mismatch',
+        last_error_reason = 'auth_invalid',
+        last_error_message_redacted = ?,
+        updated_at = ?
+    WHERE id = ?
+  `,
+  ).run(message, now, credentialId);
 }
 
 export function getRuntimeCredentialActiveAttemptCount(credentialId: string): number {
