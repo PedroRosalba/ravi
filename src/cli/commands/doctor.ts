@@ -15,6 +15,9 @@ import { dirname, join, resolve } from "node:path";
 import type { SQLQueryBindings } from "bun:sqlite";
 import { checkAppManifests, discoverAppManifests } from "../../apps/service.js";
 import {
+  DEFAULT_PERMISSION_PROVIDER_IDS,
+  PERMISSION_PROVIDER_IDS_SETTING,
+  PINNED_PERMISSION_PROVIDER_ID,
   getConfiguredCapabilityMaterializers,
   getConfiguredPermissionProviders,
 } from "../../permissions/provider-registry.js";
@@ -2262,14 +2265,18 @@ function isLikelyMutatingCommand(fullName: string): boolean {
 function buildPermissionProviderRuntimeChainCheck(deps: DoctorDeps): LegacyDoctorCheck {
   const authorizationProviders = deps.getConfiguredPermissionProviders().map((provider) => provider.id);
   const capabilityMaterializers = deps.getConfiguredCapabilityMaterializers().map((provider) => provider.id);
-  const expectedAuthorization = ["operator-control", "context-capabilities"];
+  // A cadeia de autorização é configurável (setting permissions.provider_ids);
+  // drift aqui é só id que não resolve para um provider registrado.
+  const unavailableAuthorization = authorizationProviders.filter((id) => id.startsWith("unavailable:"));
+  const customAuthorization = !sameStringList(authorizationProviders, [...DEFAULT_PERMISSION_PROVIDER_IDS]);
   const expectedMaterializers = [
     "runtime-bootstrap",
     "agent-default-capabilities",
     "agent-identity-permissions",
     "contact-policy-permissions",
   ];
-  const authOk = sameStringList(authorizationProviders, expectedAuthorization);
+  const authOk =
+    authorizationProviders.includes(PINNED_PERMISSION_PROVIDER_ID) && unavailableAuthorization.length === 0;
   const materializersOk = sameStringList(capabilityMaterializers, expectedMaterializers);
 
   if (!authOk || !materializersOk) {
@@ -2279,16 +2286,20 @@ function buildPermissionProviderRuntimeChainCheck(deps: DoctorDeps): LegacyDocto
       title: "Permission provider runtime default chain",
       status: "fail",
       severity: "error",
-      summary: "default permission provider chain drifted from the provider-runtime contract",
+      summary: !authOk
+        ? `authorization provider chain is missing ${PINNED_PERMISSION_PROVIDER_ID} or references unregistered providers (${PERMISSION_PROVIDER_IDS_SETTING})`
+        : "default permission provider chain drifted from the provider-runtime contract",
       details: [
         `authorization: ${authorizationProviders.join(", ") || "(none)"}`,
         `materializers: ${capabilityMaterializers.join(", ") || "(none)"}`,
       ],
-      fixHint: "restore provider-registry defaults or document the explicit production provider configuration",
+      fixHint: !authOk
+        ? `fix or delete the ${PERMISSION_PROVIDER_IDS_SETTING} setting`
+        : "restore provider-registry defaults or document the explicit production provider configuration",
       data: {
         authorizationProviders,
         capabilityMaterializers,
-        expectedAuthorization,
+        unavailableAuthorization,
         expectedMaterializers,
       },
     };
@@ -2299,10 +2310,13 @@ function buildPermissionProviderRuntimeChainCheck(deps: DoctorDeps): LegacyDocto
     domain: "permissions",
     title: "Permission provider runtime default chain",
     status: "ok",
-    summary: "default authorization and capability materializer chains match the provider-runtime contract",
+    summary: customAuthorization
+      ? `custom authorization chain from ${PERMISSION_PROVIDER_IDS_SETTING}; materializers match the provider-runtime contract`
+      : "default authorization and capability materializer chains match the provider-runtime contract",
     data: {
       authorizationProviders,
       capabilityMaterializers,
+      customAuthorization,
     },
   };
 }
@@ -2504,7 +2518,7 @@ function buildPermissionChatOnlyCeilingCheck(deps: DoctorDeps): LegacyDoctorChec
       summary: "chat-only agents still materialize tool or exec authority",
       details: leaks,
       fixHint:
-        "chat-only must persist { profile: \"chat-only\" } and suppress runtime-bootstrap for the agent and its identity",
+        'chat-only must persist { profile: "chat-only" } and suppress runtime-bootstrap for the agent and its identity',
       data: {
         chatOnlyAgents: chatOnlyAgentIds.length,
         leaks: leaks.length,

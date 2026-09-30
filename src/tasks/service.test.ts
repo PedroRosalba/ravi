@@ -3,6 +3,18 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join, resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
+// Cópia: o namespace é mutado in-place por mock.module.
+const actualNatsModule = { ...(await import("../nats.js")) };
+// Sem servidor NATS nos testes: emitTaskEvent() (chamadas diretas e restart
+// recovery) não pode abrir conexão real. Sem isso o arquivo só passava quando
+// outro arquivo do mesmo processo bun (notify/checkpoint-runner/automations/
+// auto-resume) vazava o próprio mock de nats — dependia da ordem do readdir.
+mock.module("../nats.js", () => ({
+  ...actualNatsModule,
+  publish: async () => {},
+  nats: { ...actualNatsModule.nats, emit: async () => {} },
+}));
+
 const actualConfigStoreModule = await import("../config-store.js");
 mock.module("../config-store.js", () => actualConfigStoreModule);
 
@@ -64,7 +76,12 @@ import { dbCreateAgent, dbDeleteAgent, dbSetSetting } from "../router/router-db.
 import { deleteSession, getOrCreateSession, resolveSession } from "../router/sessions.js";
 import type { ResolvedTaskProfile } from "./types.js";
 
-afterAll(() => mock.restore());
+afterAll(() => {
+  mock.restore();
+  // mock.restore() não desfaz mock.module: devolve aos arquivos seguintes o
+  // módulo nats que eles veriam sem este arquivo.
+  mock.module("../nats.js", () => actualNatsModule);
+});
 
 const createdTaskIds: string[] = [];
 const tempStateDirs: string[] = [];
