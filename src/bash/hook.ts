@@ -159,6 +159,19 @@ function checkEnvSpoofing(command: string): { allowed: boolean; reason?: string 
       reason: "Cannot override RAVI environment variables",
     };
   }
+  // Dropping the runtime context key would turn the agent into the local
+  // operator (`env -u RAVI_CONTEXT_KEY ravi ...`, `unset RAVI_CONTEXT_KEY`).
+  if (
+    /(?:^|[\s;&|(])unset\s+(?:-[a-z]+\s+)*[^;&|\n]*\bRAVI_\w+/.test(command) ||
+    /(?:^|[\s;&|(])export\s+-n\s+[^;&|\n]*\bRAVI_\w+/.test(command) ||
+    /(?:^|[\s;&|(])env\s+[^;&|\n]*(?:-u\s*|--unset[=\s]+)RAVI_\w+/.test(command) ||
+    /(?:^|[\s;&|(])env\s+(?:-\S*\s+)*(?:-i|--ignore-environment|-)(?:\s|$)[^;&|\n]*\bravi\b/.test(command)
+  ) {
+    return {
+      allowed: false,
+      reason: "Cannot drop RAVI environment variables",
+    };
+  }
   return { allowed: true };
 }
 

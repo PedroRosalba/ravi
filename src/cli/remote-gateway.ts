@@ -9,7 +9,9 @@
  *
  * Isolated CLIs (`RAVI_CONTEXT_KEY` set) also auto-bridge to the host unix
  * socket at `~/.ravi/cli-gateway.sock` when that socket is connectable. They
- * MUST NOT auto-open raw loopback HTTP.
+ * MUST NOT auto-open raw loopback HTTP, and they MUST NOT fall back to local
+ * execution: without a reachable gateway the command fails closed with
+ * `GATEWAY_REQUIRED` (see `requiresRemoteGateway`).
  *
  * The remote dispatcher is intentionally minimal: it builds a flat JSON body
  * (matching `src/sdk/gateway/dispatcher.ts`), forwards the caller cwd as
@@ -21,6 +23,8 @@
  */
 
 import { request as httpRequest } from "node:http";
+import { homedir, userInfo } from "node:os";
+import { join } from "node:path";
 import {
   HOST_CLI_GATEWAY_ENV,
   HOST_CLI_GATEWAY_INTERNAL_ENV,
@@ -152,7 +156,7 @@ export async function resolveAutoHostCliGateway(
   options: ResolveRemoteGatewayConfigOptions = {},
 ): Promise<RemoteGatewayConfig | null> {
   if (!shouldAutoUseHostCliGateway(env)) return null;
-  const socketPath = getHostCliGatewaySocketPath(options.stateDir);
+  const socketPath = getHostCliGatewaySocketPath(options.stateDir ?? resolveHostCliGatewayStateDir(env));
   const probe = options.probeSocket ?? probeUnixSocket;
   try {
     if (!(await probe(socketPath))) return null;
@@ -172,6 +176,50 @@ export function shouldAutoUseHostCliGateway(env: NodeJS.ProcessEnv = process.env
   if (disabled === "0" || disabled?.toLowerCase() === "false" || disabled?.toLowerCase() === "off") return false;
   if (env[HOST_CLI_GATEWAY_INTERNAL_ENV]?.trim() === "1") return false;
   return Boolean(env.RAVI_CONTEXT_KEY?.trim());
+}
+
+/**
+ * State dir that holds the host CLI gateway socket. `RAVI_STATE_DIR` still
+ * wins (the daemon publishes it to its sessions), but the fallback is the OS
+ * account home, not `$HOME`: a `HOME=/tmp/x ravi ...` must not lose the host
+ * socket.
+ */
+export function resolveHostCliGatewayStateDir(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.RAVI_STATE_DIR?.trim();
+  if (explicit) return explicit;
+  return join(accountHomedir(), ".ravi");
+}
+
+function accountHomedir(): string {
+  try {
+    const home = userInfo().homedir;
+    if (home) return home;
+  } catch {
+    // No passwd entry for this uid (some containers); fall back to $HOME.
+  }
+  return homedir();
+}
+
+/**
+ * A process that carries `RAVI_CONTEXT_KEY` acts for a runtime context, so its
+ * command must be authorized by the daemon that owns that context. Local
+ * execution would authorize against whatever DB this process's env points to.
+ */
+export function requiresRemoteGateway(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.RAVI_CONTEXT_KEY?.trim());
+}
+
+export function gatewayRequiredError(op: string): ContractError {
+  return new ContractError(
+    op,
+    "GATEWAY_REQUIRED",
+    "Commands running with RAVI_CONTEXT_KEY must go through the Ravi gateway, and none is reachable.",
+    1,
+    {
+      retryable: true,
+      suggestedAction: `Start the Ravi daemon so its host CLI gateway socket is available, or set ${REMOTE_GATEWAY_URL_ENV}`,
+    },
+  );
 }
 
 export function parseUnixGatewayUrl(raw: string): string | null {

@@ -153,7 +153,8 @@ function resolveCommandAccessAuthority(
   | { allowed: true; label: string; request: Pick<PermissionProviderRequest, "context" | "subject" | "localOperator"> }
   | { allowed: false; errorMessage: string } {
   const ctx = getContext();
-  const useRuntimeContext = source !== "cli" || Boolean(process.env[RAVI_CONTEXT_KEY_ENV]);
+  const hasContextKey = Boolean(process.env[RAVI_CONTEXT_KEY_ENV]?.trim());
+  const useRuntimeContext = source !== "cli" || hasContextKey;
   if (useRuntimeContext && ctx?.context) {
     const agentId = ctx.agentId ?? ctx.context.agentId;
     const context: CapabilityContextLike = {
@@ -167,7 +168,9 @@ function resolveCommandAccessAuthority(
     };
   }
 
-  if (source !== "cli") {
+  // A context key that does not resolve (unknown, revoked, expired, or from
+  // another install) must not degrade into the local operator.
+  if (source !== "cli" || hasContextKey) {
     return {
       allowed: false,
       errorMessage: "Permission denied: command execution requires a resolved runtime principal",

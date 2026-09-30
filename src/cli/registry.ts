@@ -43,6 +43,8 @@ import {
   remoteGatewayExitCode,
   remoteDispatchOutput,
   resolveContextKeyForRemote,
+  gatewayRequiredError,
+  requiresRemoteGateway,
   type RemoteDispatchResult,
   type RemoteGatewayConfig,
 } from "./remote-gateway.js";
@@ -258,6 +260,18 @@ function registerCommand(
         input,
       });
       return;
+    }
+
+    // A runtime context key means the caller acts for a daemon-owned context.
+    // Never authorize it locally against a DB chosen by this process's env.
+    if (requiresRemoteGateway(process.env)) {
+      if (isCodexBashHookCommand(groupName, cmdMeta.name)) {
+        console.log(JSON.stringify(codexHookTransportFailure("gateway unavailable")));
+        return;
+      }
+      const error = gatewayRequiredError(commandOperation(groupName, cmdMeta.name));
+      renderContractError(error, input.json === true);
+      process.exit(error.exitCode);
     }
 
     const accessResult = enforceCliCommandAuthorization({

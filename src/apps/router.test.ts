@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runWithContext } from "../cli/context.js";
+import { startHostCliGateway } from "../cli/host-cli-gateway.js";
 import type { ContextCapability, ContextRecord } from "../router/router-db.js";
 import { createRuntimeContext, getContextLineage, resolveRuntimeContext } from "../runtime/context-registry.js";
 import { cleanupIsolatedRaviState } from "../test/ravi-state.js";
@@ -373,14 +374,21 @@ async function captureJson(fn: () => Promise<unknown>): Promise<unknown> {
   };
   try {
     await fn();
-    return JSON.parse(logs.join("\n"));
+    // An in-process host gateway also writes the handler's console output
+    // here; the command's own JSON result is always the last write.
+    return JSON.parse(logs.at(-1) ?? "");
   } finally {
     console.log = originalLog;
   }
 }
 
+const hostGateways: Array<{ stop(): Promise<void> }> = [];
+
 afterEach(async () => {
   process.chdir(originalCwd);
+  while (hostGateways.length > 0) {
+    await hostGateways.pop()?.stop();
+  }
   while (tempStateDirs.length > 0) {
     await cleanupIsolatedRaviState(tempStateDirs.pop());
   }
@@ -685,6 +693,11 @@ describe("Ravi app router", () => {
       ],
     });
     process.env.RAVI_SUPPRESS_AUDIT_EVENTS = "1";
+    // The app's `ravi` call carries the child RAVI_CONTEXT_KEY, so it must go
+    // through the host gateway like it does under the daemon.
+    const gateway = await startHostCliGateway({ env: { RAVI_STATE_DIR: process.env.RAVI_STATE_DIR } });
+    if (!gateway) throw new Error("host CLI gateway did not start");
+    hostGateways.push(gateway);
     const payload = (await runWithContext({ agentId: "main", context: parent }, () =>
       captureJson(() =>
         maybeRunAppAliasRoute(["probe-app", "inspect", injectionArg, ";", "literal value", "--json"], {
