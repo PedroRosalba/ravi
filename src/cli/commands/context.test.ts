@@ -73,6 +73,7 @@ let authorizeResult:
       };
     }
   | undefined;
+let lastIssuedIdentity: Record<string, unknown> | undefined;
 let issuedContext:
   | {
       contextId: string;
@@ -229,9 +230,10 @@ mock.module("../../runtime/context-registry.js", () => ({
   },
   issueRuntimeContext: (input: {
     parent?: { capabilities?: Array<{ permission: string; objectType: string; objectId: string }> };
-    identity?: { agentId?: string; sessionKey?: string; sessionName?: string };
+    identity?: { agentId?: string; sessionKey?: string; sessionName?: string; projectSessionActor?: boolean };
     cliName?: string;
   }) => {
+    lastIssuedIdentity = input.identity;
     if (input.identity) {
       const hasAdmin = (input.parent?.capabilities ?? []).some(
         (capability) =>
@@ -377,6 +379,7 @@ describe("ContextCommands", () => {
     inlineContext = undefined;
     authorizeResult = undefined;
     issuedContext = undefined;
+    lastIssuedIdentity = undefined;
     resolvedContext = {
       contextId: "ctx_123",
       contextKey: "rctx_parent_123",
@@ -997,6 +1000,60 @@ describe("ContextCommands", () => {
     const printed = JSON.parse(lines[0] ?? "{}");
     expect(printed.agentId).toBe("main");
     expect(printed.sessionKey).toBe("agent:main:main");
+  });
+
+  it("returns USAGE_ERROR when --with-session-actor has no delegated session", () => {
+    listedAgents = [{ id: "main", cwd: "/tmp/ravi-main" }];
+    const command = new ContextCommands();
+    const originalLog = console.log;
+    console.log = () => {};
+    let caught: unknown;
+    try {
+      command.issue("nba", undefined, undefined, false, true, "main", undefined, undefined, true);
+    } catch (error) {
+      caught = error;
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(caught).toBeInstanceOf(ContractError);
+    expect(caught).toMatchObject({
+      code: "USAGE_ERROR",
+      exitCode: 2,
+      message: "--with-session-actor requires a delegated session binding",
+    });
+    expect(lastIssuedIdentity).toBeUndefined();
+  });
+
+  it("forwards --with-session-actor as an explicit session actor projection request", () => {
+    listedAgents = [{ id: "main", cwd: "/tmp/ravi-main" }];
+    resolvedSession = {
+      sessionKey: "agent:main:main",
+      name: "main",
+      agentId: "main",
+      agentCwd: "/tmp/ravi-main",
+      createdAt: 1000,
+      updatedAt: 2000,
+    };
+    resolvedContext = {
+      ...resolvedContext!,
+      capabilities: [{ permission: "admin", objectType: "system", objectId: "*" }],
+    };
+    const command = new ContextCommands();
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      command.issue("nba", undefined, undefined, false, true, "main", "agent:main:main", "main", true);
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(lastIssuedIdentity).toEqual({
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionName: "main",
+      projectSessionActor: true,
+    });
   });
 
   it("revokes a context and prints the updated state in --json mode", () => {

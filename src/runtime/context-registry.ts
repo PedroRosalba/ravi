@@ -18,6 +18,8 @@ import { TURN_SCOPED_AUTHORITY_KIND } from "../permissions/delegation.js";
 import {
   capabilityNotGrantedByParentError,
   delegatedAgentIdRequiredError,
+  delegatedSessionActorRequiresSessionError,
+  delegatedSessionActorUnavailableError,
   delegatedSessionBindingsMustBePairedError,
   identityDelegationRequiresAdminError,
 } from "./context-errors.js";
@@ -73,6 +75,13 @@ export interface IssueRuntimeContextInput {
     agentId: string;
     sessionKey?: string;
     sessionName?: string;
+    /**
+     * Project the verified human actor of the target session's live turn onto
+     * the child. Only a runtime-issued `turn-runtime` context whose actor is a
+     * resolved contact qualifies; otherwise issuance fails closed. The child
+     * never outlives that turn.
+     */
+    projectSessionActor?: boolean;
   };
 }
 
@@ -299,6 +308,10 @@ export function getRuntimeContextFromEnv(env: NodeJS.ProcessEnv = process.env): 
 export function issueRuntimeContext(input: IssueRuntimeContextInput): ContextRecord {
   const now = Date.now();
   const delegatedIdentity = input.identity ? resolveDelegatedIdentity(input.parent, input.identity) : undefined;
+  const sessionActor =
+    delegatedIdentity && input.identity?.projectSessionActor
+      ? resolveDelegatedSessionActor(delegatedIdentity, now)
+      : undefined;
   const identity = delegatedIdentity ?? {
     agentId: input.parent.agentId,
     sessionKey: input.parent.sessionKey,
@@ -329,8 +342,12 @@ export function issueRuntimeContext(input: IssueRuntimeContextInput): ContextRec
       input.inheritCapabilities,
       now,
       delegatedIdentity,
+      sessionActor?.metadata,
     ),
-    expiresAt: resolveChildExpiresAt(input.parent.expiresAt, input.ttlMs, now),
+    expiresAt: capExpiresAt(
+      resolveChildExpiresAt(input.parent.expiresAt, input.ttlMs, now),
+      sessionActor?.source.expiresAt,
+    ),
   });
 }
 
@@ -453,6 +470,7 @@ function buildDerivedContextMetadata(
     sessionKey?: string;
     sessionName?: string;
   },
+  sessionActorMetadata?: Record<string, unknown>,
 ): Record<string, unknown> {
   const derived: Record<string, unknown> = {
     parentContextId: parent.contextId,
@@ -481,7 +499,72 @@ function buildDerivedContextMetadata(
     }
   }
 
+  // Applied last so caller-supplied metadata can never forge the projected actor.
+  if (sessionActorMetadata) {
+    Object.assign(derived, sessionActorMetadata);
+  }
+
   return derived;
+}
+
+const PROJECTED_SESSION_ACTOR_KEYS = [
+  "actorPrincipal",
+  "actorResolution",
+  "actorDisplayName",
+  "consoleUserId",
+  "consoleOrgId",
+] as const;
+
+/**
+ * Resolve the verified human actor of a delegated session from its live
+ * runtime-issued turn context. Fails closed unless the actor is a resolved
+ * contact; the projection is never reconstructed from traces or env.
+ */
+function resolveDelegatedSessionActor(
+  identity: { agentId: string; sessionKey?: string; sessionName?: string },
+  now: number,
+): { source: ContextRecord; metadata: Record<string, unknown> } {
+  if (!identity.sessionKey) throw delegatedSessionActorRequiresSessionError();
+
+  const turns = dbListContexts({
+    agentId: identity.agentId,
+    sessionKey: identity.sessionKey,
+    kind: TURN_SCOPED_AUTHORITY_KIND,
+    includeInactive: false,
+  })
+    .filter((ctx) => isContextLive(ctx, now))
+    .sort((a, b) => b.createdAt - a.createdAt);
+  const source = turns[0];
+  if (!source) throw delegatedSessionActorUnavailableError("no_live_turn");
+
+  const sourceMetadata = source.metadata ?? {};
+  const actorPrincipal = sourceMetadata.actorPrincipal;
+  if (sourceMetadata.actorResolution !== "resolved") {
+    throw delegatedSessionActorUnavailableError("actor_not_resolved");
+  }
+  if (typeof actorPrincipal !== "string" || !actorPrincipal.startsWith("contact:")) {
+    throw delegatedSessionActorUnavailableError("actor_not_human");
+  }
+
+  const metadata: Record<string, unknown> = {};
+  for (const key of PROJECTED_SESSION_ACTOR_KEYS) {
+    const value = sourceMetadata[key];
+    if (typeof value === "string" && value) metadata[key] = value;
+  }
+  metadata.actorProjection = {
+    source: "delegated-session-turn",
+    sourceContextId: source.contextId,
+    agentId: identity.agentId,
+    sessionKey: identity.sessionKey,
+    projectedAt: now,
+  };
+  return { source, metadata };
+}
+
+function capExpiresAt(expiresAt: number | undefined, cap: number | undefined): number | undefined {
+  if (cap === undefined) return expiresAt;
+  if (expiresAt === undefined) return cap;
+  return Math.min(expiresAt, cap);
 }
 
 function resolveDelegatedIdentity(
@@ -490,6 +573,7 @@ function resolveDelegatedIdentity(
     agentId: string;
     sessionKey?: string;
     sessionName?: string;
+    projectSessionActor?: boolean;
   },
 ): { agentId: string; sessionKey?: string; sessionName?: string } {
   if (!canWithCapabilityContext(parent, "admin", "system", "*")) {

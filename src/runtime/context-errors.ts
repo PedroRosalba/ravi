@@ -19,6 +19,16 @@ export const DELEGATED_SESSION_BINDINGS_MUST_BE_PAIRED_ACTION =
 export const DELEGATED_AGENT_ID_REQUIRED = "Delegated agentId is required";
 export const DELEGATED_AGENT_ID_REQUIRED_ACTION = "Pass --as-agent when using --as-session-key or --as-session-name";
 
+export const DELEGATED_SESSION_ACTOR_REQUIRES_SESSION =
+  "Projecting the delegated session actor requires a delegated session binding";
+export const DELEGATED_SESSION_ACTOR_REQUIRES_SESSION_ACTION =
+  "Pass --as-session-key and --as-session-name together with --with-session-actor";
+
+export const DELEGATED_SESSION_ACTOR_UNAVAILABLE =
+  "Delegated session has no live turn with a verified human actor to project";
+export const DELEGATED_SESSION_ACTOR_UNAVAILABLE_ACTION =
+  "Issue the context while the target session is running a turn from a resolved human contact, or omit --with-session-actor";
+
 export class RuntimeContextError extends Error {
   readonly code: RuntimeContextErrorCode;
   readonly exitCode: number;
@@ -76,5 +86,22 @@ export function capabilityNotGrantedByParentError(capability: {
     `Capability not granted by parent context: ${granted}`,
     "Request the missing capability on the parent context or omit it from --allow",
     { requiredCapability: granted },
+  );
+}
+
+export function delegatedSessionActorRequiresSessionError(): RuntimeContextError {
+  return new RuntimeContextError(
+    "USAGE_ERROR",
+    DELEGATED_SESSION_ACTOR_REQUIRES_SESSION,
+    DELEGATED_SESSION_ACTOR_REQUIRES_SESSION_ACTION,
+  );
+}
+
+export function delegatedSessionActorUnavailableError(reason: string): RuntimeContextError {
+  return new RuntimeContextError(
+    "PERMISSION_DENIED",
+    DELEGATED_SESSION_ACTOR_UNAVAILABLE,
+    DELEGATED_SESSION_ACTOR_UNAVAILABLE_ACTION,
+    { reason },
   );
 }
