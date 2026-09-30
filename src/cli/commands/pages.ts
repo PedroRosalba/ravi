@@ -34,6 +34,7 @@ import {
   type PublishedPagePayload,
 } from "../../pages/client.js";
 import {
+  describeAssertionAudienceSetRejection,
   listPageAssertionAudiences,
   normalizeAssertionAud,
   normalizeAssertionOrigins,
@@ -57,7 +58,7 @@ import {
   selectProjectDefaultHost,
   validateShipSourceInput,
 } from "../../pages/ship.js";
-import { ContractError, contractDryRun, contractFail, pickFields } from "../agent-contract.js";
+import { CONTRACT_EXIT_USAGE, ContractError, contractDryRun, contractFail, pickFields } from "../agent-contract.js";
 import { jsonObjectSchema, jsonValueSchema, strictCliOffsetPaginationSchema } from "../return-schemas.js";
 import { readConfirmedSecret, type ConfirmedSecretInputOptions } from "../secret-input.js";
 import { artifactPublishReturnSchema, declareCommandReturns } from "./operational-return-schemas.js";
@@ -931,15 +932,20 @@ export class PagesPasswordCommands {
 
 const PAGES_ASSERTION_AUDIENCES_SET_HELP = `
 Examples:
-  ravi pages assertion audiences set --site demo --aud https://api.example --origin https://api.example --execute
-  ravi pages assertion audiences set --site demo --aud api.example --origin https://api.example --origin https://hooks.example --json --execute
+  ravi pages assertion audiences set --site demo --aud https://api.example --origin https://demo.ravi.page --execute
+  ravi pages assertion audiences set --site demo --aud https://api.example --origin https://demo.ravi.page --origin https://docs.example --json --execute
+
+--origin must be an https origin of this Pages site: the default host
+(https://<site>.ravi.page) or an active custom hostname on the same site.
+It is not the third-party API. Put the API identifier in --aud.
+A second --origin is another hostname of this site, such as an active custom hostname.
 
 Write brake:
   Without --execute the command is a dry-run: it prints the plan and exits 3.
   Nothing is sent to Console.
 
 Security:
-  Registers who may receive a short-lived viewer assertion for this host.
+  Registers which Pages host origins may receive a short-lived viewer assertion for one audience.
   Do not pass a JWT as --aud or --origin. Output never contains an assertion token.
 `;
 
@@ -1006,7 +1012,7 @@ export class PagesAssertionAudienceCommands {
 
   @Command({
     name: "set",
-    description: "Replace the https origins allowed to receive a viewer assertion for one audience",
+    description: "Replace the https origins of this Pages site that may receive a viewer assertion for one audience",
     helpAfter: PAGES_ASSERTION_AUDIENCES_SET_HELP,
   })
   @CommandAccess({
@@ -1026,7 +1032,8 @@ export class PagesAssertionAudienceCommands {
     aud?: string,
     @Option({
       flags: "--origin <origin...>",
-      description: "HTTPS origin allowed to receive the assertion. Repeat or comma-separate",
+      description:
+        "HTTPS origin of this Pages site (default host or active custom hostname), not the third-party API. Repeat or comma-separate",
     })
     origins?: string[],
     @Option({ flags: "--project <ref>", description: "Console project id or slug; overrides saved Console scope" })
@@ -1057,16 +1064,36 @@ export class PagesAssertionAudienceCommands {
         );
       }
       const resolved = await resolvePagesProject(undefined, projectOption, consoleUrl, this.deps);
-      const result = await setPageAssertionAudience(
-        {
-          aud: normalizedAud,
-          console: consoleUrl,
-          origins: normalizedOrigins,
-          project: resolved.projectRef,
-          site: siteRef,
-        },
-        this.deps,
-      );
+      let result: PageAssertionAudienceMutationResult;
+      try {
+        result = await setPageAssertionAudience(
+          {
+            aud: normalizedAud,
+            console: consoleUrl,
+            origins: normalizedOrigins,
+            project: resolved.projectRef,
+            site: siteRef,
+          },
+          this.deps,
+        );
+      } catch (error) {
+        // Console owns the hostname allowlist. Forward a safe 400 body when it
+        // explains the rejection. Otherwise state the Pages-host origin rule.
+        const rejection = describeAssertionAudienceSetRejection(error);
+        if (rejection) {
+          contractFail("pages assertion audiences set", "PAYLOAD_INVALID", rejection.message, {
+            asJson,
+            exitCode: CONTRACT_EXIT_USAGE,
+            details: {
+              retryable: false,
+              status: 400,
+              suggestedAction: rejection.suggestedAction,
+              ...(rejection.issues ? { issues: rejection.issues } : {}),
+            },
+          });
+        }
+        throw error;
+      }
       const payload = { ...result, scope: resolved.scope };
       printPayload(payload, asJson, () => printAssertionAudienceMutation(result));
       return payload;

@@ -50009,7 +50009,7 @@ export const PagesAssertionAudiencesSetInputSchema = {
       "type": "boolean"
     },
     "origin": {
-      "description": "HTTPS origin allowed to receive the assertion. Repeat or comma-separate",
+      "description": "HTTPS origin of this Pages site (default host or active custom hostname), not the third-party API. Repeat or comma-separate",
       "items": {
         "type": "string"
       },

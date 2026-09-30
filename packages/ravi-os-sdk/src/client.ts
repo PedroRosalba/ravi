@@ -4346,7 +4346,7 @@ export class RaviClient {
             body: { ...(options ?? {}) },
           });
         },
-        /** Replace the https origins allowed to receive a viewer assertion for one audience */
+        /** Replace the https origins of this Pages site that may receive a viewer assertion for one audience */
         set: async (options?: {
           aud?: string;
           console?: string;

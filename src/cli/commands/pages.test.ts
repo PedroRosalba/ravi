@@ -1736,12 +1736,28 @@ describe("pages agent-first contract", () => {
     ]);
   });
 
+  it("documents that assertion audience --origin is a Pages host origin", () => {
+    const commands = getCommandsMetadata(PagesAssertionAudienceCommands);
+    const set = commands.find((command) => command.name === "set");
+    expect(set?.description).toContain("this Pages site");
+    expect(set?.helpAfter).toContain(
+      "ravi pages assertion audiences set --site demo --aud https://api.example --origin https://demo.ravi.page --execute",
+    );
+    expect(set?.helpAfter).toContain("not the third-party API");
+    expect(set?.helpAfter).not.toContain("--origin https://api.example");
+    const origin = getOptionsMetadata(new PagesAssertionAudienceCommands(), "set").find((option) =>
+      option.flags.startsWith("--origin"),
+    );
+    expect(origin?.description).toContain("this Pages site");
+    expect(origin?.description).toContain("not the third-party API");
+  });
+
   it("brakes assertion audience set before Console and replaces origins on execute", async () => {
     const calls: Array<{ method: string; path: string; body: unknown }> = [];
     const client = makeClient(async (method, path, body) => {
       calls.push({ method, path, body });
       return {
-        audiences: [{ audience: "api.example", origins: ["https://api.example", "https://hooks.example"] }],
+        audiences: [{ audience: "https://api.example", origins: ["https://demo.ravi.page", "https://docs.example"] }],
         siteRef: "demo",
       };
     });
@@ -1749,8 +1765,8 @@ describe("pages agent-first contract", () => {
     const set = (execute?: boolean) =>
       command.set(
         "demo",
-        "api.example",
-        ["https://api.example", "https://hooks.example"],
+        "https://api.example",
+        ["https://demo.ravi.page", "https://docs.example"],
         "proj",
         undefined,
         true,
@@ -1761,9 +1777,9 @@ describe("pages agent-first contract", () => {
     expect(error.details.plan).toEqual({
       project: "proj",
       site: "demo",
-      aud: "api.example",
+      aud: "https://api.example",
       originCount: 2,
-      origins: ["https://api.example", "https://hooks.example"],
+      origins: ["https://demo.ravi.page", "https://docs.example"],
     });
     expect(calls).toEqual([]);
 
@@ -1773,19 +1789,62 @@ describe("pages agent-first contract", () => {
         method: "PUT",
         path: "/api/cli/projects/proj/pages/demo/viewer-assertion-audiences",
         body: {
-          aud: "api.example",
-          origins: ["https://api.example", "https://hooks.example"],
+          aud: "https://api.example",
+          origins: ["https://demo.ravi.page", "https://docs.example"],
         },
       },
     ]);
     expect(JSON.parse(output)).toMatchObject({
       action: "set",
-      aud: "api.example",
-      audiences: [{ aud: "api.example", origins: ["https://api.example", "https://hooks.example"] }],
+      aud: "https://api.example",
+      audiences: [{ aud: "https://api.example", origins: ["https://demo.ravi.page", "https://docs.example"] }],
       jwksUrl: "https://console.example/api/public/pages/viewer-assertions/jwks",
-      origins: ["https://api.example", "https://hooks.example"],
+      origins: ["https://demo.ravi.page", "https://docs.example"],
       success: true,
     });
+  });
+
+  it("forwards a Console 400 when --origin is not this Pages site hostname", async () => {
+    const client = makeClient(async () => {
+      throw new CloudAuthError("PAYLOAD_INVALID", "hostname must be this site's default or active custom hostname", {
+        status: 400,
+      });
+    });
+    const command = new PagesAssertionAudienceCommands({ client, readCredentials: makeReadCredentials() });
+
+    const error = await expectContractError(
+      () => command.set("demo", "https://api.example", ["https://api.example"], "proj", undefined, true, true),
+      "PAYLOAD_INVALID",
+      2,
+    );
+
+    expect(error.message).toContain("https origin of this Pages site");
+    expect(error.message).toContain("hostname must be this site's default or active custom hostname");
+    expect(error.details.suggestedAction).toContain("https://<site>.ravi.page");
+    expect(error.details.status).toBe(400);
+  });
+
+  it("hides a provider dump on assertion audience set 400 and still states the Pages-host rule", async () => {
+    const secret = "SENTINEL_PROVIDER_4Q7M";
+    const client = makeClient(async () => {
+      throw new CloudAuthError(
+        "PAYLOAD_INVALID",
+        `hostname must be this site's default or active custom hostname https://user:${secret}@evil.test/private?token=value`,
+        { status: 400 },
+      );
+    });
+    const command = new PagesAssertionAudienceCommands({ client, readCredentials: makeReadCredentials() });
+
+    const error = await expectContractError(
+      () => command.set("demo", "https://api.example", ["https://api.example"], "proj", undefined, true, true),
+      "PAYLOAD_INVALID",
+      2,
+    );
+
+    expect(error.message).toContain("https origin of this Pages site");
+    expect(error.message).not.toContain(secret);
+    expect(JSON.stringify(error.envelope())).not.toContain(secret);
+    expect(JSON.stringify(error.envelope())).not.toContain("user:");
   });
 
   it("rejects assertion audience set without an https origin before the brake", async () => {

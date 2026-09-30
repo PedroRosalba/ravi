@@ -110,18 +110,20 @@ ravi pages domains <host> docs.example.com --execute
 
 ## Backend auth / assertion audiences
 
-A page que chama uma API sua não usa o JWT do `ravi login`. Esse token fica no CLI. Quem abre a page, depois que o Console já deixou ver a rota, pode receber uma asserção de curta duração. O `aud` é o que você registrou neste host. A page lê o bootstrap same-origin na hora. O HTML publicado não leva segredo.
+A page que chama uma API sua não usa o JWT do `ravi login`. Esse token fica no CLI. Quem abre a page, depois que o Console já deixou ver a rota, pode receber uma asserção de curta duração. Essa asserção é cunhada para o viewer num host Pages específico. A page lê o bootstrap same-origin na hora. O HTML publicado não leva segredo.
+
+`--aud` é para quem a asserção serve: o identificador da API. `--origin` é quais origens desse host Pages podem recebê-la — o host default (`https://<host>.ravi.page`) ou um hostname custom ativo no mesmo site. A URL da API não é `--origin`; o registro liga `(site, aud)` a esses hostnames. Colocar a URL da API em `--origin` falha na validação do Console com HTTP 400 `PAYLOAD_INVALID` (o hostname tem de ser o default deste site ou um hostname custom ativo).
 
 Registre a audiência no host. `set` e `remove` sem `--execute` saem 3 com o plano. Nada é enviado. `list` só lê.
 
 ```bash
 ravi pages assertion audiences list --site <host> --json
-ravi pages assertion audiences set --site <host> --aud <aud> --origin https://api.exemplo --execute
-ravi pages assertion audiences set --site <host> --aud <aud> --origin https://api.exemplo --origin https://hooks.exemplo --execute
+ravi pages assertion audiences set --site demo --aud https://api.exemplo --origin https://demo.ravi.page --execute
+ravi pages assertion audiences set --site demo --aud https://api.exemplo --origin https://demo.ravi.page --origin https://docs.exemplo --execute
 ravi pages assertion audiences remove --site <host> --aud <aud> --execute
 ```
 
-`--site` é o `siteRef` do Console: slug do host, id do site, ou hostname (`acme-proj.ravi.page`). `--project` e `--console` seguem o grupo. `--origin` é `https` (esquema, host, porta opcional). Pode repetir. `set` substitui a lista de origins daquele `aud`.
+`--site` é o `siteRef` do Console: slug do host, id do site, ou hostname (`acme-proj.ravi.page`). `--project` e `--console` seguem o grupo. `--origin` é `https` (esquema, host, porta opcional) e tem de ser uma origem deste site Pages, no mesmo host que `--site`. Pode repetir, inclusive um hostname custom já ativo nesse site (`https://docs.exemplo` no exemplo). `set` substitui a lista de origins daquele `aud`.
 
 Para a page usar a asserção, o ship leva `uses` com `ravi.identity.assertion`:
 

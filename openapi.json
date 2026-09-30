@@ -12,7 +12,7 @@
   "info": {
     "description": "OpenAPI 3.1 spec auto-generated from the Ravi CLI registry. Each operation maps 1:1 to a `ravi <group> <command>` invocation.",
     "title": "Ravi API",
-    "version": "31791b2403112dc1"
+    "version": "d84f9e96c597f5d3"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -61174,7 +61174,7 @@
                     "type": "boolean"
                   },
                   "origin": {
-                    "description": "HTTPS origin allowed to receive the assertion. Repeat or comma-separate",
+                    "description": "HTTPS origin of this Pages site (default host or active custom hostname), not the third-party API. Repeat or comma-separate",
                     "items": {
                       "type": "string"
                     },
@@ -61282,7 +61282,7 @@
           }
         },
         "security": [],
-        "summary": "Replace the https origins allowed to receive a viewer assertion for one audience",
+        "summary": "Replace the https origins of this Pages site that may receive a viewer assertion for one audience",
         "tags": [
           "pages"
         ]

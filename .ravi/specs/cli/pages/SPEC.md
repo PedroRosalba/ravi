@@ -112,7 +112,7 @@ contract errors rethrow first, recognizable Console not-found failures map to
 | update / visibility → `private`/`protected_link` | reduces exposure, reversible | not braked (declared) |
 | create | creates a host record in Ravi Console | not braked / executes immediately (`--execute` unused no-op) |
 | domains | changes provider-backed hostname bindings and routing | dry-run + `--execute` |
-| assertion audiences set | registers an origin that may receive a viewer assertion | dry-run + `--execute` (see `pages/assertion-audiences`) |
+| assertion audiences set | registers Pages host origins that may receive a viewer assertion for one aud | dry-run + `--execute` (see `pages/assertion-audiences`) |
 | assertion audiences remove | drops one assertion audience | dry-run + `--execute` (see `pages/assertion-audiences`) |
 | assertion audiences list | reads the host allowlist | not braked |
 

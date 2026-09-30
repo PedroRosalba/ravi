@@ -1,3 +1,5 @@
+import { stripVTControlCharacters } from "node:util";
+import { looksLikeProviderDump } from "../cli/payload-error-message.js";
 import { normalizeConsoleUrl } from "../cloud-auth/client.js";
 import { CloudAuthError } from "../cloud-auth/errors.js";
 import { createAuthenticatedPagesContext, type PagesClientDeps, type PagesClientOptions } from "./client.js";
@@ -86,7 +88,10 @@ export function normalizeAssertionOrigins(values: readonly string[] | string | u
     .map((value) => value.trim())
     .filter(Boolean);
   if (parts.length === 0) {
-    throw new CloudAuthError("PAYLOAD_INVALID", "Missing --origin. Pass one or more https origins.");
+    throw new CloudAuthError(
+      "PAYLOAD_INVALID",
+      "Missing --origin. Pass one or more https origins of this Pages site (the default host or an active custom hostname).",
+    );
   }
   const origins = [...new Set(parts.map(normalizeHttpsOrigin))];
   if (origins.length > PAGE_ASSERTION_AUDIENCE_ORIGIN_LIMIT) {
@@ -117,6 +122,51 @@ export function normalizePageUses(values: readonly string[] | string | undefined
     if (!uses.includes(part)) uses.push(part);
   }
   return uses;
+}
+
+const PAGES_HOST_ORIGIN_RULE =
+  "--origin must be an https origin of this Pages site (the default host or an active custom hostname). Put the API identifier in --aud.";
+
+const PAGES_HOST_ORIGIN_ACTION =
+  "Pass --origin as an https origin of this Pages site, such as https://<site>.ravi.page or an active custom hostname. Put the API identifier in --aud.";
+
+const GENERIC_PAYLOAD_ACTION = "correct the command input and retry";
+
+const GENERIC_CONSOLE_PAYLOAD_MESSAGES = new Set([
+  "console request failed.",
+  "console request input was invalid.",
+  "cloud service request failed.",
+]);
+
+export interface AssertionAudienceSetRejection {
+  message: string;
+  suggestedAction: string;
+  issues?: CloudAuthError["issues"];
+}
+
+/**
+ * Console HTTP 400 on `assertion audiences set`. The hostname allowlist stays
+ * in Console. Forward a safe Console sentence when one exists. When the body
+ * is empty or unsafe, state that `--origin` must be this site's Pages host.
+ */
+export function describeAssertionAudienceSetRejection(error: unknown): AssertionAudienceSetRejection | null {
+  if (!(error instanceof CloudAuthError)) return null;
+  if (error.code !== "PAYLOAD_INVALID" || error.status !== 400) return null;
+  const detail = safeConsoleDetail(error.message) ?? firstSafeIssueDetail(error.issues);
+  const issues = scrubbedIssues(error.issues);
+  const aboutPagesHost = detail !== undefined && mentionsPagesHostOrigin(detail);
+  if (detail && !aboutPagesHost) {
+    return {
+      message: detail,
+      suggestedAction: GENERIC_PAYLOAD_ACTION,
+      ...(issues ? { issues } : {}),
+    };
+  }
+  return {
+    message: detail ? `${PAGES_HOST_ORIGIN_RULE} Console: ${detail}` : PAGES_HOST_ORIGIN_RULE,
+    suggestedAction: PAGES_HOST_ORIGIN_ACTION,
+    ...(issues ? { issues } : {}),
+  };
 }
 
 export async function listPageAssertionAudiences(
@@ -307,4 +357,54 @@ function requireText(value: string | undefined, label: string): string {
 
 function objectValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function safeConsoleDetail(message: string | undefined): string | undefined {
+  if (!message) return undefined;
+  const cleaned = stripVTControlCharacters(message)
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned || cleaned.length > 1024) return undefined;
+  if (looksLikeProviderDump(cleaned)) return undefined;
+  const scrubbed = scrubCredentialUrls(cleaned);
+  if (!scrubbed || scrubbed.length < 8 || looksLikeProviderDump(scrubbed)) return undefined;
+  if (GENERIC_CONSOLE_PAYLOAD_MESSAGES.has(scrubbed.toLowerCase())) return undefined;
+  return scrubbed.length > 400 ? `${scrubbed.slice(0, 397)}...` : scrubbed;
+}
+
+function scrubCredentialUrls(value: string): string {
+  return value
+    .replace(/https?:\/\/[^\s)]+/gi, (url) => {
+      try {
+        return new URL(url).origin;
+      } catch {
+        return "";
+      }
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function mentionsPagesHostOrigin(detail: string): boolean {
+  return /\b(hostname|origins?|ravi\.page)\b/i.test(detail);
+}
+
+function firstSafeIssueDetail(issues: CloudAuthError["issues"]): string | undefined {
+  if (!issues) return undefined;
+  for (const issue of issues) {
+    const detail = safeConsoleDetail(issue.message);
+    if (detail) return detail;
+  }
+  return undefined;
+}
+
+function scrubbedIssues(issues: CloudAuthError["issues"]): CloudAuthError["issues"] {
+  if (!issues || issues.length === 0) return undefined;
+  const next = issues.flatMap((issue) => {
+    const message = safeConsoleDetail(issue.message);
+    if (!message) return [];
+    return [{ ...issue, message }];
+  });
+  return next.length > 0 ? next : undefined;
 }
