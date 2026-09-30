@@ -7,6 +7,7 @@ import type { ConsoleApiClient } from "../../cloud-auth/client.js";
 import { resolveConsoleProjectRef, type ConsoleScopeResolverDeps } from "../../console-scope/resolver.js";
 import type { ResolvedConsoleScope } from "../../console-scope/types.js";
 import {
+  assertArtifactPackageTargetExists,
   publishArtifactToConsole,
   type ArtifactPublishDeps,
   type ArtifactPublishResult,
@@ -78,11 +79,13 @@ export interface PagesPasswordCommandDeps extends PagesCommandDeps {
 
 const PAGES_SHIP_HELP = `
 Examples:
-  ravi pages ship --title "Weekly report" --body "<h1>OK</h1>" --json
-  ravi pages ship --project demo --title "Landing" --route /landing --html ./landing.html --visibility public
   ravi pages published --project demo --json
+  ravi pages ship --title "Weekly report" --body "<h1>OK</h1>" --json --execute
+  ravi pages ship --project demo --title "Landing" --route /landing --html ./landing.html --visibility public --json --execute
 
-A successful ship arms or reuses a page.comment.created trigger for the current agent, filtered to this page.
+A successful ship arms or reuses one page.comment.created trigger per Pages host
+(page-comment:<site id>). Every route on that host shares it, and it stays bound
+to the first agent that shipped there. Check commentFollow.agentId.
 
 Happy path:
   One command. Do not choreograph pages create + pages publish.
@@ -92,7 +95,7 @@ Happy path:
   List routes with pages published before choosing a path.
   A positional slug is a legacy extra host. Prefixes ravi and ravi-* are reserved.
   --title is required. Pass exactly one of --body, --html, or --dir.
-  Public visibility is allowed in the same call.
+  Public visibility is allowed in the same call, together with --execute.
   --uses ravi.identity.assertion opts the page into the Console viewer assertion.
   It does not embed a JWT. Register audiences with pages assertion audiences.
 
@@ -102,17 +105,17 @@ Write brake:
   a real page with a reachable URL, so it is never implied.
 
 JSON:
-  { url, site, slug, route, visibility, artifactId }
+  { success, url, site, slug, route, visibility, artifactId, commentFollow }
 `;
 
 const PAGES_CREATE_HELP = `
 Advanced / compatibility:
   Host-only. Does not upload HTML or assets.
-  Prefer \`ravi pages ship --title <title> --body|--html|--dir … --json\` to get a URL.
+  Prefer \`ravi pages ship --title <title> --body|--html|--dir … --json --execute\` to get a URL.
 
 Examples:
-  ravi pages create demo --json
-  ravi pages create proj docs --visibility private --json
+  ravi pages create demo --json --execute
+  ravi pages create proj docs --visibility private --json --execute
 
 Write brake:
   Dry-run by default. Without --execute nothing is written; the command returns
@@ -126,8 +129,8 @@ Advanced / compatibility:
   Prefer \`ravi pages ship\` unless the HTML is already an art_* id.
 
 Examples:
-  ravi pages publish proj demo ./site --route / --json
-  ravi pages publish proj demo art_demo_123 --route / --json
+  ravi pages publish proj demo ./site --route / --json --execute
+  ravi pages publish proj demo art_demo_123 --route / --json --execute
 
 Write brake:
   Dry-run by default. Without --execute nothing is uploaded and no release is
@@ -277,6 +280,14 @@ export class PagesCommands {
   ) {
     return runPagesCommand("pages create", asJson, async () => {
       const parsed = parseCreateArgs(args, projectOption);
+      if (isReservedPageHostSlug(parsed.slug)) {
+        // Usage check stays BEFORE the brake: a reserved slug is never a
+        // plan worth confirming.
+        throw new CloudAuthError(
+          "PAYLOAD_INVALID",
+          `Invalid host slug "${parsed.slug}": prefixes ravi and ravi-* are reserved and not user-creatable.`,
+        );
+      }
       const normalizedVisibility = normalizePageVisibility(visibility);
       if (execute !== true) {
         // Write brake (Manual v2 7.8): creating a host registers a real Pages
@@ -365,7 +376,7 @@ export class PagesCommands {
       if (legacySlug && isReservedPageHostSlug(legacySlug)) {
         throw new CloudAuthError(
           "PAYLOAD_INVALID",
-          `Host slug "${legacySlug}" is reserved. Prefixes ravi and ravi-* cannot be created from pages ship. Publish a route on the project default host instead.`,
+          `Invalid host slug "${legacySlug}": prefixes ravi and ravi-* are reserved and cannot be created from pages ship. Publish a route on the project default host instead.`,
         );
       }
       // Validation stays BEFORE the brake: an invalid source is a payload error
@@ -513,6 +524,9 @@ export class PagesCommands {
       const parsed = parsePublishArgs(args, projectOption, siteOption);
       const normalizedVisibility = normalizePageVisibility(visibility);
       const parsedArtifactVersion = artifactVersion ? parseInteger(artifactVersion, "--artifact-version") : undefined;
+      // Validation stays BEFORE the brake: a missing local source is a usage
+      // error even on the dry-run path.
+      await assertArtifactPackageTargetExists(parsed.source);
       if (execute !== true) {
         // Write brake (Manual v2 7.8): publishing uploads content and can
         // activate a release on a reachable route. Dry-run by default and exit 3
@@ -1682,7 +1696,7 @@ async function resolveShipHost(
   if (convention && isReservedPageHostSlug(convention)) {
     throw new CloudAuthError(
       "PAYLOAD_INVALID",
-      `Project-owned host slug "${convention}" is reserved. Prefixes ravi and ravi-* are not user-creatable, and this project has no default Pages host.`,
+      `Invalid project-owned host slug "${convention}": prefixes ravi and ravi-* are reserved and not user-creatable, and this project has no default Pages host.`,
     );
   }
 

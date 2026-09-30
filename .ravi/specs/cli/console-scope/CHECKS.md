@@ -93,8 +93,8 @@ owners:
 - `ravi pages create <slug> --json --execute` uses the default project when
   project is omitted and explicit project when provided. Without `--execute`
   it exits 3 before resolution.
-- `ravi pages publish <site> <target> --json --execute` uses the default
-  project when `--project` is omitted. Without `--execute` it exits 3 before
+- `ravi pages publish <target> --site <site> --json --execute` uses the
+  default project when `--project` is omitted. Without `--execute` it exits 3 before
   resolution.
 - `ravi bridges create --json` uses the default project when `--project` is
   omitted.

@@ -5,14 +5,14 @@ description: |
   - Criar, publicar ou hospedar uma página, landing ou relatório
   - Subir HTML e obter um URL no host do projeto
   - page, pages, HTML, rota, URL, publish, hospedar, landing, relatório
-  Você publica com `ravi pages ship` no seu ambiente. Não delegue a outro agent.
+  Você mesmo publica com `ravi pages ship … --execute`.
   Não use para o ledger genérico de artifacts (isso é a skill artifacts).
   Não crie um host *.ravi.page por página.
 ---
 
 # Ravi Pages
 
-**You publish yourself** with `ravi pages ship`. Do not ask another agent to publish for you. There is no Pages specialist and no publish-by-delegation. Run the command in your own environment.
+**Você mesmo publica** com `ravi pages ship`. Não peça a outro agent para publicar por você: não existe agent especialista em Pages. Se `pages` for negado por permissão, peça `execute:group:pages` ao operador ou reporte a tarefa como bloqueada.
 
 Um projeto tem um host default (`<orgSlug>-<projectSlug>.ravi.page`). Páginas são rotas nesse host. A URL é `https://<host><rota>`. Domínio custom é um binding em cima desse host.
 
@@ -28,10 +28,10 @@ Taxonomia de saída:
 
 - `0` sucesso.
 - `1` erro de execução (`SITE_NOT_FOUND`, `ROUTE_NOT_FOUND`, auth/provider).
-- `2` erro de uso (falta `--title`, `--body`/`--html`/`--dir` conflitantes, slug reservado). Esses erros saem antes do freio.
+- `2` erro de uso: falta `--title`, `--body`/`--html`/`--dir` ausentes ou conflitantes, arquivo/diretório inexistente, slug reservado (`ravi`, `ravi-*`) no `ship` posicional ou no `create`, fonte local inexistente no `publish`. Esses erros saem antes do freio.
 - `3` freio de escrita — não é erro. Nada foi enviado/exposto; o envelope traz `dryRun:true` e `plan`. Revise e repita com `--execute`.
 
-**Write brake do ship:** dry-run por default. Sem `--execute` nada sobe e nenhum release é criado (exit 3 + plano). Com `--execute` o ship publica. O mesmo freio vale para `pages create` e `pages publish`. `--execute` nesses três não é no-op.
+**Freio de escrita do ship:** dry-run por default. Sem `--execute` nada sobe e nenhum release é criado (exit 3 + plano). Com `--execute` o ship publica. O mesmo freio vale para `pages create` e `pages publish`. `--execute` nesses três não é no-op.
 
 `--visibility public` vale no mesmo `ship`. Ainda precisa de `--execute`. Sem `--execute` a chamada continua dry-run, mesmo com `public`.
 
@@ -40,14 +40,16 @@ O freio também continua em `password set/remove`, `domains`, `assertion audienc
 `--json` de sucesso do ship. `slug` é o host do projeto. `route` é a página. O campo `site` é o registro desse host:
 
 ```json
-{ "url": "https://acme-proj.ravi.page/relatorio", "site": {}, "slug": "acme-proj", "route": "/relatorio", "visibility": "public", "artifactId": "art_xxx" }
+{ "url": "https://acme-proj.ravi.page/relatorio", "site": {}, "slug": "acme-proj", "route": "/relatorio", "visibility": "private", "artifactId": "art_xxx" }
 ```
 
-O JSON também traz `success` e `commentFollow`. O plano do dry-run descreve a forma da fonte (`kind`, tamanho ou path). Não inclui o HTML e não deriva um host a partir de `--title`.
+O JSON também traz `success` e `commentFollow`. O plano do dry-run descreve a forma da fonte (`kind` e tamanho do body; o path sai redigido). Não inclui o HTML e não deriva um host a partir de `--title`.
 
 Checklist:
 
 - Publiquei eu mesmo com `ravi pages ship … --execute`, sem pedir a outro agent?
+- Numa falha, li `error.code`/`suggestedAction` e parei, sem repetir `--execute` variando a entrada?
+- Usei `--visibility public` só porque pediram uma URL aberta?
 - Publiquei no host default do projeto, sem criar um `*.ravi.page` a partir do título?
 - Listei as rotas antes de escolher `--route`?
 - Usei só `ravi pages ship` para obter a URL, sem `create` + `publish`?
@@ -58,7 +60,7 @@ Checklist:
 
 ```bash
 ravi pages published --project <projeto> --json
-ravi pages ship --project <projeto> --title "Relatório semanal" --route /relatorio --body "<h1>OK</h1>" --visibility public --json --execute
+ravi pages ship --project <projeto> --title "Relatório semanal" --route /relatorio --body "<h1>OK</h1>" --json --execute
 ravi pages ship --title "Relatório semanal" --body "<h1>OK</h1>" --json --execute
 ravi pages ship --project <projeto> --title "Landing" --route / --html ./landing.html --visibility public --json --execute
 ravi pages ship --project <projeto> --title "Docs" --route /docs --dir ./site --entrypoint index.html --json --execute
@@ -71,8 +73,8 @@ Regras:
 - Defaults: `--visibility private`, `--route /` (home do projeto), `--entrypoint index.html`.
 - Liste rotas com `ravi pages published` antes de publicar. `--route /` substitui a home. Outra página precisa de outra rota (`/relatorio`, `/docs`).
 - `[project]` posicional junto com um segundo argumento é host legado. O projeto entra por `--project` ou pelo scope do Console.
-- Depois de um ship com sucesso (`--execute`), o Ravi cria ou reusa um trigger `page-comment:<site id>` no tópico `ravi.watch.console.page.comment.created`, filtrado a essa page e ligado ao agent que fez o ship. Um segundo ship não troca o agent. Comentário do próprio creator ainda acorda o agent. Sem agent no contexto, o ship segue e `commentFollow.skipped` fica `missing_creator`. O dry-run não arma o trigger.
-- `--visibility public` vale no mesmo comando, junto com `--execute`.
+- Depois de um ship com sucesso (`--execute`), o Ravi cria ou reusa um trigger `page-comment:<site id>` no tópico `ravi.watch.console.page.comment.created`. O trigger é por host, não por rota: todas as rotas do host default compartilham o mesmo, ligado ao primeiro agent que fez ship nesse host. Um segundo ship (mesmo de outro agent, em outra rota) não troca o agent; confira `commentFollow.agentId`. Comentário do próprio creator ainda acorda o agent. Sem agent no contexto, o ship segue e `commentFollow.skipped` fica `missing_creator`. O dry-run não arma o trigger.
+- Não use `ship --execute` como sonda. Cada chamada cria um release real. Numa falha, leia `error.code` e `suggestedAction` e pare ou reporte; não repita com entradas variadas.
 
 Prefixos reservados de host: `ravi` e `ravi-*`. O CLI não cria esses slugs. Não tente usá-los como host novo.
 

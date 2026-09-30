@@ -657,7 +657,7 @@ function contentPublishCommandForSite(projectRef: string, site: PageSitePayload)
   const siteRef = stringValue(site.slug) ?? stringValue(site.id);
   if (!siteRef) return null;
   const visibility = stringValue(site.defaultVisibility) ?? stringValue(site.visibility) ?? "public";
-  return `ravi pages publish ${projectRef} ${siteRef} ./site --route / --visibility ${visibility} --entrypoint index.html`;
+  return `ravi pages publish ${projectRef} ${siteRef} ./site --route / --visibility ${visibility} --entrypoint index.html --execute`;
 }
 
 function requireText(value: string | undefined, label: string): string {

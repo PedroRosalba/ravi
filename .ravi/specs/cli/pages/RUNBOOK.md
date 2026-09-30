@@ -28,9 +28,9 @@
    `updatePageSite` / `updatePageRouteVisibility` (update/visibility with
    `public`). The dry-run plan MUST say whether the target is the site
    default or one `--route`.
-9. If `pages ship`, `pages create` or `pages publish` writes to Console
-   without `--execute`, the brake regressed: those ops must exit 3 with
-   `WRITE_REQUIRES_EXECUTE` and upload only when `--execute` is set.
+9. If a ship dry-run created the default host or an upload session, the brake
+   moved after `resolveShipHost` / `publishArtifactToConsole`; move it back
+   right after arg and source validation.
 10. If a braked op in agent context reports a CloudAuthError instead of the
     dry-run envelope, `runPagesCommand` lost the ContractError rethrow.
 
@@ -44,18 +44,27 @@ Live checks against the local CLI (read-only or dry-run):
 
 ```bash
 ravi pages ship --title "Demo" --route /demo --body "<h1>OK</h1>" --json # expect exit 3; no upload
-ravi pages ship --title "Demo" --route /demo --body "<h1>OK</h1>" --json --execute # happy path: project default host + route
+ravi pages ship ravi-x --title "Demo" --body "<h1>OK</h1>" --json        # expect exit 2 (reserved slug)
 ravi pages create proj site --visibility private --json                   # advanced/compat: expect exit 3
-ravi pages create proj site --visibility private --json --execute         # advanced/compat: writes the host
-ravi pages publish proj site ./dist --route / --visibility public --json  # advanced/compat: expect exit 3
-ravi pages publish proj site ./dist --route / --visibility public --json --execute # advanced/compat: publishes
+ravi pages create proj ravi-site --json                                   # expect exit 2 (reserved slug)
+ravi pages publish proj site ./dist --route / --visibility public --json  # expect exit 3 (./dist must exist)
+ravi pages publish proj site ./missing --json                             # expect exit 2 (source not found)
 ravi pages domains proj site docs.example.com --json                      # expect exit 3 before credentials
-ravi pages domains proj site docs.example.com --execute                  # add shown DNS records, then rerun
 ravi pages password set proj site --route / --json                        # expect exit 3, no prompt
 ravi pages password remove proj site --route / --json                     # expect PAYLOAD_INVALID (missing --visibility)
 ravi pages visibility proj site public --json                             # expect exit 3
-ravi pages visibility proj site private --json                            # immediate write (no brake on reductions)
 ravi pages visibility proj site public --route / --json                   # expect exit 3; no route mutation
-ravi pages visibility proj site public --route / --execute --json         # route policy only; effectiveVisibility in output
 ravi pages list --fields slug,status --json                               # expect compact items
+```
+
+Real writes. Run them only against a scratch project, once each, never as a
+retry loop:
+
+```bash
+ravi pages ship --title "Demo" --route /demo --body "<h1>OK</h1>" --json --execute # project default host + route
+ravi pages create proj site --visibility private --json --execute         # writes the host
+ravi pages publish proj site ./dist --route / --visibility public --json --execute # publishes a public route
+ravi pages domains proj site docs.example.com --execute                  # add shown DNS records, then rerun
+ravi pages visibility proj site private --json                            # immediate write (no brake on reductions)
+ravi pages visibility proj site public --route / --execute --json         # route policy only; effectiveVisibility in output
 ```

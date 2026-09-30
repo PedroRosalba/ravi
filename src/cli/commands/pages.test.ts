@@ -123,8 +123,9 @@ describe("pages CLI commands", () => {
     const commands = getCommandsMetadata(PagesCommands);
     const byName = Object.fromEntries(commands.map((command) => [command.name, command]));
     expect(byName.ship?.description).toContain("One-shot");
-    expect(byName.ship?.helpAfter).toContain('ravi pages ship --title "Weekly report" --body "<h1>OK</h1>" --json');
-    expect(byName.ship?.helpAfter).not.toContain("--json --execute");
+    expect(byName.ship?.helpAfter).toContain(
+      'ravi pages ship --title "Weekly report" --body "<h1>OK</h1>" --json --execute',
+    );
     expect(byName.create?.description).toMatch(/Advanced\/compat|host-only/i);
     expect(byName.create?.helpAfter).toContain("Prefer");
     expect(byName.publish?.description).toMatch(/Advanced\/compat|art_\*/);
@@ -273,7 +274,7 @@ describe("pages CLI commands", () => {
       url: "https://demo.ravi.page/",
     });
     expect(payload.contentPublishCommand).toContain("ravi pages publish");
-    expect(payload.contentPublishCommand).not.toContain("--execute");
+    expect(payload.contentPublishCommand).toContain("--execute");
   });
 
   it("updates a project Pages site visibility through the Console CLI API", async () => {
@@ -1153,6 +1154,8 @@ describe("pages agent-first contract", () => {
     // never a host slug derived from --title.
     expect(JSON.stringify(error.details.plan)).not.toContain("Weekly report");
     expect(JSON.stringify(error.details.plan)).not.toContain("weekly-report");
+    expect(JSON.stringify(error.details.plan)).not.toContain("<h1>OK</h1>");
+    expect(error.details.plan).toHaveProperty("source", { kind: "body", bodyChars: 11 });
     // The brake runs before any Console call: a dry-run ship must not create a
     // host, an upload session or a release.
     expect(listAndCreate).toEqual([]);
@@ -1625,6 +1628,71 @@ describe("pages agent-first contract", () => {
     expect(error.message).toContain("does not create");
     expect(calls).toEqual([{ method: "GET", path: "/api/cli/projects/proj/pages", body: undefined }]);
     expect(JSON.stringify(calls)).not.toContain("weekly-report");
+  });
+
+  it("ship/create/publish usage errors exit 2 before the brake, without --execute", async () => {
+    const command = new PagesCommands({
+      client: makeClient(async () => {
+        throw new Error("console should not be called");
+      }),
+      readCredentials: makeReadCredentials(),
+    });
+    const ship = (args: string[], title: string | undefined, body?: string, html?: string) =>
+      command.ship(
+        args,
+        "proj",
+        title,
+        body,
+        html,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true,
+      );
+
+    const cases: Array<[string, () => Promise<unknown>, RegExp]> = [
+      ["missing title", () => ship([], undefined, "<h1>OK</h1>"), /Missing --title/],
+      ["conflicting sources", () => ship([], "T", "<h1>OK</h1>", "./x.html"), /exactly one|Conflicting/],
+      ["reserved ship slug", () => ship(["ravi-custom"], "T", "<h1>OK</h1>"), /^Invalid host slug "ravi-custom"/],
+      [
+        "reserved create slug",
+        () => command.create(["ravi-docs"], "proj", undefined, undefined, undefined, true) as Promise<unknown>,
+        /^Invalid host slug "ravi-docs"/,
+      ],
+      [
+        "missing publish source",
+        () =>
+          command.publish(
+            ["./definitely-missing-pages-dir"],
+            "proj",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            true,
+          ) as Promise<unknown>,
+        /^Artifact package target not found/,
+      ],
+    ];
+    for (const [name, run, message] of cases) {
+      const error = await expectCloudError(run);
+      expect(error.code, name).toBe("PAYLOAD_INVALID");
+      expect(error.message, name).toMatch(message);
+    }
   });
 
   it("rejects a reserved legacy host slug before creating it", async () => {

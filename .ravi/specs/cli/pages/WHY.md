@@ -26,9 +26,17 @@ Decisions specific to this domain:
   default. Without `--execute` they exit 3 with `WRITE_REQUIRES_EXECUTE`
   and a plan, before any Console call. A ship creates a real Pages release
   on a reachable URL, so it must not be an implied side effect or a probing
-  loop. `--execute` performs the write. Public visibility is allowed in the
-  same call once that flag is set. The caller publishes; another agent is
-  not the publish path.
+  loop (commit 80741d6b: one agent turn published 29 real releases while
+  bisecting a failure). `--execute` performs the write. Public visibility is
+  allowed in the same call once that flag is set. Usage errors (missing
+  title, bad or missing source, reserved slug) still exit 2 before the
+  brake, so a dry-run never asks to confirm an invalid write.
+- **The caller publishes.** The agent that needs the URL runs `ship` itself.
+  Handing the publish to another agent loses the plan review and the
+  `error.code` the caller needs to stop instead of retrying. It also binds
+  the host's page-comment trigger to the wrong agent, because the trigger is
+  per host and keeps its first creator. An agent without `pages` authority
+  asks for `execute:group:pages` or reports the work as blocked.
 - **Conditional brake on `update`/`visibility`.** Braking every visibility
   change would put exit-3 friction inside "make it private NOW". The brake
   keys off the requested value: `public` → dry-run; `private`/`protected_link`
@@ -38,12 +46,12 @@ Decisions specific to this domain:
 - **Brake before scope resolution.** `ship`, `create`, `publish`, `domains`
   and the password pair brake before `resolvePagesProject`, so a dry-run
   works offline and unauthenticated. The plan shows parsed intent
-  (`(Console scope default)`, `(project default host)`) instead of resolved
-  refs.
+  (`(Console scope default)`, and `(project default host)` for ship) instead
+  of resolved refs.
 - **Host-only `create`, advanced `publish`.** `create` stays a host record.
   `publish` stays the upload primitive for an existing host or a local
   `art_*`. Both remain in the CLI and share the ship write brake. The
-  `pages` skill mentions them only under “Host legado”.
+  `pages` skill shows their commands only under “Host legado”.
 - **Brake before the password prompt.** A `password set` dry-run must never
   read a secret; the plan carries site/action and `routePresent` metadata only.
 - **Message-based not-found mapping.** Console reports unknown sites/routes as

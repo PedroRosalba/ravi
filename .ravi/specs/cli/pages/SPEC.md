@@ -57,9 +57,14 @@ contract errors rethrow first, recognizable Console not-found failures map to
    release). With `--execute` they perform the write. Public visibility on
    `ship`/`create`/`publish` is allowed in the same call once `--execute` is
    set; omitting `--execute` stays a dry-run even when visibility is `public`.
-   Ship usage checks (required `--title`, exactly one of `--body` / `--html` /
-   `--dir`, reserved host slug `ravi` / `ravi-*`) MUST run before the brake, so
-   those failures stay usage errors on the dry-run path. The ship plan MUST
+   Side-effect-free usage checks MUST run before the brake, so those failures
+   stay usage errors (exit 2) on the dry-run path: for ship, required
+   `--title`, exactly one of `--body` / `--html` / `--dir`, an existing
+   `--html`/`--dir` path, and a reserved positional host slug (`ravi` /
+   `ravi-*`); for create, a reserved slug; for publish, an existing local
+   source path (an `art_*` id is resolved after the brake). A reserved
+   project-owned default-host slug can only be computed after scope
+   resolution, so ship rejects it at `--execute` time. The ship plan MUST
    describe source shape only (kind, path, or body size) and MUST NOT carry
    the HTML body or a host slug derived from `--title`. `pages domains` MUST
    still default to dry-run and require `--execute` before credential, project
@@ -89,13 +94,16 @@ contract errors rethrow first, recognizable Console not-found failures map to
     proves Console is up. Isolated CLIs MAY use the host unix-socket CLI
     gateway when `RAVI_CONTEXT_KEY` is set and `~/.ravi/cli-gateway.sock` is
     reachable. They MUST NOT auto-open raw `127.0.0.1`.
-11. With `--execute`, `pages ship` without a positional slug MUST publish a route on the
-    project's default Pages host: a listed site with `isDefault`, otherwise
+11. With `--execute`, `pages ship` without a positional slug MUST publish a
+    route on the project's default Pages host: a listed site with `isDefault`, otherwise
     the project-owned slug `<orgSlug>-<projectSlug>` (created once, with
     `isDefault`, when it is missing and the slug is computable). `--title`
     MUST NOT become a host slug. `--route` defaults to `/`. A positional slug
     is a legacy extra host: it MAY create or reuse that slug and MUST warn.
     Host slugs `ravi` and `ravi-*` MUST NOT be created.
+    A successful ship arms or reuses one `page-comment:<site id>` trigger per
+    Pages host (`pages/comment-follow`). Every route on the default host
+    shares it, and it stays bound to the first agent that shipped there.
 12. `pages domains --execute` MUST be one idempotent setup command. When
     ownership or Pages DNS is not ready, the CLI MUST recognize
     `DOMAIN_SETUP_REQUIRED`, surface the Console-authored DNS instruction, exit
@@ -120,6 +128,7 @@ contract errors rethrow first, recognizable Console not-found failures map to
 | assertion audiences set | registers Pages host origins that may receive a viewer assertion for one aud | dry-run + `--execute` (see `pages/assertion-audiences`) |
 | assertion audiences remove | drops one assertion audience | dry-run + `--execute` (see `pages/assertion-audiences`) |
 | assertion audiences list | reads the host allowlist | not braked |
+| password status | reads the route access policy | not braked (read-only) |
 
 There is no `pages remove`/route-removal command on this surface today; if one
 is added it MUST arrive braked. Viewer-assertion audience removal is
@@ -143,14 +152,16 @@ The agent-first happy path is `ravi pages ship`, taught by the `pages` skill
 (`ravi skills show pages` / `ravi skills show ravi-system-pages`) and by
 `AGENTS.md` ("Ravi Pages Publishing"). The agent that needs a URL MUST run
 `ravi pages ship … --execute` itself. It MUST NOT hand the publish to another
-agent. Agents MUST NOT choreograph `create` + `publish` to get a URL.
+agent. When `pages` is denied, it requests `execute:group:pages` or reports
+the work as blocked. Agents MUST NOT use `ship --execute` as a probe; on
+failure they read `error.code`/`suggestedAction` and stop. Agents MUST NOT choreograph `create` + `publish` to get a URL.
 `create` and `publish` remain implemented as advanced/compat commands
 (host-only create; publish onto an existing host or a local `art_*`) and MUST
 keep working, including the same dry-run until `--execute`. They MUST NOT be
 taught as the default path. The `contentPublishCommand` hint returned by
-`pages create` (`src/pages/client.ts`) still points at `pages publish` without
-`--execute`, so copying that hint verbatim is a dry-run (exit 3) until the
-caller adds `--execute`. The `artifacts` skill MUST NOT teach Pages
+`pages create` (`src/pages/client.ts`) MUST point at `pages publish …
+--execute`, and the ship/create/publish `--help` examples MUST include
+`--execute`. The `artifacts` skill MUST NOT teach Pages
 publishing; it points at skill `pages`.
 
 The default skill gate `pages` (`/^pages(?:[._]|$)/` → `ravi-system-pages`)
@@ -168,9 +179,11 @@ MUST load the skill for `ravi pages …` and `pages.password`.
 
 - `bun test src/cli/commands/pages.test.ts` green (contract block included),
   no new failures vs the `dev` baseline.
-- Live checks on the local CLI: `pages ship --title T --route /weekly --body "<p>x</p>" --json`
+- Live checks on the local CLI (the `--execute` ones write real state; run
+  them only against a scratch project): `pages ship --title T --route /weekly --body "<p>x</p>" --json`
   → exit 3, plan only, no Console call. The same command with `--execute`
-  → project default host + that route and JSON `{url,site,slug,route,visibility,artifactId}`.
+  → project default host + that route and JSON
+  `{url,site,slug,route,visibility,artifactId}`.
   `slug` is the host, not a slug derived from the title.
   `pages create p s --json` → exit 3; `pages create p s --json --execute` →
   writes the host; `pages publish p s ./site --json` → exit 3;
@@ -197,6 +210,12 @@ MUST load the skill for `ravi pages …` and `pages.password`.
 - Braking `domains` after project resolution would let a dry-run touch
   credential/provider state. Braking `password set` AFTER the prompt would
   make dry-runs read secret material; the brake fires right after arg
-  parsing, before prompt and before any Console call. `create`, `publish` and
-  `ship` use the same early brake: a reachable host or release is never
-  implied. Leftover calls without `--execute` exit 3 and do not upload.
+  parsing, before prompt and before any Console call.
+- Braking `ship`/`create`/`publish` after `resolvePagesProject`,
+  `resolveShipHost` or `publishArtifactToConsole` would let a dry-run create
+  the default host or an upload session. The brake fires right after arg and
+  source validation. Scripts that omit `--execute` get exit 3 and upload
+  nothing.
+- On 2026-09-16 an agent whose ship kept failing used `ship` as a black-box
+  oracle and published 29 real releases in one turn. The brake stops implied
+  writes; the skill also tells agents not to loop `--execute` as a probe.

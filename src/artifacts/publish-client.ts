@@ -353,6 +353,20 @@ export async function activateArtifactReleaseInConsole(
   return result;
 }
 
+/**
+ * Side-effect-free precheck for a publish target: a local path must exist, or
+ * the target must look like a local `art_*` id. Lets braked callers fail with a
+ * usage error before their dry-run instead of after `--execute`.
+ */
+export async function assertArtifactPackageTargetExists(target: string): Promise<void> {
+  try {
+    await lstat(resolve(target));
+  } catch (error) {
+    if (isLocalArtifactId(target) && isNotFoundError(error)) return;
+    throw new CloudAuthError("PAYLOAD_INVALID", `Artifact package target not found: ${target}`, { cause: error });
+  }
+}
+
 export async function buildArtifactPackageManifest(
   target: string,
   options: Pick<ArtifactPublishOptions, "entrypoint" | "artifactVersion" | "basePath" | "assetBase"> = {},

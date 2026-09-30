@@ -52,7 +52,8 @@ ravi skills show pages
 ```
 
 You publish yourself with `ravi pages ship`. Do not ask another agent to publish
-for you. Happy path is one command. Do not choreograph `create` + `publish`.
+for you. If `pages` is denied, request `execute:group:pages` or report the work
+as blocked. Happy path is one command. Do not choreograph `create` + `publish`.
 One project owns one default host (`<orgSlug>-<projectSlug>.ravi.page`). Pages are
 routes on that host. `--title` is the page title and does not create a host.
 List routes before choosing `--route`. Do not create one site per page.
@@ -61,15 +62,21 @@ Pass exactly one of `--body`, `--html`, or `--dir`.
 
 ```bash
 ravi pages published --project <project> --json
-ravi pages ship --project <project> --title "Weekly report" --route /weekly --body "<h1>OK</h1>" --visibility public --json --execute
+ravi pages ship --project <project> --title "Weekly report" --route /weekly --body "<h1>OK</h1>" --json --execute
 ravi pages ship --title "Weekly report" --body "<h1>OK</h1>" --json --execute
 ```
 
 The command without `--route` publishes the project home `/` on the default host.
 A positional slug is a legacy extra host, not the happy path.
-Success JSON is `{ url, site, slug, route, visibility, artifactId }`.
-A successful ship arms or reuses a `page.comment.created` trigger for the
-current agent, filtered to that page.
+The default visibility is private. Add `--visibility public` only when the user
+asked for an open URL.
+Success JSON includes `{ url, site, slug, route, visibility, artifactId }`, plus
+`success` and `commentFollow`.
+A successful ship arms or reuses one `page-comment:<site id>` trigger per Pages
+host. Every route on that host shares it, and it stays bound to the first agent
+that shipped there; check `commentFollow.agentId`.
+Never use `ship --execute` as a probe. On failure, read `error.code` and
+`suggestedAction` and stop instead of re-running with varied inputs.
 
 `create` is host-only compatibility. `publish` is the advanced upload primitive
 (including an existing local `art_*`). They stay available; the agent happy
@@ -82,7 +89,7 @@ ravi pages publish <project-ref> <site-slug> <artifact-id> --route / --visibilit
 
 `ship`, `create` and `publish` are dry-run by default. Without `--execute`
 nothing is uploaded (exit 3 + plan). With `--execute` they write. Public
-visibility is allowed in the same call. Domain binding, password changes, and
+visibility is allowed in the same `--execute` call. Domain binding, password changes, and
 switching a site to public visibility stay dry-run by default (exit 3): re-run
 with `--execute`. Reducing visibility writes immediately.
 

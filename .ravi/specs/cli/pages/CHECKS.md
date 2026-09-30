@@ -13,15 +13,22 @@
   and a plan, and MUST NOT call Console. With `--execute` it MUST ensure the
   host (the project default host, or the explicit legacy slug) then
   publish+activate. `--body` MUST be wrapped in a simple HTML5 document.
-  Success JSON MUST include `{url, site, slug, route, visibility, artifactId}`.
-  A successful ship MUST arm or reuse a `page.comment.created` trigger for
-  the current agent, filtered to that page. The dry-run plan MUST NOT contain
-  the HTML body or a host slug derived from `--title`.
-- `pages create` without `--execute` MUST exit 3 with `WRITE_REQUIRES_EXECUTE`
-  before any Console call. With `--execute` it MUST write the host record.
-- `pages publish` without `--execute` MUST exit 3 with `WRITE_REQUIRES_EXECUTE`
-  and MUST NOT talk to Console. With `--execute` and valid args it MUST
-  upload/publish.
+  Success JSON MUST include `{url, site, slug, route, visibility, artifactId}`
+  (it also carries `success` and `commentFollow`). A successful ship MUST arm
+  or reuse one `page-comment:<site id>` trigger per Pages host, bound to the
+  first agent that shipped there (`pages/comment-follow`); every route on that
+  host shares it. The dry-run plan MUST NOT contain the HTML body or a host
+  slug derived from `--title`. Usage errors (missing `--title`, zero or
+  several of `--body`/`--html`/`--dir`, a missing `--html`/`--dir` path, a
+  reserved positional slug) MUST exit 2 before the brake.
+- `pages create` MUST reject a reserved slug (`ravi`, `ravi-*`) with exit 2
+  before the brake. Otherwise, without `--execute` it MUST exit 3 with
+  `WRITE_REQUIRES_EXECUTE` before any Console call. With `--execute` it MUST
+  write the host record.
+- `pages publish` MUST reject a local source path that does not exist with
+  exit 2 before the brake (an `art_*` id is resolved later). Otherwise,
+  without `--execute` it MUST exit 3 with `WRITE_REQUIRES_EXECUTE` and MUST NOT
+  talk to Console. With `--execute` and valid args it MUST upload/publish.
 - `pages domains` without `--execute` MUST exit 3 before credential reads,
   project resolution or any Console/provider request.
 - `pages password set` without `--execute` MUST exit 3 BEFORE the hidden
@@ -44,7 +51,7 @@
   `SITE_NOT_FOUND` envelope (exit 1) with suggestedAction `ravi pages list
   --json`; a route not-found MUST surface as `ROUTE_NOT_FOUND` (exit 1) with
   suggestedAction `ravi pages published --json`.
-- A `ContractError` thrown by the remaining brakes or a not-found mapping MUST
+- A `ContractError` thrown by a brake or a not-found mapping MUST
   pass through `runPagesCommand`'s CloudAuthError funnel untouched.
 - A 400 Console response carrying `DOMAIN_SETUP_REQUIRED` MUST preserve that
   code through cloud-auth mapping and render the sanitized TXT/CNAME instruction
@@ -55,8 +62,10 @@
   `--execute` and be declared that way in the spec. Unbraked ops (visibility
   reductions and `password status`) MUST keep immediate behavior and be
   declared as unbraked in the spec.
-- The dry-run plan of `pages domains` MUST work without saved Console scope,
-  showing `(Console scope default)` placeholders instead of resolved refs.
+- The dry-run plans of `pages ship`, `pages create`, `pages publish` and
+  `pages domains` MUST work without saved Console scope, showing
+  `(Console scope default)` placeholders (and `(project default host)` for
+  ship) instead of resolved refs.
 - `ravi skills show pages` and `ravi skills show ravi-system-pages` MUST
   resolve to the same skill. The default gate `pages` MUST load
   `ravi-system-pages` for `ravi pages` and `pages.password`.
@@ -65,12 +74,18 @@
   `pages/assertion-audiences`.
 - The `pages` skill MUST teach the caller to publish itself with
   `ravi pages ship … --json --execute` as the only happy path to get a URL.
-  It MUST say not to ask another agent to publish. It MUST document the ship
-  write brake (exit 3 without `--execute`; public visibility allowed in the
-  same call). It MUST NOT teach `create` + `publish` choreography. The happy
+  It MUST say not to ask another agent to publish, and MUST say what to do
+  when `pages` is denied (request the grant or report blocked). It MUST say
+  not to use `ship --execute` as a probe. It MUST document the ship write
+  brake (exit 3 without `--execute`; public visibility allowed in the same
+  `--execute` call). Happy-path examples MUST keep the default private
+  visibility; `--visibility public` MAY appear only on an explicit public
+  example. It MUST NOT teach `create` + `publish` choreography. The happy
   path MUST be project → default host → route, MUST say `--title` does not
   create a host, and MUST tell the caller to list routes before publish.
   `create`/`publish` MAY appear only under an advanced/compat or legacy
   section, and that section MUST show their `--execute` brake.
-- `bun test src/cli/commands/pages.test.ts` SHOULD pass after any change to
-  the pages contract surface.
+- `bun test src/cli/commands/pages.test.ts src/cli/execute-consumers.test.ts`
+  SHOULD pass after any change to the pages contract surface. The latter
+  guards the skill, `AGENTS.md` and these specs against the unbraked-era
+  wording.

@@ -24,6 +24,34 @@ type ExecuteConsumer = {
 
 const executeConsumers: readonly ExecuteConsumer[] = [
   {
+    name: "pages create content publish hint",
+    path: "src/pages/client.ts",
+    marker: "ravi pages publish",
+    expected: "--execute",
+    matches: 1,
+  },
+  {
+    name: "pages ship help examples",
+    path: "src/cli/commands/pages.ts",
+    marker: "  ravi pages ship --",
+    expected: "--execute",
+    matches: 2,
+  },
+  {
+    name: "pages create help examples",
+    path: "src/cli/commands/pages.ts",
+    marker: "  ravi pages create ",
+    expected: "--execute",
+    matches: 2,
+  },
+  {
+    name: "pages publish help examples",
+    path: "src/cli/commands/pages.ts",
+    marker: "  ravi pages publish ",
+    expected: "--execute",
+    matches: 2,
+  },
+  {
     name: "task dispatch status hint",
     path: "src/cli/commands/tasks.ts",
     marker: "ravi tasks dispatch",
@@ -145,7 +173,7 @@ const executeInstructions = [
     name: "Pages ship public route skill",
     path: "src/plugins/internal/ravi-system/skills/pages/SKILL.md",
     instruction:
-      'ravi pages ship --project <projeto> --title "Relatório semanal" --route /relatorio --body "<h1>OK</h1>" --visibility public --json --execute',
+      'ravi pages ship --project <projeto> --title "Landing" --route / --html ./landing.html --visibility public --json --execute',
   },
   {
     name: "Pages create root instructions",
@@ -165,6 +193,12 @@ const executeInstructions = [
   {
     name: "Pages publish artifact spec",
     path: ".ravi/specs/artifacts/SPEC.md",
+    instruction:
+      "ravi pages publish <project-ref> <site-slug> ./site --route / --visibility public --entrypoint index.html --execute",
+  },
+  {
+    name: "Pages publish Console-scope canonical",
+    path: ".ravi/specs/cli/console-scope/SPEC.md",
     instruction:
       "ravi pages publish <project-ref> <site-slug> ./site --route / --visibility public --entrypoint index.html --execute",
   },
@@ -298,5 +332,37 @@ describe("command consumer contracts", () => {
     expect(source).not.toContain("`3` NÃO acontece neste domínio");
     expect(source).not.toContain("nenhum comando aceita `--execute`");
     expect(source).not.toContain("aqui NÃO existe `--execute`");
+  });
+
+  it("teaches the Pages ship/create/publish write brake without unbraked-era wording", () => {
+    const skill = normalizedSource("src/plugins/internal/ravi-system/skills/pages/SKILL.md");
+    expect(skill).toContain("Sem `--execute` nada sobe e nenhum release é criado (exit 3 + plano).");
+    expect(skill).toContain("Não use `ship --execute` como sonda.");
+
+    const sources = [
+      "src/plugins/internal/ravi-system/skills/pages/SKILL.md",
+      "AGENTS.md",
+      ".ravi/specs/cli/pages/SPEC.md",
+      ".ravi/specs/cli/pages/CHECKS.md",
+      ".ravi/specs/cli/pages/WHY.md",
+      ".ravi/specs/cli/pages/RUNBOOK.md",
+      ".ravi/specs/cli/console-scope/SPEC.md",
+      ".ravi/specs/artifacts/SPEC.md",
+    ];
+    const stale = [
+      "unused no-op",
+      "unused compatibility no-op",
+      "nesses três é no-op",
+      "Leftover `--execute` on those ops is ignored",
+      "not braked / executes immediately",
+      "MUST execute immediately",
+      "Exit 3 **não** se aplica a `pages ship`",
+      "filtered to that page",
+      "filtrado a essa page",
+    ];
+    for (const path of sources) {
+      const source = normalizedSource(path);
+      for (const phrase of stale) expect(source, `${path}: ${phrase}`).not.toContain(phrase);
+    }
   });
 });

@@ -11,7 +11,7 @@ import { stripVTControlCharacters } from "node:util";
 import { projectPublicIssues, sanitizePublicValue, type PublicValidationIssue } from "./redaction.js";
 
 const SAFE_LOCAL_PAYLOAD_PREFIX =
-  /^(?:--|Missing |Conflicting |Refusing |Invalid |Package |Local |Artifact |Duplicate |Asset |Use only |Choose |Subject |No writable |Non-interactive |Password |Passwords |Console )/;
+  /^(?:--|Missing |Conflicting |Refusing |Invalid |Package |Local |Artifact |Duplicate |Asset |Use only |Choose |Subject |No writable |Non-interactive |Password |Passwords |Console |Usage: )/;
 const PROVIDER_DUMP_PATTERN = /PRIVATE_|SENTINEL_|sk-[A-Za-z0-9]|rctx_|Bearer\s/i;
 
 export function looksLikeProviderDump(message: string): boolean {

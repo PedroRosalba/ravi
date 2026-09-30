@@ -408,15 +408,19 @@ Pages command semantics MUST stay explicit:
 
 - `ravi pages list|create|update|visibility|domains` manages Pages site records
   only.
-- `ravi pages publish` is the user-facing CLI path that uploads HTML/assets and
-  creates or activates a Pages release.
+- `ravi pages ship` is the agent path that publishes a route on the project
+  default host (see `cli/pages`). `ravi pages publish` is the advanced upload
+  primitive for an existing host or a local `art_*`. Both create or activate a
+  Pages release and dry-run until `--execute`.
 - Agents MUST NOT infer that `ravi pages create` uploads content.
-- Pages publishing MUST use `ravi pages publish` against Console.
+- Pages publishing MUST go through `ravi pages ship` or `ravi pages publish`
+  against Console.
 
 Canonical Pages content publish:
 
 ```bash
-ravi pages publish <project-ref> <site-slug> ./site --route / --visibility public --entrypoint index.html
+ravi pages ship --title "Docs" --route /docs --dir ./site --json --execute
+ravi pages publish <project-ref> <site-slug> ./site --route / --visibility public --entrypoint index.html --execute
 ```
 
 Highest-priority commands:
@@ -502,9 +506,10 @@ errors.
 - The same command with explicit `--project other-project` and `--execute` uses
   the explicit project and reports `source="explicit"` in JSON/debug output.
 - A child CLI using only `RAVI_CONTEXT_KEY` can recover the same effective scope.
-- `ravi pages publish docs ./dist --json --execute` resolves the project from
-  the shared scope when no `--project` is passed. Without `--execute` it exits
-  3 before scope resolution.
+- `ravi pages publish ./dist --site docs --json --execute` resolves the
+  project from the shared scope when no `--project` is passed (two
+  positionals mean `<project> <source>`). Without `--execute` it exits 3
+  before scope resolution.
 - `ravi connectors connect google` resolves a project from the shared scope or
   fails with a clear next command when ambiguous.
 - `ravi login` with multiple organizations is completed through Console-side org
