@@ -310,9 +310,32 @@ describe("permission provider chain", () => {
     }
   });
 
-  it("aceita a autoridade externa na cadeia por configuração", () => {
+  it("aceita a autoridade externa na cadeia por configuração, com operator-control fixo", () => {
     const providers = getConfiguredPermissionProviders(chainSetting("external-authority"));
-    expect(providers.map((provider) => provider.id)).toEqual([EXTERNAL_AUTHORITY_PROVIDER_ID]);
+    expect(providers.map((provider) => provider.id)).toEqual(["operator-control", EXTERNAL_AUTHORITY_PROVIDER_ID]);
+  });
+
+  it("não tranca o operador local fora quando a cadeia omite operator-control", () => {
+    const providers = getConfiguredPermissionProviders(chainSetting("external-authority"));
+    const decision = authorizePermission(
+      { localOperator: true, permission: "admin", objectType: "system", objectId: "*" },
+      { providers },
+    );
+    expect(decision.decision).toBe("allow");
+    expect(decision.reasonCode).toBe("operator_control_local_allow");
+  });
+
+  it("operator-control fixo não concede nada a agentes", () => {
+    const providers = getConfiguredPermissionProviders(chainSetting("external-authority"));
+    const decision = authorizePermission({ ...request, localOperator: true }, { providers });
+    expect(decision.allowed).toBe(false);
+  });
+
+  it("remove ids duplicados sem mudar a ordem", () => {
+    const providers = getConfiguredPermissionProviders(
+      chainSetting("context-capabilities,operator-control,context-capabilities"),
+    );
+    expect(providers.map((provider) => provider.id)).toEqual(["context-capabilities", "operator-control"]);
   });
 
   it("nega (fail-closed) quando um id configurado não existe", () => {

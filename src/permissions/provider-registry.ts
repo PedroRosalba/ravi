@@ -84,9 +84,20 @@ function readProviderIdsSetting(getSetting: PermissionSettingReader): string | n
   }
 }
 
+/**
+ * `operator-control` é o plano de controle do operador local e fica SEMPRE na
+ * cadeia. Ele só aceita pedidos `localOperator` puros (sem context, subject ou
+ * capabilities), então não concede nada a agentes; sem ele, uma cadeia como
+ * `external-authority` deixaria o operador sem nenhum provider aplicável e o
+ * `ravi` local negaria tudo — inclusive `settings delete` para desfazer a config.
+ */
+export const PINNED_PERMISSION_PROVIDER_ID = "operator-control";
+
 export function getConfiguredPermissionProviderIds(getSetting: PermissionSettingReader = dbGetSetting): string[] {
   const configured = parsePermissionProviderIds(readProviderIdsSetting(getSetting));
-  return configured.length > 0 ? configured : [...DEFAULT_PERMISSION_PROVIDER_IDS];
+  if (configured.length === 0) return [...DEFAULT_PERMISSION_PROVIDER_IDS];
+  const unique = [...new Set(configured)];
+  return unique.includes(PINNED_PERMISSION_PROVIDER_ID) ? unique : [PINNED_PERMISSION_PROVIDER_ID, ...unique];
 }
 
 export function getConfiguredPermissionProviders(
