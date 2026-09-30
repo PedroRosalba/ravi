@@ -23,7 +23,7 @@
  */
 
 import { request as httpRequest } from "node:http";
-import { homedir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import {
   HOST_CLI_GATEWAY_ENV,
@@ -193,17 +193,21 @@ export function shouldAutoUseHostCliGateway(env: NodeJS.ProcessEnv = process.env
 export function resolveHostCliGatewayStateDirs(env: NodeJS.ProcessEnv = process.env): string[] {
   const explicit = env.RAVI_STATE_DIR?.trim();
   if (explicit) return [explicit];
-  return [join(accountHomedir(), ".ravi")];
+  const accountHome = accountHomedir();
+  return accountHome ? [join(accountHome, ".ravi")] : [];
 }
 
-function accountHomedir(): string {
+/**
+ * Home directory from the passwd entry. `os.homedir()` is not a fallback: it
+ * reads `$HOME`. Without a passwd entry (some containers) nothing is probed,
+ * so the daemon must publish `RAVI_STATE_DIR`, or the command fails closed.
+ */
+function accountHomedir(): string | null {
   try {
-    const home = userInfo().homedir;
-    if (home) return home;
+    return userInfo().homedir || null;
   } catch {
-    // No passwd entry for this uid (some containers); fall back to $HOME.
+    return null;
   }
-  return homedir();
 }
 
 /**
