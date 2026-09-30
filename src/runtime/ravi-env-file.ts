@@ -148,8 +148,11 @@ export function getRaviEnvKey(key: string, env: NodeJS.ProcessEnv = process.env)
   const fileEnv = readRaviEnvMap(env);
   const present = fileEnv.has(normalized);
   // The CLI/daemon copy the env file into process.env at startup; that copy is
-  // the file value, not an inherited process value.
-  const processPresent = Boolean(env[normalized]?.trim()) && !isRaviEnvFileSourced(env, normalized, path);
+  // the file value, not an inherited process value. Once the file changes or
+  // drops the key (e.g. from another CLI process), the retained copy is a real
+  // process value again: this process keeps using it until restart.
+  const fileCopy = isRaviEnvFileSourced(env, normalized, path) && fileEnv.get(normalized) === env[normalized];
+  const processPresent = Boolean(env[normalized]?.trim()) && !fileCopy;
   const secret = isRaviEnvSecretKey(normalized);
   return {
     key: normalized,

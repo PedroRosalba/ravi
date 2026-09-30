@@ -91,6 +91,16 @@ describe("ravi-env-file", () => {
     expect(process.env.CODEX_HOME).toBeUndefined();
   });
 
+  it("reports a retained startup copy as process-present after the file drops the key", () => {
+    setRaviEnvKey("CODEX_HOME", "/tmp/codex-a");
+    // Another CLI process removes the key; this process still holds its copy.
+    writeFileSync(getRaviEnvFilePath(), "", { mode: 0o600 });
+    const got = getRaviEnvKey("CODEX_HOME");
+    expect(got.present).toBe(false);
+    expect(got.processPresent).toBe(true);
+    expect(got.origin).toBe("process");
+  });
+
   it("keeps an inherited value that differs from the file and reports file+process", () => {
     setRaviEnvKey("CODEX_HOME", "/tmp/codex-file");
     process.env.CODEX_HOME = "/tmp/codex-pm2";

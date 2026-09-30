@@ -477,7 +477,13 @@ export function resetRuntimeCredentialHealth(id: string): RuntimeCredentialHealt
  */
 export function reconcileRuntimeCredentialSecretShapes(env: Record<string, string | undefined> = process.env): number {
   ensureRuntimeCredentialTables();
-  const pending = listRuntimeCredentials({ includeDisabled: true, limit: 500 }).items.flatMap((credential) => {
+  const items: RuntimeCredentialRecord[] = [];
+  for (let offset = 0; ; offset += 500) {
+    const page = listRuntimeCredentials({ includeDisabled: true, limit: 500, offset });
+    items.push(...page.items);
+    if (page.items.length === 0 || offset + page.items.length >= page.total) break;
+  }
+  const pending = items.flatMap((credential) => {
     if (!credential.enabled || (credential.status !== "healthy" && credential.status !== "unknown")) return [];
     const mismatch = findRuntimeCredentialSecretShapeMismatch(credential, env);
     return mismatch ? [{ id: credential.id, message: mismatch.message }] : [];
