@@ -24,6 +24,7 @@ import {
   setRuntimeCredentialEnabled,
 } from "../../runtime/credential-store.js";
 import { selectRuntimeCredential } from "../../runtime/credential-pool.js";
+import { findRuntimeCredentialSecretShapeMismatch } from "../../runtime/credential-secret-shape.js";
 import { refreshRuntimeCredential, refreshRuntimeCredentialPool } from "../../runtime/credential-refresh.js";
 import {
   classifyRuntimeCredentialFailure,
@@ -31,6 +32,7 @@ import {
 } from "../../runtime/credential-classifier.js";
 import type {
   RuntimeCredentialInput,
+  RuntimeCredentialRecord,
   RuntimeCredentialSecretBinding,
   RuntimeCredentialStatus,
 } from "../../runtime/credential-types.js";
@@ -262,12 +264,17 @@ export class RuntimeCredentialsCommands {
     };
     printPayload(payload, asJson, () => {
       console.log(`\nRuntime credentials (${page.items.length} returned of ${page.total}):\n`);
-      for (const credential of serialized) {
+      for (const [index, credential] of serialized.entries()) {
         console.log(`  ${credential.id}  ${credential.label}`);
         console.log(
-          `    provider=${credential.runtimeProvider} upstream=${credential.upstreamProvider ?? "-"} status=${credential.status}`,
+          `    provider=${credential.runtimeProvider} upstream=${credential.upstreamProvider ?? "-"} status=${credential.status} auth=${credential.authMethod ?? "-"}`,
         );
         console.log(`    priority=${credential.priority} fingerprint=${credential.fingerprint}`);
+        if (credential.lastErrorMessageRedacted && credential.status !== "healthy") {
+          console.log(`    error=${credential.lastErrorMessageRedacted}`);
+        }
+        const shapeWarning = describeLocalSecretShapeWarning(page.items[index]);
+        if (shapeWarning) console.log(`    warning=${shapeWarning}`);
       }
       if (pagination.nextCommand) {
         console.log("\nNext page:");
@@ -281,7 +288,8 @@ export class RuntimeCredentialsCommands {
   @CommandAccess({ kind: "mutate", resource: "runtime.credentials", action: "add", risk: "medium" })
   @Returns(runtimeCredentialEnvelopeReturnSchema)
   add(
-    @Option({ flags: "--provider <id>", description: "Runtime provider id, e.g. claude, codex, pi, grok" }) provider?: string,
+    @Option({ flags: "--provider <id>", description: "Runtime provider id, e.g. claude, codex, pi, grok" })
+    provider?: string,
     @Option({ flags: "--label <label>", description: "Human label that does not contain secrets" }) label?: string,
     @Option({ flags: "--upstream <id>", description: "Upstream provider id, e.g. anthropic, openai" })
     upstream?: string,
@@ -326,7 +334,12 @@ export class RuntimeCredentialsCommands {
     );
     const payload = { credential: serializeRuntimeCredential(credential, { includeBindings: true }) };
     printPayload(payload, asJson, () => {
-      console.log(`Added runtime credential ${credential.id} (${credential.label})`);
+      console.log(
+        `Added runtime credential ${credential.id} (${credential.label}) status=${credential.status} auth=${credential.authMethod ?? "-"}`,
+      );
+      if (credential.status === "invalid" && credential.lastErrorMessageRedacted) {
+        console.log(credential.lastErrorMessageRedacted);
+      }
     });
     return payload;
   }
@@ -393,7 +406,14 @@ export class RuntimeCredentialsCommands {
       };
       printPayload(payload, asJson, () => {
         console.log(`${credential.id} (${credential.label})`);
-        console.log(`  status=${credential.status} provider=${credential.runtimeProvider}`);
+        console.log(
+          `  status=${credential.status} provider=${credential.runtimeProvider} auth=${credential.authMethod ?? "-"}`,
+        );
+        if (credential.lastErrorMessageRedacted && credential.status !== "healthy") {
+          console.log(`  error=${credential.lastErrorMessageRedacted}`);
+        }
+        const shapeWarning = describeLocalSecretShapeWarning(credential);
+        if (shapeWarning) console.log(`  warning=${shapeWarning}`);
         console.log(`  health=${JSON.stringify(payload.health)}`);
       });
       return payload;
@@ -580,4 +600,14 @@ export class RuntimeCredentialsCommands {
     });
     return payload;
   }
+}
+
+/**
+ * Read commands only warn: this CLI's env can differ from the daemon's, so the
+ * shape check is persisted by the resolver, enable, and reset-health instead.
+ */
+function describeLocalSecretShapeWarning(credential: RuntimeCredentialRecord | undefined): string | null {
+  if (!credential?.enabled || (credential.status !== "healthy" && credential.status !== "unknown")) return null;
+  const mismatch = findRuntimeCredentialSecretShapeMismatch(credential);
+  return mismatch ? `${mismatch.message} (seen in this shell's env; not saved)` : null;
 }

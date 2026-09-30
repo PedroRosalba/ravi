@@ -585,6 +585,54 @@ describe("createClaudeRuntimeProvider", () => {
     expect(secondEnv).not.toBe(firstEnv);
   });
 
+  it("does not let inherited process auth shadow a selected auth profile", async () => {
+    const originalToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    const originalApiKey = process.env.ANTHROPIC_API_KEY;
+    const inherited = "sk-ant-api03-fake-not-a-real-key";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = inherited;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-api03-other-fake-key";
+    try {
+      const { isolateSelectedClaudeAuthEnv, RAVI_CLAUDE_MANAGED_AUTH_ENV } = await import(
+        "./credential-secret-shape.js"
+      );
+      const runtimeEnv: Record<string, string> = {
+        CLAUDE_CONFIG_DIR: "/tmp/claude-profile",
+        PATH: "",
+        CLAUDE_CODE_OAUTH_TOKEN: inherited,
+      };
+      isolateSelectedClaudeAuthEnv({
+        runtimeProviderId: "claude",
+        binding: { authMethod: "claude-oauth", resolvedEnv: {} },
+        runtimeEnv,
+      });
+      const env = buildClaudeCodeEnvironment(runtimeEnv);
+      expect(env.CLAUDE_CONFIG_DIR).toBe("/tmp/claude-profile");
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(env[RAVI_CLAUDE_MANAGED_AUTH_ENV]).toBeUndefined();
+      expect(JSON.stringify(env)).not.toContain(inherited);
+    } finally {
+      if (originalToken === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = originalToken;
+      if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = originalApiKey;
+    }
+  });
+
+  it("refuses to backfill an API key into the OAuth env var", async () => {
+    const originalToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    const inherited = "sk-ant-api03-fake-not-a-real-key";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = inherited;
+    try {
+      const env = buildClaudeCodeEnvironment({ PATH: "" });
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(JSON.stringify(env)).not.toContain(inherited);
+    } finally {
+      if (originalToken === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = originalToken;
+    }
+  });
+
   it("backfills daemon auth env when the runtime env is partial", async () => {
     const originalToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
     process.env.CLAUDE_CODE_OAUTH_TOKEN = "test-daemon-token";

@@ -7,7 +7,12 @@ import {
   normalizeConsoleUrl,
   refreshCredentialsForStore,
 } from "../../cloud-auth/client.js";
-import { CloudAuthError, cloudAuthErrorFromUnknown, isCloudAuthError } from "../../cloud-auth/errors.js";
+import {
+  CloudAuthError,
+  cloudAuthErrorFromUnknown,
+  isCloudAuthError,
+  isRetryableCloudAuthError,
+} from "../../cloud-auth/errors.js";
 import { redactCloudAuthPayload } from "../../cloud-auth/redaction.js";
 import {
   deleteCloudCredentials,
@@ -52,6 +57,10 @@ export interface CloudAuthCommandDeps {
   listProjects?: ConsoleScopeResolverDeps["listProjects"];
   openExternal?: (url: string) => Promise<void> | void;
   sleep?: (ms: number) => Promise<void>;
+  /** Millisecond clock for the login poll deadline. Defaults to `Date.now`. */
+  clock?: () => number;
+  /** Unit interval source for transient backoff jitter. Defaults to `Math.random`. */
+  random?: () => number;
   env?: NodeJS.ProcessEnv;
   now?: () => string;
 }
@@ -96,6 +105,8 @@ export async function runLogin(options: CloudLoginOptions = {}, deps: CloudAuthC
     ),
     installation: localInstallationMetadata(env),
     sleep: deps.sleep ?? sleep,
+    clock: deps.clock ?? Date.now,
+    random: deps.random ?? Math.random,
   });
   const hydrated = await hydrateLoginIdentity(client, credentials);
   write(hydrated);
@@ -282,23 +293,71 @@ async function exchangeUntilComplete(input: {
   intervalSeconds: number;
   installation: NonNullable<Parameters<ConsoleApiClient["exchange"]>[0]["installation"]>;
   sleep: (ms: number) => Promise<void>;
+  clock: () => number;
+  random: () => number;
 }): Promise<CloudCredentials> {
-  const deadline = Date.now() + input.timeoutSeconds * 1000;
+  const deadline = input.clock() + input.timeoutSeconds * 1000;
+  const intervalMs = input.intervalSeconds * 1000;
+  let transientAttempt = 0;
+  const providerToken: { accessToken?: string } = {};
 
   while (true) {
     try {
-      const credentials = await exchangeDeviceCredentials(input);
+      const credentials = await exchangeDeviceCredentials({ ...input, providerToken });
       return {
         ...credentials,
         createdAt: input.existing?.createdAt ?? credentials.createdAt,
       };
     } catch (error) {
-      if (!isCloudAuthError(error) || error.code !== "AUTH_PENDING" || !input.poll || Date.now() >= deadline) {
+      if (!isCloudAuthError(error) || !isRetryableCloudAuthError(error) || !input.poll || input.clock() >= deadline) {
         throw error;
       }
-      await input.sleep(input.intervalSeconds * 1000);
+      if (error.code === "AUTH_PENDING") {
+        await input.sleep(intervalMs);
+        continue;
+      }
+      transientAttempt += 1;
+      const delayMs = transientRetryDelayMs({
+        attempt: transientAttempt,
+        intervalMs,
+        retryAfterMs: error.retryAfterMs,
+        random: input.random,
+      });
+      if (input.clock() + delayMs >= deadline) throw error;
+      await input.sleep(delayMs);
     }
   }
+}
+
+const TRANSIENT_BACKOFF_CAP_MS = 60_000;
+const TRANSIENT_JITTER_RATIO = 0.25;
+const RETRY_AFTER_JITTER_RATIO = 0.1;
+
+/**
+ * Exponential backoff with jitter for RATE_LIMITED and SERVER_UNAVAILABLE.
+ * A positive Retry-After is the floor: jitter may wait longer, never shorter.
+ */
+function transientRetryDelayMs(input: {
+  attempt: number;
+  intervalMs: number;
+  retryAfterMs?: number;
+  random: () => number;
+}): number {
+  const roll = unitInterval(input.random);
+  const retryAfterMs = input.retryAfterMs;
+  if (typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+    return retryAfterMs + Math.floor(retryAfterMs * RETRY_AFTER_JITTER_RATIO * roll);
+  }
+  const exponent = Math.min(16, Math.max(0, input.attempt - 1));
+  const exponential = Math.min(input.intervalMs * 2 ** exponent, TRANSIENT_BACKOFF_CAP_MS);
+  return exponential + Math.floor(exponential * TRANSIENT_JITTER_RATIO * roll);
+}
+
+function unitInterval(random: () => number): number {
+  const value = random();
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  if (value >= 1) return 1;
+  return value;
 }
 
 async function exchangeDeviceCredentials(input: {
@@ -307,6 +366,8 @@ async function exchangeDeviceCredentials(input: {
   config: ConsoleAuthConfig;
   deviceCode: string;
   installation: NonNullable<Parameters<ConsoleApiClient["exchange"]>[0]["installation"]>;
+  /** Provider token kept across poll retries: the device code is single-use once the provider grants it. */
+  providerToken: { accessToken?: string };
 }) {
   if (input.config.mode === "console_device" || !input.config.endpoints?.token) {
     return input.client.exchange({
@@ -316,10 +377,10 @@ async function exchangeDeviceCredentials(input: {
     });
   }
 
-  const providerToken = await input.client.pollDeviceToken(input.config, input.deviceCode);
+  input.providerToken.accessToken ??= (await input.client.pollDeviceToken(input.config, input.deviceCode)).accessToken;
   return input.client.exchange({
     installationId: input.installationId,
-    workosAccessToken: providerToken.accessToken,
+    workosAccessToken: input.providerToken.accessToken,
     installation: input.installation,
   });
 }

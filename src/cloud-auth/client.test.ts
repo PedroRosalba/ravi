@@ -391,6 +391,73 @@ describe("ConsoleApiClient", () => {
     }
   });
 
+  it("exposes Retry-After seconds on RATE_LIMITED exchange errors", async () => {
+    const client = new ConsoleApiClient({
+      consoleUrl: "https://console.example",
+      fetch: async () =>
+        jsonResponse({ error: { code: "RATE_LIMITED", message: "slow down" } }, 429, { "Retry-After": "15" }),
+    });
+
+    await expect(client.exchange({ installationId: "ins_123", deviceCode: "device-secret" })).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+      status: 429,
+      retryAfterMs: 15_000,
+    });
+  });
+
+  it("prefers the Retry-After header over a body retry_after hint", async () => {
+    const client = new ConsoleApiClient({
+      consoleUrl: "https://console.example",
+      fetch: async () =>
+        jsonResponse({ error: { code: "SERVER_UNAVAILABLE", retry_after: 30 } }, 503, { "Retry-After": "2" }),
+    });
+
+    await expect(client.exchange({ installationId: "ins_123", deviceCode: "device-secret" })).rejects.toMatchObject({
+      code: "SERVER_UNAVAILABLE",
+      status: 503,
+      retryAfterMs: 2_000,
+    });
+  });
+
+  it("reads retry_after seconds from the error body when the header is absent", async () => {
+    const client = new ConsoleApiClient({
+      consoleUrl: "https://console.example",
+      fetch: async () => jsonResponse({ error: { code: "RATE_LIMITED", retry_after: 15 } }, 429),
+    });
+
+    await expect(client.exchange({ installationId: "ins_123", deviceCode: "device-secret" })).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+      retryAfterMs: 15_000,
+    });
+  });
+
+  it("parses an HTTP-date Retry-After on the device token endpoint", async () => {
+    const retryAt = Date.now() + 20_000;
+    const client = new ConsoleApiClient({
+      consoleUrl: "https://console.example",
+      fetch: async () =>
+        jsonResponse({ error: "too_many_requests" }, 429, { "Retry-After": new Date(retryAt).toUTCString() }),
+    });
+
+    try {
+      await client.pollDeviceToken(
+        {
+          configured: true,
+          clientId: "client_123",
+          endpoints: { token: "https://api.workos.com/user_management/authenticate" },
+        },
+        "device-secret",
+      );
+      throw new Error("Expected pollDeviceToken to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CloudAuthError);
+      const retryAfterMs = (error as CloudAuthError).retryAfterMs ?? -1;
+      expect((error as CloudAuthError).code).toBe("RATE_LIMITED");
+      expect(retryAfterMs).toBeGreaterThan(15_000);
+      expect(retryAfterMs).toBeLessThanOrEqual(21_000);
+    }
+  });
+
   it("maps OAuth device authorization pending responses", async () => {
     const client = new ConsoleApiClient({
       consoleUrl: "https://console.example",
@@ -652,10 +719,10 @@ describe("ConsoleApiClient", () => {
   });
 });
 
-function jsonResponse(payload: unknown, status = 200): Response {
+function jsonResponse(payload: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
   });
 }
 

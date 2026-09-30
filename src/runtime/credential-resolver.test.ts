@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
 import { getDb } from "../router/router-db.js";
-import { createRuntimeCredential } from "./credential-store.js";
+import { createRuntimeCredential, getRuntimeCredential } from "./credential-store.js";
 import {
   isRuntimeCredentialSessionCompatible,
   resolveRuntimeCredentialAttemptBinding,
@@ -118,6 +118,70 @@ describe("runtime credential resolver", () => {
     expect(isRuntimeCredentialSessionCompatible(undefined, ready)).toBe(false);
     expect(isRuntimeCredentialSessionCompatible(params, null)).toBe(false);
     expect(isRuntimeCredentialSessionCompatible(undefined, null)).toBe(true);
+  });
+
+  it("rejects an OAuth credential whose env secret is an API key and keeps the auth profile selectable", async () => {
+    const apiKey = "sk-ant-api03-fake-not-a-real-key";
+    const previous = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    createRuntimeCredential({
+      id: "rcred_bad_oauth",
+      label: "wired-oauth",
+      runtimeProvider: "claude",
+      upstreamProvider: "anthropic",
+      authMethod: "claude-oauth",
+      priority: 100,
+      bindings: [
+        {
+          sourceKind: "env",
+          targetKind: "env",
+          targetName: "CLAUDE_CODE_OAUTH_TOKEN",
+          secretRef: "env:CLAUDE_CODE_OAUTH_TOKEN",
+          sourceHint: "CLAUDE_CODE_OAUTH_TOKEN",
+          sensitive: true,
+          remoteForward: false,
+        },
+      ],
+    });
+    createRuntimeCredential({
+      id: "rcred_profile",
+      label: "claude-profile",
+      runtimeProvider: "claude",
+      upstreamProvider: "anthropic",
+      authMethod: "claude-oauth",
+      sourceKind: "provider-profile",
+      authProfileRef: "~/.claude",
+      priority: 10,
+      bindings: [
+        {
+          sourceKind: "provider-profile",
+          targetKind: "auth-profile",
+          targetName: "profile",
+          secretRef: "file:~/.claude",
+          sourceHint: "~/.claude",
+          sensitive: true,
+          remoteForward: false,
+        },
+      ],
+    });
+
+    const result = await resolveRuntimeCredentialAttemptBinding({
+      runtimeProvider: "claude",
+      upstreamProvider: "anthropic",
+      env: { CLAUDE_CODE_OAUTH_TOKEN: apiKey },
+    });
+
+    expect(result.selected?.id).toBe("rcred_profile");
+    expect(result.attemptBinding?.resolvedEnv).toEqual({});
+    expect(result.attemptBinding?.authProfileRef).toBe("~/.claude");
+    const rejected = result.rejected.find((item) => item.credentialId === "rcred_bad_oauth");
+    expect(rejected?.label).toBe("wired-oauth");
+    expect(rejected?.reason).toContain('Credential "wired-oauth" (claude-oauth)');
+    expect(rejected?.reason).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(JSON.stringify(result.rejected)).not.toContain(apiKey);
+    expect(getRuntimeCredential("rcred_bad_oauth")?.status).toBe("invalid");
+    if (previous === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    else process.env.CLAUDE_CODE_OAUTH_TOKEN = previous;
   });
 
   it("reports configured managed pools even when no credential can resolve secrets", async () => {

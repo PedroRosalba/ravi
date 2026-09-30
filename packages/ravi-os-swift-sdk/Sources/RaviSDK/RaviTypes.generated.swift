@@ -18789,16 +18789,20 @@ public struct RuntimeCredentialsStatusReturn: Codable, Sendable {
 
 public struct RuntimeEnvGetReturn: Codable, Sendable {
   public var key: String
+  public var origin: String
   public var path: String
   public var present: Bool
+  public var processPresent: Bool
   public var redacted: Bool
   public var secret: Bool
   public var value: RaviJSON
 
-  public init(key: String, path: String, present: Bool, redacted: Bool, secret: Bool, value: RaviJSON) {
+  public init(key: String, origin: String, path: String, present: Bool, processPresent: Bool, redacted: Bool, secret: Bool, value: RaviJSON) {
     self.key = key
+    self.origin = origin
     self.path = path
     self.present = present
+    self.processPresent = processPresent
     self.redacted = redacted
     self.secret = secret
     self.value = value
@@ -18806,8 +18810,10 @@ public struct RuntimeEnvGetReturn: Codable, Sendable {
 
   enum CodingKeys: String, CodingKey {
     case key = "key"
+    case origin = "origin"
     case path = "path"
     case present = "present"
+    case processPresent = "processPresent"
     case redacted = "redacted"
     case secret = "secret"
     case value = "value"
@@ -18842,18 +18848,22 @@ public struct RuntimeEnvSetReturn: Codable, Sendable {
   public var action: String
   public var daemonReloadRequired: Bool
   public var key: String
+  public var origin: String
   public var path: String
   public var present: Bool
+  public var processPresent: Bool
   public var redacted: Bool
   public var secret: Bool
   public var value: RaviJSON
 
-  public init(action: String, daemonReloadRequired: Bool, key: String, path: String, present: Bool, redacted: Bool, secret: Bool, value: RaviJSON) {
+  public init(action: String, daemonReloadRequired: Bool, key: String, origin: String, path: String, present: Bool, processPresent: Bool, redacted: Bool, secret: Bool, value: RaviJSON) {
     self.action = action
     self.daemonReloadRequired = daemonReloadRequired
     self.key = key
+    self.origin = origin
     self.path = path
     self.present = present
+    self.processPresent = processPresent
     self.redacted = redacted
     self.secret = secret
     self.value = value
@@ -18863,8 +18873,10 @@ public struct RuntimeEnvSetReturn: Codable, Sendable {
     case action = "action"
     case daemonReloadRequired = "daemonReloadRequired"
     case key = "key"
+    case origin = "origin"
     case path = "path"
     case present = "present"
+    case processPresent = "processPresent"
     case redacted = "redacted"
     case secret = "secret"
     case value = "value"
@@ -18875,18 +18887,22 @@ public struct RuntimeEnvUnsetReturn: Codable, Sendable {
   public var action: String
   public var daemonReloadRequired: Bool
   public var key: String
+  public var origin: String
   public var path: String
   public var present: Bool
+  public var processPresent: Bool
   public var redacted: Bool
   public var secret: Bool
   public var value: RaviJSON
 
-  public init(action: String, daemonReloadRequired: Bool, key: String, path: String, present: Bool, redacted: Bool, secret: Bool, value: RaviJSON) {
+  public init(action: String, daemonReloadRequired: Bool, key: String, origin: String, path: String, present: Bool, processPresent: Bool, redacted: Bool, secret: Bool, value: RaviJSON) {
     self.action = action
     self.daemonReloadRequired = daemonReloadRequired
     self.key = key
+    self.origin = origin
     self.path = path
     self.present = present
+    self.processPresent = processPresent
     self.redacted = redacted
     self.secret = secret
     self.value = value
@@ -18896,8 +18912,10 @@ public struct RuntimeEnvUnsetReturn: Codable, Sendable {
     case action = "action"
     case daemonReloadRequired = "daemonReloadRequired"
     case key = "key"
+    case origin = "origin"
     case path = "path"
     case present = "present"
+    case processPresent = "processPresent"
     case redacted = "redacted"
     case secret = "secret"
     case value = "value"

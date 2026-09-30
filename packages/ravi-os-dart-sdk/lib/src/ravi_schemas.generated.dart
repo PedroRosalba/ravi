@@ -57990,10 +57990,22 @@ class RaviSchemas {
     "key": {
       "type": "string"
     },
+    "origin": {
+      "enum": [
+        "file",
+        "process",
+        "file+process",
+        "absent"
+      ],
+      "type": "string"
+    },
     "path": {
       "type": "string"
     },
     "present": {
+      "type": "boolean"
+    },
+    "processPresent": {
       "type": "boolean"
     },
     "redacted": {
@@ -58016,6 +58028,8 @@ class RaviSchemas {
   "required": [
     "key",
     "present",
+    "processPresent",
+    "origin",
     "secret",
     "redacted",
     "value",
@@ -58066,10 +58080,22 @@ class RaviSchemas {
     "key": {
       "type": "string"
     },
+    "origin": {
+      "enum": [
+        "file",
+        "process",
+        "file+process",
+        "absent"
+      ],
+      "type": "string"
+    },
     "path": {
       "type": "string"
     },
     "present": {
+      "type": "boolean"
+    },
+    "processPresent": {
       "type": "boolean"
     },
     "redacted": {
@@ -58092,6 +58118,8 @@ class RaviSchemas {
   "required": [
     "key",
     "present",
+    "processPresent",
+    "origin",
     "secret",
     "redacted",
     "value",
@@ -58136,10 +58164,22 @@ class RaviSchemas {
     "key": {
       "type": "string"
     },
+    "origin": {
+      "enum": [
+        "file",
+        "process",
+        "file+process",
+        "absent"
+      ],
+      "type": "string"
+    },
     "path": {
       "type": "string"
     },
     "present": {
+      "type": "boolean"
+    },
+    "processPresent": {
       "type": "boolean"
     },
     "redacted": {
@@ -58162,6 +58202,8 @@ class RaviSchemas {
   "required": [
     "key",
     "present",
+    "processPresent",
+    "origin",
     "secret",
     "redacted",
     "value",
@@ -59439,10 +59481,22 @@ class RaviSchemas {
         "key": {
           "type": "string"
         },
+        "origin": {
+          "enum": [
+            "file",
+            "process",
+            "file+process",
+            "absent"
+          ],
+          "type": "string"
+        },
         "path": {
           "type": "string"
         },
         "present": {
+          "type": "boolean"
+        },
+        "processPresent": {
           "type": "boolean"
         },
         "redacted": {
@@ -59465,6 +59519,8 @@ class RaviSchemas {
       "required": [
         "key",
         "present",
+        "processPresent",
+        "origin",
         "secret",
         "redacted",
         "value",

@@ -67,6 +67,8 @@ import {
   type ClaimedRuntimeModelBrokerPlan,
 } from "./model-broker-planning.js";
 import type { RuntimeCredentialAttemptBinding } from "./credential-types.js";
+import { isolateSelectedClaudeAuthEnv } from "./credential-secret-shape.js";
+import { logger } from "../utils/logger.js";
 import type {
   RuntimeApprovalResult,
   RuntimeCapabilities,
@@ -78,6 +80,7 @@ import type {
 
 const CRASH_RECOVERY_APPROVAL_OWNERSHIP_CHANGED_REASON =
   "Runtime action approval denied because durable turn ownership changed before authorization completed.";
+const runtimeRequestLog = logger.child("runtime-request");
 
 class RuntimeCrashRecoveryApprovalOwnershipChangedError extends Error {
   constructor() {
@@ -499,6 +502,23 @@ async function buildRuntimeStartRequestInternal(
     runtimeCapabilities,
     forceSanitizeSecrets: Boolean(modelBroker),
   });
+  const selectedCredential = credentialResolution.attemptBinding ?? undefined;
+  const blockedProcessAuthEnvKeys = isolateSelectedClaudeAuthEnv({
+    runtimeProviderId,
+    binding: selectedCredential,
+    runtimeEnv,
+  });
+  if (selectedCredential && blockedProcessAuthEnvKeys.length > 0) {
+    selectedCredential.blockedProcessAuthEnvKeys = blockedProcessAuthEnvKeys;
+    runtimeRequestLog.warn("Selected Claude credential blocks inherited process auth env", {
+      credentialId: selectedCredential.credentialId,
+      label: selectedCredential.label,
+      authMethod: selectedCredential.authMethod ?? null,
+      blockedEnvKeys: blockedProcessAuthEnvKeys,
+    });
+    (toolContext as Record<string, unknown>).runtimeCredential =
+      serializeRuntimeCredentialAttemptBinding(selectedCredential);
+  }
   let activeProviderEnvKeys = resolveRuntimeProviderEnvKeys(providerEnv, raviEnv, runtimeEnv);
   const canUseTool = async (toolName: string, input: Record<string, unknown>) => {
     const result = await hostServices.authorizeToolUse({ toolName, input });

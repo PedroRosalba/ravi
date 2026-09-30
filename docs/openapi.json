@@ -12,7 +12,7 @@
   "info": {
     "description": "OpenAPI 3.1 spec auto-generated from the Ravi CLI registry. Each operation maps 1:1 to a `ravi <group> <command>` invocation.",
     "title": "Ravi API",
-    "version": "97aabb72f1bdfff4"
+    "version": "5e0243dddbc36f12"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -70609,10 +70609,22 @@
                     "key": {
                       "type": "string"
                     },
+                    "origin": {
+                      "enum": [
+                        "file",
+                        "process",
+                        "file+process",
+                        "absent"
+                      ],
+                      "type": "string"
+                    },
                     "path": {
                       "type": "string"
                     },
                     "present": {
+                      "type": "boolean"
+                    },
+                    "processPresent": {
                       "type": "boolean"
                     },
                     "redacted": {
@@ -70635,6 +70647,8 @@
                   "required": [
                     "key",
                     "present",
+                    "processPresent",
+                    "origin",
                     "secret",
                     "redacted",
                     "value",
@@ -70721,10 +70735,22 @@
                     "key": {
                       "type": "string"
                     },
+                    "origin": {
+                      "enum": [
+                        "file",
+                        "process",
+                        "file+process",
+                        "absent"
+                      ],
+                      "type": "string"
+                    },
                     "path": {
                       "type": "string"
                     },
                     "present": {
+                      "type": "boolean"
+                    },
+                    "processPresent": {
                       "type": "boolean"
                     },
                     "redacted": {
@@ -70747,6 +70773,8 @@
                   "required": [
                     "key",
                     "present",
+                    "processPresent",
+                    "origin",
                     "secret",
                     "redacted",
                     "value",
@@ -70827,10 +70855,22 @@
                     "key": {
                       "type": "string"
                     },
+                    "origin": {
+                      "enum": [
+                        "file",
+                        "process",
+                        "file+process",
+                        "absent"
+                      ],
+                      "type": "string"
+                    },
                     "path": {
                       "type": "string"
                     },
                     "present": {
+                      "type": "boolean"
+                    },
+                    "processPresent": {
                       "type": "boolean"
                     },
                     "redacted": {
@@ -70853,6 +70893,8 @@
                   "required": [
                     "key",
                     "present",
+                    "processPresent",
+                    "origin",
                     "secret",
                     "redacted",
                     "value",
@@ -72454,10 +72496,22 @@
                         "key": {
                           "type": "string"
                         },
+                        "origin": {
+                          "enum": [
+                            "file",
+                            "process",
+                            "file+process",
+                            "absent"
+                          ],
+                          "type": "string"
+                        },
                         "path": {
                           "type": "string"
                         },
                         "present": {
+                          "type": "boolean"
+                        },
+                        "processPresent": {
                           "type": "boolean"
                         },
                         "redacted": {
@@ -72480,6 +72534,8 @@
                       "required": [
                         "key",
                         "present",
+                        "processPresent",
+                        "origin",
                         "secret",
                         "redacted",
                         "value",

@@ -16076,11 +16076,13 @@ class RuntimeCredentialsStatusReturn {
 RuntimeCredentialsStatusReturn runtimeCredentialsStatusReturnFromJson(Object? json) => RuntimeCredentialsStatusReturn.fromJsonValue(json);
 
 class RuntimeEnvGetReturn {
-  const RuntimeEnvGetReturn({required this.key, required this.path, required this.present, required this.redacted, required this.secret, required this.value});
+  const RuntimeEnvGetReturn({required this.key, required this.origin, required this.path, required this.present, required this.processPresent, required this.redacted, required this.secret, required this.value});
 
   final String key;
+  final String origin;
   final String path;
   final bool present;
+  final bool processPresent;
   final bool redacted;
   final bool secret;
   final RaviJson value;
@@ -16088,8 +16090,10 @@ class RuntimeEnvGetReturn {
   factory RuntimeEnvGetReturn.fromJson(Map<String, Object?> json) {
     return RuntimeEnvGetReturn(
       key: raviJsonAsString(json["key"]),
+      origin: raviJsonAsString(json["origin"]),
       path: raviJsonAsString(json["path"]),
       present: raviJsonAsBool(json["present"]),
+      processPresent: raviJsonAsBool(json["processPresent"]),
       redacted: raviJsonAsBool(json["redacted"]),
       secret: raviJsonAsBool(json["secret"]),
       value: RaviJson.from(json["value"]),
@@ -16120,13 +16124,15 @@ class RuntimeEnvSetOptions {
 }
 
 class RuntimeEnvSetReturn {
-  const RuntimeEnvSetReturn({required this.action, required this.daemonReloadRequired, required this.key, required this.path, required this.present, required this.redacted, required this.secret, required this.value});
+  const RuntimeEnvSetReturn({required this.action, required this.daemonReloadRequired, required this.key, required this.origin, required this.path, required this.present, required this.processPresent, required this.redacted, required this.secret, required this.value});
 
   final String action;
   final bool daemonReloadRequired;
   final String key;
+  final String origin;
   final String path;
   final bool present;
+  final bool processPresent;
   final bool redacted;
   final bool secret;
   final RaviJson value;
@@ -16136,8 +16142,10 @@ class RuntimeEnvSetReturn {
       action: raviJsonAsString(json["action"]),
       daemonReloadRequired: raviJsonAsBool(json["daemonReloadRequired"]),
       key: raviJsonAsString(json["key"]),
+      origin: raviJsonAsString(json["origin"]),
       path: raviJsonAsString(json["path"]),
       present: raviJsonAsBool(json["present"]),
+      processPresent: raviJsonAsBool(json["processPresent"]),
       redacted: raviJsonAsBool(json["redacted"]),
       secret: raviJsonAsBool(json["secret"]),
       value: RaviJson.from(json["value"]),
@@ -16152,13 +16160,15 @@ class RuntimeEnvSetReturn {
 RuntimeEnvSetReturn runtimeEnvSetReturnFromJson(Object? json) => RuntimeEnvSetReturn.fromJsonValue(json);
 
 class RuntimeEnvUnsetReturn {
-  const RuntimeEnvUnsetReturn({required this.action, required this.daemonReloadRequired, required this.key, required this.path, required this.present, required this.redacted, required this.secret, required this.value});
+  const RuntimeEnvUnsetReturn({required this.action, required this.daemonReloadRequired, required this.key, required this.origin, required this.path, required this.present, required this.processPresent, required this.redacted, required this.secret, required this.value});
 
   final String action;
   final bool daemonReloadRequired;
   final String key;
+  final String origin;
   final String path;
   final bool present;
+  final bool processPresent;
   final bool redacted;
   final bool secret;
   final RaviJson value;
@@ -16168,8 +16178,10 @@ class RuntimeEnvUnsetReturn {
       action: raviJsonAsString(json["action"]),
       daemonReloadRequired: raviJsonAsBool(json["daemonReloadRequired"]),
       key: raviJsonAsString(json["key"]),
+      origin: raviJsonAsString(json["origin"]),
       path: raviJsonAsString(json["path"]),
       present: raviJsonAsBool(json["present"]),
+      processPresent: raviJsonAsBool(json["processPresent"]),
       redacted: raviJsonAsBool(json["redacted"]),
       secret: raviJsonAsBool(json["secret"]),
       value: RaviJson.from(json["value"]),

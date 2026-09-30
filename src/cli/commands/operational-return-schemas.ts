@@ -1724,6 +1724,8 @@ export const runtimeEnvEntryReturnSchema = z
   .object({
     key: z.string(),
     present: z.boolean(),
+    processPresent: z.boolean(),
+    origin: z.enum(["file", "process", "file+process", "absent"]),
     secret: z.boolean(),
     redacted: z.boolean(),
     value: z.string().nullable(),
