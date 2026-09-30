@@ -9,7 +9,9 @@
  *
  * Isolated CLIs (`RAVI_CONTEXT_KEY` set) also auto-bridge to the host unix
  * socket at `~/.ravi/cli-gateway.sock` when that socket is connectable. They
- * MUST NOT auto-open raw loopback HTTP.
+ * MUST NOT auto-open raw loopback HTTP, and they MUST NOT fall back to local
+ * execution: without a reachable gateway the command fails closed with
+ * `GATEWAY_REQUIRED` (see `requiresRemoteGateway`).
  *
  * The remote dispatcher is intentionally minimal: it builds a flat JSON body
  * (matching `src/sdk/gateway/dispatcher.ts`), forwards the caller cwd as
@@ -21,6 +23,8 @@
  */
 
 import { request as httpRequest } from "node:http";
+import { userInfo } from "node:os";
+import { join } from "node:path";
 import {
   HOST_CLI_GATEWAY_ENV,
   HOST_CLI_GATEWAY_INTERNAL_ENV,
@@ -152,18 +156,22 @@ export async function resolveAutoHostCliGateway(
   options: ResolveRemoteGatewayConfigOptions = {},
 ): Promise<RemoteGatewayConfig | null> {
   if (!shouldAutoUseHostCliGateway(env)) return null;
-  const socketPath = getHostCliGatewaySocketPath(options.stateDir);
+  const stateDirs = options.stateDir ? [options.stateDir] : resolveHostCliGatewayStateDirs(env);
   const probe = options.probeSocket ?? probeUnixSocket;
-  try {
-    if (!(await probe(socketPath))) return null;
-  } catch {
-    return null;
+  for (const stateDir of stateDirs) {
+    const socketPath = getHostCliGatewaySocketPath(stateDir);
+    try {
+      if (!(await probe(socketPath))) continue;
+    } catch {
+      continue;
+    }
+    return {
+      url: `${HOST_CLI_GATEWAY_URL_PREFIX}${socketPath}`,
+      source: "host-socket",
+      socketPath,
+    };
   }
-  return {
-    url: `${HOST_CLI_GATEWAY_URL_PREFIX}${socketPath}`,
-    source: "host-socket",
-    socketPath,
-  };
+  return null;
 }
 
 export function shouldAutoUseHostCliGateway(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -172,6 +180,56 @@ export function shouldAutoUseHostCliGateway(env: NodeJS.ProcessEnv = process.env
   if (disabled === "0" || disabled?.toLowerCase() === "false" || disabled?.toLowerCase() === "off") return false;
   if (env[HOST_CLI_GATEWAY_INTERNAL_ENV]?.trim() === "1") return false;
   return Boolean(env.RAVI_CONTEXT_KEY?.trim());
+}
+
+/**
+ * State dirs that may hold the host CLI gateway socket, in probe order.
+ * `RAVI_STATE_DIR` wins (the daemon's sessions inherit it). Otherwise only the
+ * OS account home is used, never `$HOME`: `HOME=/tmp/x ravi ...` must neither
+ * lose the host socket nor reach a socket the caller planted under that HOME.
+ * A daemon with a non-default state dir publishes it via `RAVI_STATE_DIR`.
+ * Either way a missing socket fails closed (`requiresRemoteGateway`).
+ */
+export function resolveHostCliGatewayStateDirs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const explicit = env.RAVI_STATE_DIR?.trim();
+  if (explicit) return [explicit];
+  const accountHome = accountHomedir();
+  return accountHome ? [join(accountHome, ".ravi")] : [];
+}
+
+/**
+ * Home directory from the passwd entry. `os.homedir()` is not a fallback: it
+ * reads `$HOME`. Without a passwd entry (some containers) nothing is probed,
+ * so the daemon must publish `RAVI_STATE_DIR`, or the command fails closed.
+ */
+function accountHomedir(): string | null {
+  try {
+    return userInfo().homedir || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A process that carries `RAVI_CONTEXT_KEY` acts for a runtime context, so its
+ * command must be authorized by the daemon that owns that context. Local
+ * execution would authorize against whatever DB this process's env points to.
+ */
+export function requiresRemoteGateway(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.RAVI_CONTEXT_KEY?.trim());
+}
+
+export function gatewayRequiredError(op: string): ContractError {
+  return new ContractError(
+    op,
+    "GATEWAY_REQUIRED",
+    "Commands running with RAVI_CONTEXT_KEY must go through the Ravi gateway, and none is reachable.",
+    1,
+    {
+      retryable: true,
+      suggestedAction: `Start the Ravi daemon so its host CLI gateway socket is available, or set ${REMOTE_GATEWAY_URL_ENV}`,
+    },
+  );
 }
 
 export function parseUnixGatewayUrl(raw: string): string | null {

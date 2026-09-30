@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { userInfo } from "node:os";
+import { join } from "node:path";
 import { renderContractError } from "./agent-contract.js";
 import {
   FILE_NOT_FOUND_CODE,
@@ -14,7 +16,10 @@ import {
 import {
   CALLER_CWD_HEADER,
   dispatchRemote,
+  gatewayRequiredError,
   getRemoteGatewayConfig,
+  requiresRemoteGateway,
+  resolveHostCliGatewayStateDirs,
   resolveRemoteGatewayConfig,
   remoteDispatchOutput,
   remoteGatewayErrorToContractError,
@@ -732,5 +737,56 @@ describe("remote gateway exit taxonomy", () => {
     });
     expect(error?.message).not.toBe(FILE_NOT_FOUND_MESSAGE);
     expect(JSON.stringify(error?.envelope())).not.toContain("PRIVATE_MESSAGE_8K2R");
+  });
+});
+
+describe("gateway requirement for runtime context keys", () => {
+  it("requires the gateway whenever a context key is present", () => {
+    expect(requiresRemoteGateway({ RAVI_CONTEXT_KEY: "rctx_test" })).toBe(true);
+    expect(requiresRemoteGateway({ RAVI_CONTEXT_KEY: "rctx_test", RAVI_HOST_CLI_GATEWAY: "0" })).toBe(true);
+    expect(requiresRemoteGateway({ RAVI_CONTEXT_KEY: "rctx_test", RAVI_GATEWAY_INTERNAL: "1" })).toBe(true);
+    expect(requiresRemoteGateway({ RAVI_CONTEXT_KEY: "  " })).toBe(false);
+    expect(requiresRemoteGateway({})).toBe(false);
+  });
+
+  it("fails closed with a retryable GATEWAY_REQUIRED contract error", () => {
+    const error = gatewayRequiredError("pages published");
+    expect(error.code).toBe("GATEWAY_REQUIRED");
+    expect(error.exitCode).toBe(1);
+    expect(error.details.retryable).toBe(true);
+    expect(error.message).not.toContain("rctx_");
+  });
+
+  it("probes only the account home, never $HOME", async () => {
+    const accountDir = join(userInfo().homedir, ".ravi");
+    expect(resolveHostCliGatewayStateDirs({ HOME: "/tmp/agent-controlled" })).toEqual([accountDir]);
+    const probed: string[] = [];
+    const config = await resolveRemoteGatewayConfig(
+      { RAVI_CONTEXT_KEY: "rctx_test", HOME: "/tmp/agent-controlled" },
+      "pages published",
+      {
+        probeSocket: async (socketPath) => {
+          probed.push(socketPath);
+          return true;
+        },
+      },
+    );
+    expect(probed).toEqual([join(accountDir, "cli-gateway.sock")]);
+    expect(config?.socketPath).toBe(join(accountDir, "cli-gateway.sock"));
+  });
+
+  it("does not reach a socket planted under $HOME when the account home has none", async () => {
+    const config = await resolveRemoteGatewayConfig(
+      { RAVI_CONTEXT_KEY: "rctx_test", HOME: "/tmp/agent-controlled" },
+      "pages published",
+      { probeSocket: async (socketPath) => socketPath.startsWith("/tmp/agent-controlled/") },
+    );
+    expect(config).toBeNull();
+  });
+
+  it("keeps RAVI_STATE_DIR as the only socket location when the daemon publishes it", () => {
+    expect(resolveHostCliGatewayStateDirs({ RAVI_STATE_DIR: "/srv/ravi-state", HOME: "/tmp/x" })).toEqual([
+      "/srv/ravi-state",
+    ]);
   });
 });

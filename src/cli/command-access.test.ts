@@ -302,6 +302,20 @@ describe("CLI command access enforcement", () => {
     expect(result.attempted.every((decision) => decision.providerId === "context-capabilities")).toBe(true);
   });
 
+  it("denies instead of falling back to the local operator when the context key does not resolve", () => {
+    process.env.RAVI_CONTEXT_KEY = "rctx_unknown_to_this_install";
+
+    const result = enforceCliCommandAccess({
+      group: "demo",
+      command: "create",
+      access: ACCESS,
+      source: "cli",
+    });
+
+    expect(result.allowed).toBe(false);
+    expect(result.errorMessage).toContain("requires a resolved runtime principal");
+  });
+
   it("ignores default credential context for direct local CLI authorization", () => {
     const record = createRuntimeContext({
       kind: "cli-runtime",

@@ -94,6 +94,33 @@ describe("createBashPermissionHook", () => {
       expect(isDenied(result)).toBe(true);
     });
 
+    for (const command of [
+      "env -u RAVI_CONTEXT_KEY ravi sessions list",
+      "env --unset=RAVI_CONTEXT_KEY ravi sessions list",
+      "env -i PATH=/usr/bin ravi sessions list",
+      "unset RAVI_CONTEXT_KEY; ravi sessions list",
+      "export -n RAVI_CONTEXT_KEY && ravi sessions list",
+    ]) {
+      it(`blocks dropping the context key: ${command}`, async () => {
+        const result = await callBashHook(
+          command,
+          "dev",
+          makeToolContext("dev", [{ permission: "execute", objectType: "executable", objectId: "*" }]),
+        );
+        expect(isDenied(result)).toBe(true);
+        expect(getDenyReason(result)).toContain("RAVI environment");
+      });
+    }
+
+    it("still allows unsetting unrelated variables", async () => {
+      const result = await callBashHook(
+        "unset FOO && env -u BAR git status",
+        "dev",
+        makeToolContext("dev", [{ permission: "execute", objectType: "executable", objectId: "*" }]),
+      );
+      expect(isDenied(result)).toBe(false);
+    });
+
     it("allows RAVI_* only for an explicit admin runtime context", async () => {
       const result = await callBashHook(
         "RAVI_AGENT_ID=dev ravi sessions list",
