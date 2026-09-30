@@ -60,6 +60,7 @@ export * from "./runtime-credentials.js";
 export * from "./runtime-env.js";
 export * from "./runtime-presets.js";
 export * from "./runtime-providers.js";
+export * from "./sandbox.js";
 export * from "./sdk-returns.js";
 export * from "./sdk.js";
 export * from "./self.js";
