@@ -3,6 +3,8 @@ import { dbCreateAgent, dbDeleteAgent, dbGetContext, getDb } from "../router/rou
 import { getOrCreateSession } from "../router/sessions.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
 import {
+  DELEGATED_SESSION_ACTOR_REQUIRES_SESSION,
+  DELEGATED_SESSION_ACTOR_UNAVAILABLE,
   DELEGATED_SESSION_BINDINGS_MUST_BE_PAIRED,
   IDENTITY_DELEGATION_REQUIRES_ADMIN,
   RuntimeContextError,
@@ -411,6 +413,184 @@ describe("runtime context registry", () => {
         sessionKey: "agent:main:main",
         sessionName: "main",
       },
+    });
+  });
+
+  describe("delegated session actor projection", () => {
+    const SESSION_KEY = `agent:${TEST_AGENT_ID}:main`;
+
+    beforeEach(() => {
+      createTestSession(SESSION_KEY);
+      createTestSession(`agent:${TEST_AGENT_ID}:other`);
+    });
+
+    function adminParent() {
+      return createRuntimeContext({
+        kind: ADMIN_BOOTSTRAP_KIND,
+        agentId: TEST_AGENT_ID,
+        capabilities: [{ permission: "admin", objectType: "system", objectId: "*" }],
+      });
+    }
+
+    function turnContext(metadata: Record<string, unknown>, expiresAt?: number) {
+      return createRuntimeContext({
+        kind: "turn-runtime",
+        agentId: TEST_AGENT_ID,
+        sessionKey: SESSION_KEY,
+        sessionName: "main",
+        metadata,
+        ...(expiresAt ? { expiresAt } : {}),
+      });
+    }
+
+    function issueWithActor(parent = adminParent()) {
+      return issueRuntimeContext({
+        parent,
+        cliName: "nba",
+        identity: { agentId: TEST_AGENT_ID, sessionKey: SESSION_KEY, sessionName: "main", projectSessionActor: true },
+      });
+    }
+
+    it("projects the resolved human actor of the live session turn", () => {
+      const turnExpiresAt = Date.now() + 5 * 60_000;
+      const turn = turnContext(
+        {
+          actorPrincipal: "contact:c-1",
+          actorResolution: "resolved",
+          actorDisplayName: "Ana",
+          consoleUserId: "u-1",
+          userOverlayGrants: ["full@chat:x"],
+        },
+        turnExpiresAt,
+      );
+
+      const child = issueWithActor();
+
+      expect(child.metadata).toMatchObject({
+        actorPrincipal: "contact:c-1",
+        actorResolution: "resolved",
+        actorDisplayName: "Ana",
+        consoleUserId: "u-1",
+        actorProjection: {
+          source: "delegated-session-turn",
+          sourceContextId: turn.contextId,
+          agentId: TEST_AGENT_ID,
+          sessionKey: SESSION_KEY,
+        },
+      });
+      expect(child.metadata?.userOverlayGrants).toBeUndefined();
+      expect(child.expiresAt).toBe(turnExpiresAt);
+    });
+
+    it("keeps the projected actor authoritative over caller metadata", () => {
+      turnContext({ actorPrincipal: "contact:c-1", actorResolution: "resolved" });
+      const child = issueRuntimeContext({
+        parent: adminParent(),
+        cliName: "nba",
+        metadata: {
+          actorPrincipal: "contact:forged",
+          consoleUserId: "user-forged",
+          actorDisplayName: "Forged",
+          actorProjection: { sourceContextId: "ctx_forged" },
+        },
+        identity: { agentId: TEST_AGENT_ID, sessionKey: SESSION_KEY, sessionName: "main", projectSessionActor: true },
+      });
+      expect(child.metadata?.actorPrincipal).toBe("contact:c-1");
+      expect(child.metadata?.consoleUserId).toBeUndefined();
+      expect(child.metadata?.actorDisplayName).toBeUndefined();
+      expect(child.metadata?.actorProjection).toMatchObject({ source: "delegated-session-turn" });
+    });
+
+    it("revokes the projected child when the source turn is revoked", () => {
+      const turn = turnContext({ actorPrincipal: "contact:c-1", actorResolution: "resolved" });
+      const child = issueWithActor();
+
+      const result = revokeRuntimeContext(turn.contextId, { reason: "turn_superseded" });
+
+      expect(result.cascaded.map((ctx) => ctx.contextId)).toContain(child.contextId);
+      expect(resolveRuntimeContext(child.contextKey)).toBeNull();
+    });
+
+    it("revokes the projected child when the session slot is reset", () => {
+      turnContext({ actorPrincipal: "contact:c-1", actorResolution: "resolved" });
+      const child = issueWithActor();
+
+      revokeAgentRuntimeContextsForSession(SESSION_KEY);
+
+      expect(resolveRuntimeContext(child.contextKey)).toBeNull();
+    });
+
+    it("revokes the projected child even when the source turn is revoked without cascade", () => {
+      const turn = turnContext({ actorPrincipal: "contact:c-1", actorResolution: "resolved" });
+      const child = issueWithActor();
+
+      revokeRuntimeContext(turn.contextId, { cascade: false });
+
+      expect(resolveRuntimeContext(child.contextKey)).toBeNull();
+    });
+
+    it("fails closed without a live turn, a resolved actor or a human actor", () => {
+      const cases: Array<[Record<string, unknown> | null, string]> = [
+        [null, "no_live_turn"],
+        [{ actorPrincipal: "contact:c-1", actorResolution: "missing_contact" }, "actor_not_resolved"],
+        [{ actorPrincipal: "automation:cron-1", actorResolution: "resolved" }, "actor_not_human"],
+      ];
+      for (const [metadata, reason] of cases) {
+        getDb().prepare("DELETE FROM contexts WHERE agent_id = ?").run(TEST_AGENT_ID);
+        if (metadata) turnContext(metadata);
+        try {
+          issueWithActor();
+          throw new Error(`expected projection to fail: ${reason}`);
+        } catch (error) {
+          expect(error).toBeInstanceOf(RuntimeContextError);
+          expect(error).toMatchObject({
+            code: "PERMISSION_DENIED",
+            message: DELEGATED_SESSION_ACTOR_UNAVAILABLE,
+            details: { reason },
+          });
+        }
+      }
+    });
+
+    it("ignores revoked turns and turns of other sessions", () => {
+      const revoked = turnContext({ actorPrincipal: "contact:c-1", actorResolution: "resolved" });
+      revokeRuntimeContext(revoked.contextId);
+      createRuntimeContext({
+        kind: "turn-runtime",
+        agentId: TEST_AGENT_ID,
+        sessionKey: `agent:${TEST_AGENT_ID}:other`,
+        metadata: { actorPrincipal: "contact:c-2", actorResolution: "resolved" },
+      });
+
+      expect(() => issueWithActor()).toThrow(DELEGATED_SESSION_ACTOR_UNAVAILABLE);
+    });
+
+    it("requires a delegated session binding", () => {
+      expect(() =>
+        issueRuntimeContext({
+          parent: adminParent(),
+          cliName: "nba",
+          identity: { agentId: TEST_AGENT_ID, projectSessionActor: true },
+        }),
+      ).toThrow(DELEGATED_SESSION_ACTOR_REQUIRES_SESSION);
+    });
+
+    it("does not project an actor without the explicit flag", () => {
+      turnContext({ actorPrincipal: "contact:c-1", actorResolution: "resolved" });
+      const child = issueRuntimeContext({
+        parent: adminParent(),
+        cliName: "nba",
+        identity: { agentId: TEST_AGENT_ID, sessionKey: SESSION_KEY, sessionName: "main" },
+      });
+      expect(child.metadata?.actorPrincipal).toBeUndefined();
+      expect(child.metadata?.actorProjection).toBeUndefined();
+    });
+
+    it("still requires an admin parent", () => {
+      turnContext({ actorPrincipal: "contact:c-1", actorResolution: "resolved" });
+      expect(() => issueWithActor(createRuntimeContext({ agentId: TEST_AGENT_ID }))).toThrow(
+        IDENTITY_DELEGATION_REQUIRES_ADMIN,
+      );
     });
   });
 

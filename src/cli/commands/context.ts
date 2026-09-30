@@ -412,9 +412,15 @@ export class ContextCommands {
       description: "Admin-only: bind the delegated identity to an explicit session name",
     })
     asSessionName?: string,
+    @Option({
+      flags: "--with-session-actor",
+      description:
+        "Admin-only: project the verified human actor of the delegated session's live turn (fails closed otherwise)",
+    })
+    withSessionActor = false,
   ) {
     const parent = this.requireResolvedContext();
-    const identity = parseDelegatedIdentity(asAgent, asSessionKey, asSessionName, asJson);
+    const identity = parseDelegatedIdentity(asAgent, asSessionKey, asSessionName, asJson, withSessionActor);
     let child: ReturnType<typeof issueRuntimeContext>;
     try {
       child = issueRuntimeContext({
@@ -1365,10 +1371,18 @@ function parseDelegatedIdentity(
   sessionKeyInput: string | undefined,
   sessionNameInput: string | undefined,
   asJson?: boolean,
-): { agentId: string; sessionKey?: string; sessionName?: string } | undefined {
+  withSessionActor = false,
+): { agentId: string; sessionKey?: string; sessionName?: string; projectSessionActor?: boolean } | undefined {
   const agentId = agentInput?.trim();
   const sessionKey = sessionKeyInput?.trim();
   const sessionName = sessionNameInput?.trim();
+  if (withSessionActor && !sessionKey) {
+    failContextIssueUsage(
+      "--with-session-actor requires a delegated session binding",
+      "Pass --as-agent, --as-session-key and --as-session-name together with --with-session-actor",
+      asJson,
+    );
+  }
   if (!agentId && !sessionKey && !sessionName) return undefined;
   if (!agentId) {
     failContextIssueUsage(
@@ -1413,6 +1427,7 @@ function parseDelegatedIdentity(
     agentId,
     ...(sessionKey ? { sessionKey } : {}),
     ...(sessionName ? { sessionName } : {}),
+    ...(withSessionActor ? { projectSessionActor: true } : {}),
   };
 }
 

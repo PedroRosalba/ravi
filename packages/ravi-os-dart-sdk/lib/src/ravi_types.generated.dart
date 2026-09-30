@@ -5448,7 +5448,7 @@ class ContextInfoReturn {
 ContextInfoReturn contextInfoReturnFromJson(Object? json) => ContextInfoReturn.fromJsonValue(json);
 
 class ContextIssueOptions {
-  const ContextIssueOptions({this.allow, this.asAgent, this.asSessionKey, this.asSessionName, this.inherit, this.ttl});
+  const ContextIssueOptions({this.allow, this.asAgent, this.asSessionKey, this.asSessionName, this.inherit, this.ttl, this.withSessionActor});
 
   final String? allow;
   final String? asAgent;
@@ -5456,6 +5456,7 @@ class ContextIssueOptions {
   final String? asSessionName;
   final bool? inherit;
   final String? ttl;
+  final bool? withSessionActor;
 
   void encodeBody(Map<String, RaviJson> into) {
     if (allow != null) {
@@ -5475,6 +5476,9 @@ class ContextIssueOptions {
     }
     if (ttl != null) {
       into["ttl"] = RaviJson.from(ttl);
+    }
+    if (withSessionActor != null) {
+      into["withSessionActor"] = RaviJson.from(withSessionActor);
     }
   }
 }
