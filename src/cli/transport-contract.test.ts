@@ -103,9 +103,9 @@ const previousHostCliGateway = process.env.RAVI_HOST_CLI_GATEWAY;
 
 // This suite asserts *local* transport behavior. When a Ravi daemon runs on the
 // same machine it exposes the host CLI gateway socket, and any CLI invocation
-// carrying RAVI_CONTEXT_KEY is routed to that daemon instead of executing
-// locally -- which turned the PERMISSION_DENIED case into a transport failure
-// and made the suite fail only on developer machines with a live daemon.
+// carrying RAVI_CONTEXT_KEY is routed to that daemon. Disabling the auto
+// bridge keeps the keyed CLI case deterministic: it must fail closed with
+// GATEWAY_REQUIRED instead of reaching a live daemon.
 beforeAll(() => {
   process.env.RAVI_HOST_CLI_GATEWAY = "0";
 });
@@ -131,16 +131,10 @@ describe("global cloud failure contract", () => {
   });
 
   it("preserves a safe CliExpectedError cause and throw-site suggestedAction", () => {
-    const suggestedAction =
-      "Re-run with the repo CLI/runtime or pass --allow-runtime-mismatch if you really mean it.";
+    const suggestedAction = "Re-run with the repo CLI/runtime or pass --allow-runtime-mismatch if you really mean it.";
     const contract = expectedErrorToContractError(
       "instances routes add",
-      new CliExpectedError(
-        `CLI/runtime mismatch detected.\n${suggestedAction}`,
-        "COMMAND_FAILED",
-        1,
-        suggestedAction,
-      ),
+      new CliExpectedError(`CLI/runtime mismatch detected.\n${suggestedAction}`, "COMMAND_FAILED", 1, suggestedAction),
     );
 
     expect(contract).toMatchObject({
@@ -549,7 +543,7 @@ describe("global cloud failure contract", () => {
     expect(wasContractErrorAudited(failure)).toBe(true);
   });
 
-  it("preserves one PERMISSION_DENIED envelope across CLI, tool and gateway", async () => {
+  it("keeps PERMISSION_DENIED parity between tool and gateway; the keyed CLI requires the gateway", async () => {
     const previousSuppressAudit = process.env.RAVI_SUPPRESS_AUDIT_EVENTS;
     const previousContextKey = process.env.RAVI_CONTEXT_KEY;
     const originalExit = process.exit;
@@ -586,10 +580,16 @@ describe("global cloud failure contract", () => {
       else process.env.RAVI_CONTEXT_KEY = previousContextKey;
     }
 
+    // With RAVI_CONTEXT_KEY and no reachable gateway the CLI never authorizes
+    // locally: it fails closed before the command body or the local chain runs.
     expect(cliExitCode).toBe(1);
     expect(cliError).toEqual([]);
     expect(cliOutput).toHaveLength(1);
-    const cliEnvelope = JSON.parse(cliOutput[0] ?? "{}");
+    expect(JSON.parse(cliOutput[0] ?? "{}")).toMatchObject({
+      success: false,
+      op: "cloud fixture fail",
+      error: { code: "GATEWAY_REQUIRED", retryable: true },
+    });
 
     const tool = extractTools([CloudFailureCommands]).find((candidate) => candidate.name === "cloud_fixture_fail");
     expect(tool).toBeDefined();
@@ -609,9 +609,8 @@ describe("global cloud failure contract", () => {
     expect(exitCode).toBe(1);
     expect(outcome).toBe("denied");
     expect(toolResult).toMatchObject({ isError: true, outcome: "denied", exitCode: 1 });
-    expect(toolEnvelope).toEqual(cliEnvelope);
-    expect(gatewayEnvelope).toEqual(cliEnvelope);
-    expect(cliEnvelope).toMatchObject({
+    expect(gatewayEnvelope).toEqual(toolEnvelope);
+    expect(toolEnvelope).toMatchObject({
       success: false,
       op: "cloud fixture fail",
       error: { code: "PERMISSION_DENIED" },
