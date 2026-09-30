@@ -356,6 +356,28 @@ Um contato foi alterado. Notifica o grupo do Slack e atualiza o CRM.
 
 All CLI commands are available as tools (`triggers_list`, `triggers_add`, etc.), so agents can self-configure triggers via conversation.
 
+## Cloud Sandbox Tasks (E2B)
+
+Run one task in a disposable E2B microVM: boot from a snapshot (NATS already up),
+clone a repo, run the task with a Claude worker agent, save `TASK.md`,
+`task.json`, `changes.patch` and `daemon.log` locally, then destroy the machine.
+Nothing is pushed; apply the patch yourself.
+
+```bash
+# Once (and whenever the Ravi baked into the template should be updated)
+ravi sandbox template build                    # [name] --ref dev --cpu 2 --memory 4096
+
+# Per task
+ravi sandbox run --repo https://github.com/owner/repo.git --task "..." \
+  [--branch b] [--title t] [--model sonnet] [--timeout-min 55] [--keep] [--output dir] [--json]
+```
+
+- Credentials come from the environment: `E2B_API_KEY`, plus `CLAUDE_CODE_OAUTH_TOKEN` or
+  `ANTHROPIC_API_KEY` (the `RAVI_`-prefixed names also work, for hosts that hide the standard ones).
+  `GITHUB_TOKEN` is used only to clone private repos.
+- Outputs default to `~/.ravi/sandbox-runs/<sandbox-id>/`. Exit code is 1 unless the task ends `done`.
+- `--keep` pauses the sandbox instead of killing it.
+
 ## Router (`~/.ravi/ravi.db`)
 
 Configuration is stored in SQLite and managed via CLI:

@@ -55,6 +55,7 @@ class RaviClient {
   RoutesNamespace get routes => RoutesNamespace(_transport);
   RulesNamespace get rules => RulesNamespace(_transport);
   RuntimeNamespace get runtime => RuntimeNamespace(_transport);
+  SandboxNamespace get sandbox => SandboxNamespace(_transport);
   SdkNamespace get sdk => SdkNamespace(_transport);
   SelfNamespace get self => SelfNamespace(_transport);
   SessionsNamespace get sessions => SessionsNamespace(_transport);
@@ -6066,6 +6067,45 @@ class RuntimeProvidersGrokLoginNamespace {
       command: "status",
       body: requestBody,
       decode: runtimeProvidersGrokLoginStatusReturnFromJson,
+    );
+  }
+}
+
+class SandboxNamespace {
+  const SandboxNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  SandboxTemplateNamespace get template => SandboxTemplateNamespace(_transport);
+
+  Future<SandboxRunReturn> run([SandboxRunOptions options = const SandboxRunOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["sandbox"],
+      command: "run",
+      body: requestBody,
+      decode: sandboxRunReturnFromJson,
+    );
+  }
+}
+
+class SandboxTemplateNamespace {
+  const SandboxTemplateNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  Future<SandboxTemplateBuildReturn> build([String? name, SandboxTemplateBuildOptions options = const SandboxTemplateBuildOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    if (name != null) {
+      requestBody["name"] = RaviJson.from(name);
+    }
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["sandbox", "template"],
+      command: "build",
+      body: requestBody,
+      decode: sandboxTemplateBuildReturnFromJson,
     );
   }
 }

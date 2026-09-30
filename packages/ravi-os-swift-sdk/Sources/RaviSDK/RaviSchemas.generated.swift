@@ -61007,6 +61007,170 @@ public enum RaviSchemas {
   }
   """#
 
+  public static let SandboxRunInputSchema = #"""
+  {
+    "additionalProperties": false,
+    "properties": {
+      "branch": {
+        "description": "Branch to clone",
+        "type": "string"
+      },
+      "keep": {
+        "description": "Pause the sandbox instead of killing it",
+        "type": "boolean"
+      },
+      "model": {
+        "default": "sonnet",
+        "description": "Worker model",
+        "type": "string"
+      },
+      "output": {
+        "description": "Where to save outputs (default ~/.ravi/sandbox-runs/<id>)",
+        "type": "string"
+      },
+      "repo": {
+        "description": "Git URL to clone into the sandbox",
+        "type": "string"
+      },
+      "task": {
+        "description": "Task instructions",
+        "type": "string"
+      },
+      "taskFile": {
+        "description": "Read task instructions from a file",
+        "type": "string"
+      },
+      "template": {
+        "default": "ravi-runner",
+        "description": "E2B template name",
+        "type": "string"
+      },
+      "timeoutMin": {
+        "description": "Task timeout in minutes (default 55)",
+        "type": "string"
+      },
+      "title": {
+        "default": "Sandbox task",
+        "description": "Task title",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  }
+  """#
+
+  public static let SandboxRunReturnSchema = #"""
+  {
+    "additionalProperties": false,
+    "properties": {
+      "durationMs": {
+        "type": "number"
+      },
+      "error": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "files": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "kept": {
+        "type": "boolean"
+      },
+      "outputDir": {
+        "type": "string"
+      },
+      "sandboxId": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "taskId": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "sandboxId",
+      "taskId",
+      "status",
+      "kept",
+      "outputDir",
+      "files",
+      "durationMs",
+      "error"
+    ],
+    "type": "object"
+  }
+  """#
+
+  public static let SandboxTemplateBuildInputSchema = #"""
+  {
+    "additionalProperties": false,
+    "properties": {
+      "cpu": {
+        "description": "vCPUs (default 2)",
+        "type": "string"
+      },
+      "memory": {
+        "description": "Memory in MB (default 4096)",
+        "type": "string"
+      },
+      "name": {
+        "description": "Template name",
+        "type": "string"
+      },
+      "ref": {
+        "description": "Ravi branch or tag baked into the template (default dev)",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  }
+  """#
+
+  public static let SandboxTemplateBuildReturnSchema = #"""
+  {
+    "additionalProperties": false,
+    "properties": {
+      "durationMs": {
+        "type": "number"
+      },
+      "name": {
+        "type": "string"
+      },
+      "ref": {
+        "type": "string"
+      },
+      "templateId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "templateId",
+      "ref",
+      "durationMs"
+    ],
+    "type": "object"
+  }
+  """#
+
   public static let SdkClientCheckInputSchema = #"""
   {
     "additionalProperties": false,

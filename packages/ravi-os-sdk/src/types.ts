@@ -12112,6 +12112,48 @@ export type RuntimeProvidersGrokLoginStatusReturn = {
   };
 };
 
+/** Input shape for `sandbox.run`. */
+export type SandboxRunInput = {
+  branch?: string;
+  keep?: boolean;
+  model?: string;
+  output?: string;
+  repo?: string;
+  task?: string;
+  taskFile?: string;
+  template?: string;
+  timeoutMin?: string;
+  title?: string;
+};
+
+/** Return shape for `sandbox.run`. */
+export type SandboxRunReturn = {
+  durationMs: number;
+  error: string | null;
+  files: string[];
+  kept: boolean;
+  outputDir: string;
+  sandboxId: string;
+  status: string;
+  taskId: string | null;
+};
+
+/** Input shape for `sandbox.template.build`. */
+export type SandboxTemplateBuildInput = {
+  cpu?: string;
+  memory?: string;
+  name?: string;
+  ref?: string;
+};
+
+/** Return shape for `sandbox.template.build`. */
+export type SandboxTemplateBuildReturn = {
+  durationMs: number;
+  name: string;
+  ref: string;
+  templateId: string;
+};
+
 /** Input shape for `sdk.client.check`. */
 export type SdkClientCheckInput = {
   out?: string;

@@ -16755,6 +16755,130 @@ class RuntimeProvidersGrokLoginStatusReturn {
 
 RuntimeProvidersGrokLoginStatusReturn runtimeProvidersGrokLoginStatusReturnFromJson(Object? json) => RuntimeProvidersGrokLoginStatusReturn.fromJsonValue(json);
 
+class SandboxRunOptions {
+  const SandboxRunOptions({this.branch, this.keep, this.model, this.output, this.repo, this.task, this.taskFile, this.template, this.timeoutMin, this.title});
+
+  final String? branch;
+  final bool? keep;
+  final String? model;
+  final String? output;
+  final String? repo;
+  final String? task;
+  final String? taskFile;
+  final String? template;
+  final String? timeoutMin;
+  final String? title;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (branch != null) {
+      into["branch"] = RaviJson.from(branch);
+    }
+    if (keep != null) {
+      into["keep"] = RaviJson.from(keep);
+    }
+    if (model != null) {
+      into["model"] = RaviJson.from(model);
+    }
+    if (output != null) {
+      into["output"] = RaviJson.from(output);
+    }
+    if (repo != null) {
+      into["repo"] = RaviJson.from(repo);
+    }
+    if (task != null) {
+      into["task"] = RaviJson.from(task);
+    }
+    if (taskFile != null) {
+      into["taskFile"] = RaviJson.from(taskFile);
+    }
+    if (template != null) {
+      into["template"] = RaviJson.from(template);
+    }
+    if (timeoutMin != null) {
+      into["timeoutMin"] = RaviJson.from(timeoutMin);
+    }
+    if (title != null) {
+      into["title"] = RaviJson.from(title);
+    }
+  }
+}
+
+class SandboxRunReturn {
+  const SandboxRunReturn({required this.durationMs, required this.error, required this.files, required this.kept, required this.outputDir, required this.sandboxId, required this.status, required this.taskId});
+
+  final double durationMs;
+  final RaviJson error;
+  final List<String> files;
+  final bool kept;
+  final String outputDir;
+  final String sandboxId;
+  final String status;
+  final RaviJson taskId;
+
+  factory SandboxRunReturn.fromJson(Map<String, Object?> json) {
+    return SandboxRunReturn(
+      durationMs: raviJsonAsDouble(json["durationMs"]),
+      error: RaviJson.from(json["error"]),
+      files: raviJsonAsList(json["files"], raviJsonAsString),
+      kept: raviJsonAsBool(json["kept"]),
+      outputDir: raviJsonAsString(json["outputDir"]),
+      sandboxId: raviJsonAsString(json["sandboxId"]),
+      status: raviJsonAsString(json["status"]),
+      taskId: RaviJson.from(json["taskId"]),
+    );
+  }
+
+  static SandboxRunReturn fromJsonValue(Object? json) {
+    return SandboxRunReturn.fromJson(raviJsonObject(json, "SandboxRunReturn"));
+  }
+}
+
+SandboxRunReturn sandboxRunReturnFromJson(Object? json) => SandboxRunReturn.fromJsonValue(json);
+
+class SandboxTemplateBuildOptions {
+  const SandboxTemplateBuildOptions({this.cpu, this.memory, this.ref});
+
+  final String? cpu;
+  final String? memory;
+  final String? ref;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (cpu != null) {
+      into["cpu"] = RaviJson.from(cpu);
+    }
+    if (memory != null) {
+      into["memory"] = RaviJson.from(memory);
+    }
+    if (ref != null) {
+      into["ref"] = RaviJson.from(ref);
+    }
+  }
+}
+
+class SandboxTemplateBuildReturn {
+  const SandboxTemplateBuildReturn({required this.durationMs, required this.name, required this.ref, required this.templateId});
+
+  final double durationMs;
+  final String name;
+  final String ref;
+  final String templateId;
+
+  factory SandboxTemplateBuildReturn.fromJson(Map<String, Object?> json) {
+    return SandboxTemplateBuildReturn(
+      durationMs: raviJsonAsDouble(json["durationMs"]),
+      name: raviJsonAsString(json["name"]),
+      ref: raviJsonAsString(json["ref"]),
+      templateId: raviJsonAsString(json["templateId"]),
+    );
+  }
+
+  static SandboxTemplateBuildReturn fromJsonValue(Object? json) {
+    return SandboxTemplateBuildReturn.fromJson(raviJsonObject(json, "SandboxTemplateBuildReturn"));
+  }
+}
+
+SandboxTemplateBuildReturn sandboxTemplateBuildReturnFromJson(Object? json) => SandboxTemplateBuildReturn.fromJsonValue(json);
+
 class SdkClientCheckOptions {
   const SdkClientCheckOptions({this.out, this.version});
 

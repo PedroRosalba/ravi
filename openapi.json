@@ -12,7 +12,7 @@
   "info": {
     "description": "OpenAPI 3.1 spec auto-generated from the Ravi CLI registry. Each operation maps 1:1 to a `ravi <group> <command>` invocation.",
     "title": "Ravi API",
-    "version": "d84f9e96c597f5d3"
+    "version": "97aabb72f1bdfff4"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -74312,6 +74312,242 @@
         ]
       }
     },
+    "/api/v1/sandbox/run": {
+      "post": {
+        "operationId": "sandbox.run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "branch": {
+                    "description": "Branch to clone",
+                    "type": "string"
+                  },
+                  "keep": {
+                    "description": "Pause the sandbox instead of killing it",
+                    "type": "boolean"
+                  },
+                  "model": {
+                    "default": "sonnet",
+                    "description": "Worker model",
+                    "type": "string"
+                  },
+                  "output": {
+                    "description": "Where to save outputs (default ~/.ravi/sandbox-runs/<id>)",
+                    "type": "string"
+                  },
+                  "repo": {
+                    "description": "Git URL to clone into the sandbox",
+                    "type": "string"
+                  },
+                  "task": {
+                    "description": "Task instructions",
+                    "type": "string"
+                  },
+                  "taskFile": {
+                    "description": "Read task instructions from a file",
+                    "type": "string"
+                  },
+                  "template": {
+                    "default": "ravi-runner",
+                    "description": "E2B template name",
+                    "type": "string"
+                  },
+                  "timeoutMin": {
+                    "description": "Task timeout in minutes (default 55)",
+                    "type": "string"
+                  },
+                  "title": {
+                    "default": "Sandbox task",
+                    "description": "Task title",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "durationMs": {
+                      "type": "number"
+                    },
+                    "error": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "files": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "kept": {
+                      "type": "boolean"
+                    },
+                    "outputDir": {
+                      "type": "string"
+                    },
+                    "sandboxId": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "taskId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sandboxId",
+                    "taskId",
+                    "status",
+                    "kept",
+                    "outputDir",
+                    "files",
+                    "durationMs",
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success — body conforms to the `@Returns` schema."
+          },
+          "400": {
+            "description": "Bad request — body failed schema validation."
+          },
+          "401": {
+            "description": "Unauthorized — bearer token missing or invalid."
+          },
+          "403": {
+            "description": "Forbidden — caller lacks the required scope."
+          },
+          "500": {
+            "description": "Internal error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Boot a sandbox from the template, clone a repo, run one task and save TASK.md, patch and logs",
+        "tags": [
+          "sandbox"
+        ]
+      }
+    },
+    "/api/v1/sandbox/template/build": {
+      "post": {
+        "operationId": "sandbox.template.build",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "cpu": {
+                    "description": "vCPUs (default 2)",
+                    "type": "string"
+                  },
+                  "memory": {
+                    "description": "Memory in MB (default 4096)",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Template name",
+                    "type": "string"
+                  },
+                  "ref": {
+                    "description": "Ravi branch or tag baked into the template (default dev)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "durationMs": {
+                      "type": "number"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string"
+                    },
+                    "templateId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "templateId",
+                    "ref",
+                    "durationMs"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success — body conforms to the `@Returns` schema."
+          },
+          "400": {
+            "description": "Bad request — body failed schema validation."
+          },
+          "401": {
+            "description": "Unauthorized — bearer token missing or invalid."
+          },
+          "403": {
+            "description": "Forbidden — caller lacks the required scope."
+          },
+          "500": {
+            "description": "Internal error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Build (or rebuild) the E2B template with Bun, nats-server and Ravi",
+        "tags": [
+          "sandbox"
+        ]
+      }
+    },
     "/api/v1/sdk/client/check": {
       "post": {
         "operationId": "sdk.client.check",
@@ -108266,6 +108502,10 @@
     },
     {
       "name": "runtime"
+    },
+    {
+      "description": "Run one Ravi task in a disposable E2B cloud sandbox and collect its patch",
+      "name": "sandbox"
     },
     {
       "name": "sdk"
