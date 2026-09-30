@@ -497,9 +497,28 @@ describe("runtime context registry", () => {
       const turn = turnContext({ actorPrincipal: "contact:c-1", actorResolution: "resolved" });
       const child = issueWithActor();
 
-      revokeRuntimeContext(turn.contextId, { reason: "turn_superseded" });
+      const result = revokeRuntimeContext(turn.contextId, { reason: "turn_superseded" });
+
+      expect(result.cascaded.map((ctx) => ctx.contextId)).toContain(child.contextId);
+      expect(resolveRuntimeContext(child.contextKey)).toBeNull();
+    });
+
+    it("revokes the projected child when the session slot is reset", () => {
+      turnContext({ actorPrincipal: "contact:c-1", actorResolution: "resolved" });
+      const child = issueWithActor();
+
+      revokeAgentRuntimeContextsForSession(SESSION_KEY);
 
       expect(resolveRuntimeContext(child.contextKey)).toBeNull();
+    });
+
+    it("keeps the projected child when the source turn is revoked without cascade", () => {
+      const turn = turnContext({ actorPrincipal: "contact:c-1", actorResolution: "resolved" });
+      const child = issueWithActor();
+
+      revokeRuntimeContext(turn.contextId, { cascade: false });
+
+      expect(resolveRuntimeContext(child.contextKey)).not.toBeNull();
     });
 
     it("fails closed without a live turn, a resolved actor or a human actor", () => {

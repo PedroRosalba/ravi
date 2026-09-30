@@ -9988,13 +9988,6 @@ export interface RevokeContextResult {
  * already-issued workers. The CLI surface should require an opt-in flag and
  * emit a warning before calling this with cascade disabled.
  */
-function readActorProjectionSourceContextId(metadata: Record<string, unknown> | undefined): string | null {
-  const projection = metadata?.actorProjection;
-  if (!projection || typeof projection !== "object" || Array.isArray(projection)) return null;
-  const sourceContextId = (projection as Record<string, unknown>).sourceContextId;
-  return typeof sourceContextId === "string" ? sourceContextId : null;
-}
-
 export function dbRevokeContextCascade(contextId: string, options: RevokeContextOptions = {}): RevokeContextResult {
   const root = dbGetContext(contextId);
   if (!root) {
@@ -10010,15 +10003,11 @@ export function dbRevokeContextCascade(contextId: string, options: RevokeContext
     const all = allRows.map((row) => rowToContext(row));
     const childrenByParent = new Map<string, ContextRecord[]>();
     for (const ctx of all) {
-      // A child that projects a delegated session's actor also depends on that
-      // session's turn context: revoking the turn must revoke the projection.
-      const parentIds = [ctx.metadata?.parentContextId, readActorProjectionSourceContextId(ctx.metadata)];
-      for (const parentId of parentIds) {
-        if (typeof parentId !== "string" || !parentId) continue;
-        const list = childrenByParent.get(parentId) ?? [];
-        list.push(ctx);
-        childrenByParent.set(parentId, list);
-      }
+      const parentId = typeof ctx.metadata?.parentContextId === "string" ? ctx.metadata.parentContextId : null;
+      if (!parentId) continue;
+      const list = childrenByParent.get(parentId) ?? [];
+      list.push(ctx);
+      childrenByParent.set(parentId, list);
     }
 
     const visited = new Set<string>([root.contextId]);

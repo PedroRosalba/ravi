@@ -361,11 +361,43 @@ export function revokeRuntimeContext(
   contextId: string,
   options: RevokeRuntimeContextOptions = {},
 ): RevokeContextResult {
-  return dbRevokeContextCascade(contextId, {
+  const result = dbRevokeContextCascade(contextId, {
     revokedAt: options.revokedAt,
     cascade: options.cascade,
     reason: options.reason,
   });
+  if (options.cascade !== false) {
+    revokeDependentActorProjections(result, options);
+  }
+  return result;
+}
+
+/**
+ * A child that projects a delegated session's actor depends on that session's
+ * turn context as well as on its issuing parent: revoking the turn (or any of
+ * its ancestors) must revoke the projection too, not leave it live until TTL.
+ */
+function revokeDependentActorProjections(result: RevokeContextResult, options: RevokeRuntimeContextOptions): void {
+  const revokedIds = new Set([result.context.contextId, ...result.cascaded.map((ctx) => ctx.contextId)]);
+  const dependents = dbListContexts({ includeInactive: false }).filter((ctx) => {
+    const sourceContextId = readActorProjectionSourceContextId(ctx.metadata);
+    return sourceContextId !== null && revokedIds.has(sourceContextId) && !revokedIds.has(ctx.contextId);
+  });
+  for (const dependent of dependents) {
+    if (dbGetContext(dependent.contextId)?.revokedAt) continue;
+    const nested = revokeRuntimeContext(dependent.contextId, {
+      ...options,
+      reason: options.reason ?? "actor_projection_source_revoked",
+    });
+    result.cascaded.push(nested.context, ...nested.cascaded);
+  }
+}
+
+function readActorProjectionSourceContextId(metadata: Record<string, unknown> | undefined): string | null {
+  const projection = metadata?.actorProjection;
+  if (!projection || typeof projection !== "object" || Array.isArray(projection)) return null;
+  const sourceContextId = (projection as Record<string, unknown>).sourceContextId;
+  return typeof sourceContextId === "string" ? sourceContextId : null;
 }
 
 export interface ContextLineage {
