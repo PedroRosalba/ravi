@@ -22,7 +22,7 @@ cd pocs/e2b-sandbox
 bun install
 
 # 1. Uma vez só (e de novo quando quiser atualizar o Ravi do template)
-E2B_API_KEY=e2b_... bun template.ts            # --ref <branch> --cpu 2 --memory 4096
+E2B_API_KEY=e2b_... bun template.ts            # --ref <branch, default dev> --cpu 2 --memory 4096
 
 # 2. Por task
 E2B_API_KEY=e2b_... CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-... \

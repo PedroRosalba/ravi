@@ -10,7 +10,7 @@
  * from its environment at startup, so run-task.ts starts it per sandbox with
  * that task's credentials.
  *
- *   E2B_API_KEY=... bun template.ts [--ref main] [--name ravi-runner]
+ *   E2B_API_KEY=... bun template.ts [--ref dev] [--name ravi-runner]
  */
 
 import { parseArgs } from "node:util";
@@ -22,7 +22,7 @@ const RAVI_DIR = "/home/user/ravi";
 
 const { values } = parseArgs({
   options: {
-    ref: { type: "string", default: "main" },
+    ref: { type: "string", default: "dev" },
     name: { type: "string", default: "ravi-runner" },
     cpu: { type: "string", default: "2" },
     memory: { type: "string", default: "4096" },
@@ -49,8 +49,8 @@ const template = Template()
     { user: "root" },
   )
   .runCmd("curl -fsSL https://bun.sh/install | bash")
-  .gitClone(RAVI_REPO, RAVI_DIR, { branch: values.ref, depth: 1 })
-  .runCmd(`cd ${RAVI_DIR} && ~/.bun/bin/bun install --frozen-lockfile && ~/.bun/bin/bun run build`)
+  // Link bun onto the default PATH before building: Ravi's package scripts
+  // (prebuild -> gen:commands) call `bun` by name.
   .runCmd(
     [
       "ln -sf /home/user/.bun/bin/bun /usr/local/bin/bun",
@@ -58,6 +58,8 @@ const template = Template()
     ],
     { user: "root" },
   )
+  .gitClone(RAVI_REPO, RAVI_DIR, { branch: values.ref, depth: 1 })
+  .runCmd(`cd ${RAVI_DIR} && bun install --frozen-lockfile && bun run build`)
   .runCmd("mkdir -p /home/user/.ravi/jetstream /home/user/work")
   .setStartCmd("nats-server -js -sd /home/user/.ravi/jetstream -a 127.0.0.1 -p 4222", waitForPort(4222));
 
