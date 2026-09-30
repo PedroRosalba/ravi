@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { spawn } from "bun";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -379,10 +380,10 @@ async function captureJson(fn: () => Promise<unknown>): Promise<unknown> {
   }
 }
 
-const hostGateways: Array<ReturnType<typeof Bun.spawn>> = [];
+const hostGateways: Array<ReturnType<typeof spawn>> = [];
 
 async function startHostCliGatewayProcess(): Promise<void> {
-  const child = Bun.spawn({
+  const child = spawn({
     cmd: [process.execPath, resolve(originalCwd, "src", "cli", "fixtures", "host-cli-gateway-server.ts")],
     cwd: originalCwd,
     env: { ...process.env, RAVI_LOG_LEVEL: "error" },

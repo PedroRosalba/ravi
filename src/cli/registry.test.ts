@@ -133,7 +133,7 @@ describe("registerCommands", () => {
     ]);
   });
 
-  it("executes a CLI command with its semantic capability and no legacy group grant", async () => {
+  it("refuses to run a keyed command locally when no gateway is reachable", async () => {
     capturedNegated.length = 0;
     const program = new CommanderCommand();
     program.exitOverride();
@@ -141,20 +141,44 @@ describe("registerCommands", () => {
 
     const previousNoAudit = process.env.RAVI_NO_AUDIT;
     const previousContextKey = process.env.RAVI_CONTEXT_KEY;
+    const previousGatewayUrl = process.env.RAVI_GATEWAY_URL;
+    const previousHostGateway = process.env.RAVI_HOST_CLI_GATEWAY;
+    const originalExit = process.exit;
+    const originalError = console.error;
+    const output: string[] = [];
+    let exitCode: number | undefined;
     process.env.RAVI_NO_AUDIT = "1";
+    // Even a context that would be allowed locally must not be evaluated here.
     process.env.RAVI_CONTEXT_KEY = semanticOnlyContext.contextKey;
+    delete process.env.RAVI_GATEWAY_URL;
+    process.env.RAVI_HOST_CLI_GATEWAY = "0";
+    console.error = (...args: unknown[]) => output.push(args.map(String).join(" "));
+    process.exit = ((code?: number) => {
+      exitCode = code;
+      throw new Error("__gateway_required_exit__");
+    }) as typeof process.exit;
     try {
-      await runWithContext({ agentId: semanticOnlyContext.agentId, context: semanticOnlyContext }, () =>
-        program.parseAsync(["node", "test", "negative", "run"]),
-      );
+      await expect(
+        runWithContext({ agentId: semanticOnlyContext.agentId, context: semanticOnlyContext }, () =>
+          program.parseAsync(["node", "test", "negative", "run"]),
+        ),
+      ).rejects.toThrow("__gateway_required_exit__");
     } finally {
+      process.exit = originalExit;
+      console.error = originalError;
       if (previousNoAudit === undefined) delete process.env.RAVI_NO_AUDIT;
       else process.env.RAVI_NO_AUDIT = previousNoAudit;
       if (previousContextKey === undefined) delete process.env.RAVI_CONTEXT_KEY;
       else process.env.RAVI_CONTEXT_KEY = previousContextKey;
+      if (previousGatewayUrl === undefined) delete process.env.RAVI_GATEWAY_URL;
+      else process.env.RAVI_GATEWAY_URL = previousGatewayUrl;
+      if (previousHostGateway === undefined) delete process.env.RAVI_HOST_CLI_GATEWAY;
+      else process.env.RAVI_HOST_CLI_GATEWAY = previousHostGateway;
     }
 
-    expect(capturedNegated).toEqual([false]);
+    expect(exitCode).toBe(1);
+    expect(capturedNegated).toEqual([]);
+    expect(output.join("\n")).toContain("must go through the Ravi gateway");
   });
 
   it("lets the remote gateway authorize a context key that is not registered locally", async () => {
