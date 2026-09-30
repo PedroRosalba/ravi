@@ -366,9 +366,9 @@ export function revokeRuntimeContext(
     cascade: options.cascade,
     reason: options.reason,
   });
-  if (options.cascade !== false) {
-    revokeDependentActorProjections(result, options);
-  }
+  // Independent of `cascade`: a projection borrows the source turn's actor, so
+  // it can never outlive that turn, even when lineage descendants are kept.
+  revokeDependentActorProjections(result, options);
   return result;
 }
 
@@ -533,6 +533,10 @@ function buildDerivedContextMetadata(
 
   // Applied last so caller-supplied metadata can never forge the projected actor.
   if (sessionActorMetadata) {
+    for (const key of PROJECTED_SESSION_ACTOR_KEYS) {
+      delete derived[key];
+    }
+    delete derived.actorProjection;
     Object.assign(derived, sessionActorMetadata);
   }
 

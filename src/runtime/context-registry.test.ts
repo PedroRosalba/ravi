@@ -487,10 +487,18 @@ describe("runtime context registry", () => {
       const child = issueRuntimeContext({
         parent: adminParent(),
         cliName: "nba",
-        metadata: { actorPrincipal: "contact:forged" },
+        metadata: {
+          actorPrincipal: "contact:forged",
+          consoleUserId: "user-forged",
+          actorDisplayName: "Forged",
+          actorProjection: { sourceContextId: "ctx_forged" },
+        },
         identity: { agentId: TEST_AGENT_ID, sessionKey: SESSION_KEY, sessionName: "main", projectSessionActor: true },
       });
       expect(child.metadata?.actorPrincipal).toBe("contact:c-1");
+      expect(child.metadata?.consoleUserId).toBeUndefined();
+      expect(child.metadata?.actorDisplayName).toBeUndefined();
+      expect(child.metadata?.actorProjection).toMatchObject({ source: "delegated-session-turn" });
     });
 
     it("revokes the projected child when the source turn is revoked", () => {
@@ -512,13 +520,13 @@ describe("runtime context registry", () => {
       expect(resolveRuntimeContext(child.contextKey)).toBeNull();
     });
 
-    it("keeps the projected child when the source turn is revoked without cascade", () => {
+    it("revokes the projected child even when the source turn is revoked without cascade", () => {
       const turn = turnContext({ actorPrincipal: "contact:c-1", actorResolution: "resolved" });
       const child = issueWithActor();
 
       revokeRuntimeContext(turn.contextId, { cascade: false });
 
-      expect(resolveRuntimeContext(child.contextKey)).not.toBeNull();
+      expect(resolveRuntimeContext(child.contextKey)).toBeNull();
     });
 
     it("fails closed without a live turn, a resolved actor or a human actor", () => {
