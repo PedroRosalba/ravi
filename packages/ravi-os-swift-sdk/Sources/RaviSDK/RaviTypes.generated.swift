@@ -6493,14 +6493,16 @@ public struct ContextIssueOptions: Codable, Sendable {
   public var asSessionName: String?
   public var inherit: Bool?
   public var ttl: String?
+  public var withSessionActor: Bool?
 
-  public init(allow: String? = nil, asAgent: String? = nil, asSessionKey: String? = nil, asSessionName: String? = nil, inherit: Bool? = nil, ttl: String? = nil) {
+  public init(allow: String? = nil, asAgent: String? = nil, asSessionKey: String? = nil, asSessionName: String? = nil, inherit: Bool? = nil, ttl: String? = nil, withSessionActor: Bool? = nil) {
     self.allow = allow
     self.asAgent = asAgent
     self.asSessionKey = asSessionKey
     self.asSessionName = asSessionName
     self.inherit = inherit
     self.ttl = ttl
+    self.withSessionActor = withSessionActor
   }
 
   enum CodingKeys: String, CodingKey {
@@ -6510,6 +6512,7 @@ public struct ContextIssueOptions: Codable, Sendable {
     case asSessionName = "asSessionName"
     case inherit = "inherit"
     case ttl = "ttl"
+    case withSessionActor = "withSessionActor"
   }
 
   func encodeBody(into body: inout [String: RaviJSON]) throws {
@@ -6530,6 +6533,9 @@ public struct ContextIssueOptions: Codable, Sendable {
     }
     if let value = self.ttl {
       body["ttl"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.withSessionActor {
+      body["withSessionActor"] = try RaviJSON.fromEncodable(value)
     }
   }
 }

@@ -4878,6 +4878,7 @@ export type ContextIssueInput = {
   cliName: string;
   inherit?: boolean;
   ttl?: string;
+  withSessionActor?: boolean;
 };
 
 /** Return shape for `context.issue`. */

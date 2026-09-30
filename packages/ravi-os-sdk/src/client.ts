@@ -1824,6 +1824,7 @@ export class RaviClient {
       asSessionName?: string;
       inherit?: boolean;
       ttl?: string;
+      withSessionActor?: boolean;
     }): Promise<ContextIssueReturn> => {
       return this.transport.call({
         groupSegments: ["context"],

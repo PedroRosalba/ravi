@@ -12,7 +12,7 @@
   "info": {
     "description": "OpenAPI 3.1 spec auto-generated from the Ravi CLI registry. Each operation maps 1:1 to a `ravi <group> <command>` invocation.",
     "title": "Ravi API",
-    "version": "af770b362a00742d"
+    "version": "f3ea762c15755ac2"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -30125,6 +30125,10 @@
                   "ttl": {
                     "description": "TTL like 30m, 2h or 1d (default: 1h, capped by the parent context)",
                     "type": "string"
+                  },
+                  "withSessionActor": {
+                    "description": "Admin-only: project the verified human actor of the delegated session's live turn (fails closed otherwise)",
+                    "type": "boolean"
                   }
                 },
                 "required": [
