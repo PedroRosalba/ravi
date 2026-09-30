@@ -158,6 +158,8 @@ describe("runE2bSandboxTask", () => {
     expect(baselineAt).toBeGreaterThan(permissionsAt);
     expect(baselineAt).toBeLessThan(tasksAt);
     expect(fake.commands.some((cmd) => cmd.includes("git diff --binary tree-base"))).toBe(true);
+    // `$((` would make bash parse the tree command as arithmetic.
+    expect(fake.commands.some((cmd) => cmd.includes("$(("))).toBe(false);
     expect(fake.state.cloned).toMatchObject({ timeoutMs: 600_000 });
   });
 

@@ -326,7 +326,7 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
     await grab("daemon.log", `tail -500 ${DAEMON_LOG}`);
     await grab(
       "changes.patch",
-      `cur=$(${worktreeTreeCmd}) && cd ${REPO_DIR} && git diff --binary ${baselineTree ?? "HEAD"} "$cur"`,
+      `cur=$( ${worktreeTreeCmd} ) && cd ${REPO_DIR} && git diff --binary ${baselineTree ?? "HEAD"} "$cur"`,
       true,
     );
     if (taskId) {
