@@ -14,6 +14,7 @@ const actualChatDbModule = await import("../db.js");
 const actualSessionStreamModule = await import("./session-stream.js");
 // Cópia: o namespace é mutado in-place por mock.module.
 const actualContactsModule = { ...(await import("../contacts.js")) };
+const actualNatsModule = { ...(await import("../nats.js")) };
 const actualDbSaveMessageMeta = actualRouterDbModule.dbSaveMessageMeta;
 const actualDbGetMessageMeta = actualRouterDbModule.dbGetMessageMeta;
 const actualDbUpsertChat = actualRouterDbModule.dbUpsertChat;
@@ -298,6 +299,10 @@ afterAll(() => {
   // mock.restore() não desfaz mock.module: o getContact fake (fallback
   // { status: "allowed" } sem identities) vazava para outros arquivos.
   mock.module("../contacts.js", () => actualContactsModule);
+  // Idem para nats: o `nats.emit` fake é um mock(); um spyOn(nats, "emit")
+  // + mockRestore() posterior (ephemeral/runner.test.ts) zera a implementação
+  // e emit passa a retornar undefined, quebrando `nats.emit(...).catch`.
+  mock.module("../nats.js", () => actualNatsModule);
 });
 
 describe("supportsOmniReadReceipts", () => {
