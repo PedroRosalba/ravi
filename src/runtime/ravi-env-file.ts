@@ -10,6 +10,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { join } from "node:path";
 import { getRaviStateDir } from "../utils/paths.js";
 import { describeResolvedSecretShapeMismatch } from "./credential-secret-shape.js";
+import { clearRaviEnvFileSourced, isRaviEnvFileSourced, markRaviEnvFileSourced } from "./ravi-env-file-origin.js";
 
 const ENV_DIR_MODE = 0o700;
 const ENV_FILE_MODE = 0o600;
@@ -146,7 +147,9 @@ export function getRaviEnvKey(key: string, env: NodeJS.ProcessEnv = process.env)
   const path = getRaviEnvFilePath(env);
   const fileEnv = readRaviEnvMap(env);
   const present = fileEnv.has(normalized);
-  const processPresent = Boolean(env[normalized]?.trim());
+  // The CLI/daemon copy the env file into process.env at startup; that copy is
+  // the file value, not an inherited process value.
+  const processPresent = Boolean(env[normalized]?.trim()) && !isRaviEnvFileSourced(env, normalized, path);
   const secret = isRaviEnvSecretKey(normalized);
   return {
     key: normalized,
@@ -166,6 +169,7 @@ export function setRaviEnvKey(key: string, value: string, env: NodeJS.ProcessEnv
   assertRaviEnvSecretShape(normalized, nextValue);
   writeRaviEnvMap(upsertEnvMap(readRaviEnvMap(env), normalized, nextValue), env);
   env[normalized] = nextValue;
+  markRaviEnvFileSourced(env, normalized, nextValue, getRaviEnvFilePath(env));
   return {
     ...getRaviEnvKey(normalized, env),
     action: "set",
@@ -180,7 +184,10 @@ export function unsetRaviEnvKey(key: string, env: NodeJS.ProcessEnv = process.en
   if (fileHadKey) {
     current.delete(normalized);
     writeRaviEnvMap(current, env);
-    delete env[normalized];
+    if (isRaviEnvFileSourced(env, normalized, getRaviEnvFilePath(env))) {
+      delete env[normalized];
+    }
+    clearRaviEnvFileSourced(env, normalized);
   }
   return {
     ...getRaviEnvKey(normalized, env),

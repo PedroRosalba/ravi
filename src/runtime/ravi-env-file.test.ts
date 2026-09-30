@@ -9,6 +9,7 @@ import {
   setRaviEnvKey,
   unsetRaviEnvKey,
 } from "./ravi-env-file.js";
+import { markRaviEnvFileSourced } from "./ravi-env-file-origin.js";
 
 describe("ravi-env-file", () => {
   let previous: Record<string, string | undefined> = {};
@@ -71,6 +72,34 @@ describe("ravi-env-file", () => {
     if (existsSync(path)) {
       expect(readFileSync(path, "utf8")).not.toContain("CLAUDE_CODE_OAUTH_TOKEN=");
     }
+  });
+
+  it("reports origin=file for values the loader or set copied from the env file", () => {
+    const set = setRaviEnvKey("CODEX_HOME", "/tmp/codex-a");
+    expect(set.processPresent).toBe(false);
+    expect(set.origin).toBe("file");
+
+    // Simulate a fresh CLI/daemon process: src/cli/env.ts copied the file value.
+    delete process.env.CODEX_HOME;
+    process.env.CODEX_HOME = "/tmp/codex-a";
+    markRaviEnvFileSourced(process.env, "CODEX_HOME", "/tmp/codex-a", getRaviEnvFilePath());
+    const got = getRaviEnvKey("CODEX_HOME");
+    expect(got.origin).toBe("file");
+
+    const unset = unsetRaviEnvKey("CODEX_HOME");
+    expect(unset.origin).toBe("absent");
+    expect(process.env.CODEX_HOME).toBeUndefined();
+  });
+
+  it("keeps an inherited value that differs from the file and reports file+process", () => {
+    setRaviEnvKey("CODEX_HOME", "/tmp/codex-file");
+    process.env.CODEX_HOME = "/tmp/codex-pm2";
+    expect(getRaviEnvKey("CODEX_HOME").origin).toBe("file+process");
+
+    const unset = unsetRaviEnvKey("CODEX_HOME");
+    expect(unset.present).toBe(false);
+    expect(unset.origin).toBe("process");
+    expect(process.env.CODEX_HOME).toBe("/tmp/codex-pm2");
   });
 
   it("rejects an API key written into the OAuth env key", () => {

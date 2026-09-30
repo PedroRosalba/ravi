@@ -19,12 +19,12 @@ import {
   listRuntimeProviderHealth,
   recordRuntimeCredentialLimitPressure,
   recordRuntimeCredentialFailure,
-  reconcileRuntimeCredentialSecretShapes,
   resetRuntimeCredentialHealth,
   serializeRuntimeCredential,
   setRuntimeCredentialEnabled,
 } from "../../runtime/credential-store.js";
 import { selectRuntimeCredential } from "../../runtime/credential-pool.js";
+import { findRuntimeCredentialSecretShapeMismatch } from "../../runtime/credential-secret-shape.js";
 import { refreshRuntimeCredential, refreshRuntimeCredentialPool } from "../../runtime/credential-refresh.js";
 import {
   classifyRuntimeCredentialFailure,
@@ -32,6 +32,7 @@ import {
 } from "../../runtime/credential-classifier.js";
 import type {
   RuntimeCredentialInput,
+  RuntimeCredentialRecord,
   RuntimeCredentialSecretBinding,
   RuntimeCredentialStatus,
 } from "../../runtime/credential-types.js";
@@ -237,7 +238,6 @@ export class RuntimeCredentialsCommands {
     @Option({ flags: "--fields <a,b,c>", description: "Compact mode: keep only these fields of each item" })
     fields?: string,
   ) {
-    reconcileRuntimeCredentialSecretShapes();
     const page = listRuntimeCredentials({
       runtimeProvider: provider,
       upstreamProvider: upstream,
@@ -264,7 +264,7 @@ export class RuntimeCredentialsCommands {
     };
     printPayload(payload, asJson, () => {
       console.log(`\nRuntime credentials (${page.items.length} returned of ${page.total}):\n`);
-      for (const credential of serialized) {
+      for (const [index, credential] of serialized.entries()) {
         console.log(`  ${credential.id}  ${credential.label}`);
         console.log(
           `    provider=${credential.runtimeProvider} upstream=${credential.upstreamProvider ?? "-"} status=${credential.status} auth=${credential.authMethod ?? "-"}`,
@@ -273,6 +273,8 @@ export class RuntimeCredentialsCommands {
         if (credential.lastErrorMessageRedacted && credential.status !== "healthy") {
           console.log(`    error=${credential.lastErrorMessageRedacted}`);
         }
+        const shapeWarning = describeLocalSecretShapeWarning(page.items[index]);
+        if (shapeWarning) console.log(`    warning=${shapeWarning}`);
       }
       if (pagination.nextCommand) {
         console.log("\nNext page:");
@@ -396,7 +398,6 @@ export class RuntimeCredentialsCommands {
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson = false,
   ) {
     if (id) {
-      reconcileRuntimeCredentialSecretShapes();
       const credential = getRuntimeCredential(id);
       if (!credential) failRuntimeCredentialNotFound("runtime credentials status", id, asJson);
       const payload = {
@@ -411,6 +412,8 @@ export class RuntimeCredentialsCommands {
         if (credential.lastErrorMessageRedacted && credential.status !== "healthy") {
           console.log(`  error=${credential.lastErrorMessageRedacted}`);
         }
+        const shapeWarning = describeLocalSecretShapeWarning(credential);
+        if (shapeWarning) console.log(`  warning=${shapeWarning}`);
         console.log(`  health=${JSON.stringify(payload.health)}`);
       });
       return payload;
@@ -597,4 +600,14 @@ export class RuntimeCredentialsCommands {
     });
     return payload;
   }
+}
+
+/**
+ * Read commands only warn: this CLI's env can differ from the daemon's, so the
+ * shape check is persisted by the resolver, enable, and reset-health instead.
+ */
+function describeLocalSecretShapeWarning(credential: RuntimeCredentialRecord | undefined): string | null {
+  if (!credential?.enabled || (credential.status !== "healthy" && credential.status !== "unknown")) return null;
+  const mismatch = findRuntimeCredentialSecretShapeMismatch(credential);
+  return mismatch ? `${mismatch.message} (seen in this shell's env; not saved)` : null;
 }

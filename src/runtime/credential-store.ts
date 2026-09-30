@@ -471,9 +471,9 @@ export function resetRuntimeCredentialHealth(id: string): RuntimeCredentialHealt
 }
 
 /**
- * Re-read healthy credentials whose bound secret is present and mark shape
- * mismatches invalid. `ravi runtime credentials list` calls this so an API key
- * stored as OAuth does not stay `healthy` until the next turn.
+ * Re-read healthy credentials whose bound secret is present in `env` and mark
+ * shape mismatches invalid. Only call this with the daemon's env: a CLI shell
+ * can hold different values, so read commands warn instead of persisting.
  */
 export function reconcileRuntimeCredentialSecretShapes(env: Record<string, string | undefined> = process.env): number {
   ensureRuntimeCredentialTables();

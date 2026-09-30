@@ -3993,10 +3993,13 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         const channelBackendFailure = streaming.currentChannelBackend !== undefined;
         const loginStubFailure = isRuntimeProviderLoginStub(event.error, { provider: runtimeSession.provider });
         const operatorError = explainRuntimeCredentialProviderFailure(event.error, streaming.currentRuntimeCredential);
+        if (operatorError !== event.error) {
+          // Credential label and auth method stay in logs/trace/observation;
+          // the chat channel keeps the provider's original failure text.
+          log.warn("Runtime credential provider failure", { runId, sessionName, error: operatorError });
+        }
         if (!loginStubFailure) {
-          await projectRuntimeEventToChannel(
-            operatorError === event.error ? event : { ...event, error: operatorError },
-          );
+          await projectRuntimeEventToChannel(event);
         }
         await emitRuntimeEvent({
           ...stripRuntimeRawEvent(event),
@@ -4073,7 +4076,7 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
                 previousExpiresAt: suppression.previousExpiresAt,
               });
             } else {
-              await emitResponse(formatUserFacingTurnFailure(operatorError));
+              await emitResponse(formatUserFacingTurnFailure(event.error));
             }
           }
         }

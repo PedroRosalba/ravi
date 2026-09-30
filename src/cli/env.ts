@@ -6,6 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { markRaviEnvFileSourced } from "../runtime/ravi-env-file-origin.js";
 
 const envFile = join(homedir(), ".ravi", ".env");
 
@@ -29,6 +30,7 @@ if (existsSync(envFile)) {
     // Don't override existing env vars
     if (!process.env[key]) {
       process.env[key] = value;
+      markRaviEnvFileSourced(process.env, key, value, envFile);
     }
   }
 }
