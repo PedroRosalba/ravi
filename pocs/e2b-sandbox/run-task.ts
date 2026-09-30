@@ -36,13 +36,18 @@ if (!values.repo || !values.task) {
   process.exit(2);
 }
 
+// Claude Code on the web hides CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY
+// from the session's environment, so the RAVI_-prefixed names are accepted too.
+// Inside the sandbox they are passed under the names Claude Code reads.
 const authEnv: Record<string, string> = {};
 for (const key of ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]) {
-  const value = process.env[key];
+  const value = process.env[key] || process.env[`RAVI_${key}`];
   if (value) authEnv[key] = value;
 }
 if (Object.keys(authEnv).length === 0) {
-  console.error("Set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY for the agent.");
+  console.error(
+    "Set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY (or RAVI_CLAUDE_CODE_OAUTH_TOKEN / RAVI_ANTHROPIC_API_KEY) for the agent.",
+  );
   process.exit(2);
 }
 

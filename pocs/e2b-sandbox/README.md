@@ -48,3 +48,4 @@ E2B_API_KEY=e2b_... CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-... \
 - `tasks create` fora de uma sessão Ravi exige `--report-to` apontando para uma sessão existente. É para isso que existe o `operator`.
 - **Custo:** 2 vCPU / 4 GiB saem por cerca de $0,17/h de sandbox. Os tokens do modelo são cobrados à parte.
 - **Próximo passo (arquitetura B):** deixar o daemon fora do sandbox e usar `src/remote-spawn-nats.ts` para rodar só o worker do Claude lá dentro.
+- **Claude Code na web:** a sessão não enxerga `CLAUDE_CODE_OAUTH_TOKEN` nem `ANTHROPIC_API_KEY` definidas no ambiente. Use `RAVI_CLAUDE_CODE_OAUTH_TOKEN` (ou `RAVI_ANTHROPIC_API_KEY`); o `run-task.ts` repassa ao sandbox com o nome normal.
