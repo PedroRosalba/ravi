@@ -3,6 +3,10 @@ import { describe, expect, it } from "bun:test";
 
 import { getRegistry } from "./registry-snapshot.js";
 
+// Commands that keep --execute only as an ignored compatibility flag. They
+// execute immediately on purpose and must not declare a confirmation brake.
+const COMPAT_NOOP_EXECUTE = new Set(["pages.ship"]);
+
 function executeOption(command: ReturnType<typeof getRegistry>["commands"][number]) {
   return command.options.find((option) => option.name === "execute" || option.flags.includes("--execute"));
 }
@@ -48,6 +52,7 @@ describe("global confirmation policy metadata", () => {
   it("declares every executable mutation brake in confirmation metadata", () => {
     const invalid = commands
       .filter((command) => executeOption(command) !== undefined)
+      .filter((command) => !COMPAT_NOOP_EXECUTE.has(command.fullName))
       .filter((command) => command.access?.kind !== "mutate" || command.access.requiresConfirmation !== true)
       .map((command) => ({
         command: command.fullName,
@@ -85,6 +90,16 @@ describe("global confirmation policy metadata", () => {
     }
 
     expect(offenders).toEqual([]);
+  });
+
+  it("keeps compatibility --execute flags unbraked", () => {
+    for (const fullName of COMPAT_NOOP_EXECUTE) {
+      const command = commands.find((candidate) => candidate.fullName === fullName);
+
+      expect(command, fullName).toBeDefined();
+      expect(command?.access?.kind, fullName).toBe("mutate");
+      expect(command?.access?.requiresConfirmation, fullName).not.toBe(true);
+    }
   });
 
   it("keeps authority-reduction and containment operations immediate", () => {

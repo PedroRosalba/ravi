@@ -28,7 +28,7 @@ Taxonomia de saída:
 - `2` erro de uso (falta `--title`, `--body`/`--html`/`--dir` conflitantes, slug reservado).
 - `3` freio de escrita — não é erro. Nada foi enviado/exposto; o envelope traz `dryRun:true` e `plan`. Revise e repita com `--execute`.
 
-Exit 3 **não** se aplica a `pages ship`, `pages create` nem `pages publish`. Esses ops escrevem na hora. `--execute` nesses três é no-op (aceito por compatibilidade). O freio continua em `password set/remove`, `domains`, `assertion audiences set/remove` e `visibility`/`update` para `public`.
+Exit 3 **não** se aplica a `pages ship`. O ship escreve na hora, e `--execute` nele é no-op (aceito por compatibilidade). O freio continua em `pages create`, `pages publish`, `password set/remove`, `domains`, `assertion audiences set/remove` e `visibility`/`update` para `public`.
 
 `--json` de sucesso do ship. `slug` é o host do projeto. `route` é a página. O campo `site` é o registro desse host:
 

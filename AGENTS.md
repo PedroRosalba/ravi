@@ -75,8 +75,8 @@ ravi pages create <project-ref> <site-slug> --visibility public
 ravi pages publish <project-ref> <site-slug> <artifact-id> --route / --visibility public
 ```
 
-`ship`, `create` and `publish` execute immediately. Leftover `--execute` on
-those ops is ignored. Domain binding, password changes, and switching a site
+`ship` executes immediately. Leftover `--execute` on `ship` is ignored.
+`create`, `publish`, domain binding, password changes, and switching a site
 to public visibility are dry-run by default (exit 3): re-run with `--execute`.
 
 Change who can reach an already-published route without re-uploading files:

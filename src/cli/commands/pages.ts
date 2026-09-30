@@ -96,10 +96,10 @@ Happy path:
   --uses ravi.identity.assertion opts the page into the Console viewer assertion.
   It does not embed a JWT. Register audiences with pages assertion audiences.
 
-Write brake:
-  Dry-run by default. Without --execute nothing is uploaded and no release is
-  created; the command returns exit 3 with the planned ship. Publishing creates
-  a real page with a reachable URL, so it is never implied.
+Executes immediately:
+  ship uploads and activates the release in the same call. --execute is
+  accepted and ignored for compatibility. A failed ship returns the error; read
+  it before retrying, and do not probe by re-shipping.
 
 JSON:
   { url, site, slug, route, visibility, artifactId }
@@ -314,7 +314,7 @@ export class PagesCommands {
     description: "One-shot: publish a route on the project default Pages host",
     helpAfter: PAGES_SHIP_HELP,
   })
-  @CommandAccess({ kind: "mutate", resource: "pages", action: "ship", risk: "high", requiresConfirmation: true })
+  @CommandAccess({ kind: "mutate", resource: "pages", action: "ship", risk: "high" })
   async ship(
     @Arg("args", {
       variadic: true,
@@ -350,7 +350,7 @@ export class PagesCommands {
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
     @Option({
       flags: "--execute",
-      description: "Perform the ship. Without it, pages ship only returns the planned publish",
+      description: "Accepted and ignored for compatibility. pages ship always publishes",
     })
     execute?: boolean,
   ) {
@@ -368,30 +368,11 @@ export class PagesCommands {
           `Host slug "${legacySlug}" is reserved. Prefixes ravi and ravi-* cannot be created from pages ship. Publish a route on the project default host instead.`,
         );
       }
-      // Validation stays BEFORE the brake: an invalid source is a payload error
-      // even on the dry-run path.
+      // Ship is the agent happy path and executes immediately. --execute stays
+      // accepted so callers that still pass it keep working.
+      void execute;
       await validateShipSourceInput({ body, dir, html });
       if (legacySlug) warnLegacyPageHost(legacySlug);
-      if (execute !== true) {
-        // Write brake (Manual v2 7.8): a ship creates a real Pages release on a
-        // reachable URL. Dry-run by default and exit 3 before any Console call,
-        // so publishing cannot be used as a measurement or probing loop.
-        contractDryRun(
-          "pages ship",
-          {
-            project: parsed.project ?? "(Console scope default)",
-            slug: legacySlug ?? "(project default host)",
-            host: legacySlug ?? "(project default host)",
-            legacyHost: Boolean(legacySlug),
-            route: resolvedRoute,
-            entrypoint: resolvedEntrypoint,
-            visibility: normalizedVisibility,
-            source: describeShipSource({ body, dir, html }),
-            ...(normalizedUses ? { uses: normalizedUses } : {}),
-          },
-          { asJson },
-        );
-      }
       const resolved = await resolvePagesProject(parsed.project, undefined, consoleUrl, this.deps);
       const host = await resolveShipHost(
         {
@@ -1225,16 +1206,6 @@ function requireVisibilityValue(value: ReturnType<typeof normalizePageVisibility
     throw new CloudAuthError("PAYLOAD_INVALID", "Usage: ravi pages visibility [project] <site> <visibility>.");
   }
   return value;
-}
-
-/**
- * Safe descriptor for the ship source. The dry-run plan is printed and recorded,
- * so it reports shape and size, never the body content itself.
- */
-function describeShipSource(input: { body?: string; dir?: string; html?: string }): Record<string, unknown> {
-  if (input.dir) return { kind: "dir", path: input.dir };
-  if (input.html) return { kind: "html", path: input.html };
-  return { kind: "body", bodyChars: input.body?.length ?? 0 };
 }
 
 async function resolvePagesProject(

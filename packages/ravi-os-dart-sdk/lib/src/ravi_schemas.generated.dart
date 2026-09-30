@@ -52091,7 +52091,7 @@ class RaviSchemas {
       "type": "string"
     },
     "execute": {
-      "description": "Perform the ship. Without it, pages ship only returns the planned publish",
+      "description": "Accepted and ignored for compatibility. pages ship always publishes",
       "type": "boolean"
     },
     "html": {

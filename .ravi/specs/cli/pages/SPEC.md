@@ -51,12 +51,13 @@ contract errors rethrow first, recognizable Console not-found failures map to
    `ravi pages published --json`. Sites/routes live only in Console, so there
    is no cheap local candidate source — listing suggestedAction, never
    similarity suggestions.
-4. `pages ship`, `pages create` and `pages publish` MUST execute immediately
-   when invoked with valid args. They MUST NOT dry-run, MUST NOT exit 3 with
-   `WRITE_REQUIRES_EXECUTE`, and MUST talk to Console (or fail on credentials /
-   usage) without `--execute`. `--execute` MAY remain as an unused
-   compatibility no-op so existing scripts keep working. Public visibility on
-   `ship`/`create`/`publish` is allowed in the same call. `pages domains` MUST
+4. `pages ship` MUST execute immediately when invoked with valid args. It
+   MUST NOT dry-run, MUST NOT exit 3 with `WRITE_REQUIRES_EXECUTE`, and MUST
+   talk to Console (or fail on credentials / usage) without `--execute`.
+   `--execute` MAY remain as an unused compatibility no-op so existing scripts
+   keep working. `pages create` and `pages publish` MUST dry-run (exit 3)
+   until `--execute`. Public visibility on `ship`/`create`/`publish` is
+   allowed in the same call. `pages domains` MUST
    still default to dry-run and require `--execute` before credential, project
    or provider resolution. Its plan MUST contain only parsed identifiers,
    counts and presence metadata.
@@ -104,13 +105,13 @@ contract errors rethrow first, recognizable Console not-found failures map to
 | op | class | brake |
 |---|---|---|
 | ship | publishes a route on the project default host (creates that one host when missing). A positional slug is a legacy extra host | not braked / executes immediately (`--execute` unused no-op) |
-| publish | uploads bytes and (default) activates a hosted route | not braked / executes immediately (`--execute` unused no-op) |
+| publish | uploads bytes and (default) activates a hosted route | dry-run + `--execute` |
 | password set | flips the route access policy on a live site (high) | dry-run + `--execute`, braked before the secret prompt |
 | password remove | widens who can reach the route, up to fully public (high) | dry-run + `--execute`, visibility validated first |
 | update / visibility → `public` | exposes already-hosted content to the open web | conditional dry-run + `--execute` |
 | visibility --route → `public` | flips one published route's access policy without re-uploading bytes | conditional dry-run + `--execute`; plan names site vs route and current vs target |
 | update / visibility → `private`/`protected_link` | reduces exposure, reversible | not braked (declared) |
-| create | creates a host record in Ravi Console | not braked / executes immediately (`--execute` unused no-op) |
+| create | creates a host record in Ravi Console | dry-run + `--execute` |
 | domains | changes provider-backed hostname bindings and routing | dry-run + `--execute` |
 | assertion audiences set | registers Pages host origins that may receive a viewer assertion for one aud | dry-run + `--execute` (see `pages/assertion-audiences`) |
 | assertion audiences remove | drops one assertion audience | dry-run + `--execute` (see `pages/assertion-audiences`) |
@@ -187,5 +188,6 @@ MUST load the skill for `ravi pages …` and `pages.password`.
 - Braking `domains` after project resolution would let a dry-run touch
   credential/provider state. Braking `password set` AFTER the prompt would
   make dry-runs read secret material; the brake fires right after arg
-  parsing, before prompt and before any Console call. `create`, `publish` and
-  `ship` are unbraked on purpose; leftover `--execute` is ignored.
+  parsing, before prompt and before any Console call. `ship` is unbraked
+  on purpose; leftover `--execute` is ignored. `create` and `publish` keep
+  the brake.

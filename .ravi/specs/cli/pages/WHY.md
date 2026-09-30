@@ -22,9 +22,12 @@ Decisions specific to this domain:
   route on the project default host (`isDefault`, else
   `<orgSlug>-<projectSlug>`). `--title` names the page. It does not mint a
   `*.ravi.page` host. A positional slug is a legacy extra host.
-- **Unbraked write verbs.** `ship`, `create` and `publish` execute
-  immediately. `--execute` stays accepted as a compatibility no-op so
-  existing agent scripts do not break.
+- **Unbraked happy path.** `ship` executes immediately. It is the one
+  command agents are taught, so a brake there only broke callers that forgot
+  the flag. `--execute` stays accepted as a compatibility no-op so existing
+  agent scripts do not break. The 2026-09-16 probing incident (29 releases in
+  one turn) came from a swallowed ship error, not from a missing confirmation.
+  `create` and `publish` are advanced primitives and keep the brake.
 - **Conditional brake on `update`/`visibility`.** Braking every visibility
   change would put exit-3 friction inside "make it private NOW". The brake
   keys off the requested value: `public` → dry-run; `private`/`protected_link`
