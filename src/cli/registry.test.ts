@@ -141,8 +141,12 @@ describe("registerCommands", () => {
 
     const previousNoAudit = process.env.RAVI_NO_AUDIT;
     const previousContextKey = process.env.RAVI_CONTEXT_KEY;
+    const previousHostGateway = process.env.RAVI_HOST_CLI_GATEWAY;
     process.env.RAVI_NO_AUDIT = "1";
     process.env.RAVI_CONTEXT_KEY = semanticOnlyContext.contextKey;
+    // RAVI_CONTEXT_KEY liga a ponte automática para ~/.ravi/cli-gateway.sock;
+    // numa máquina com daemon rodando o teste falaria com o daemon real.
+    process.env.RAVI_HOST_CLI_GATEWAY = "0";
     try {
       await runWithContext({ agentId: semanticOnlyContext.agentId, context: semanticOnlyContext }, () =>
         program.parseAsync(["node", "test", "negative", "run"]),
@@ -150,6 +154,8 @@ describe("registerCommands", () => {
     } finally {
       if (previousNoAudit === undefined) delete process.env.RAVI_NO_AUDIT;
       else process.env.RAVI_NO_AUDIT = previousNoAudit;
+      if (previousHostGateway === undefined) delete process.env.RAVI_HOST_CLI_GATEWAY;
+      else process.env.RAVI_HOST_CLI_GATEWAY = previousHostGateway;
       if (previousContextKey === undefined) delete process.env.RAVI_CONTEXT_KEY;
       else process.env.RAVI_CONTEXT_KEY = previousContextKey;
     }
