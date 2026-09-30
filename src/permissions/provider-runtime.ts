@@ -47,6 +47,34 @@ export function authorizePermission(
   return evaluateProviderChain(runtimeRequest, options.providers ?? getConfiguredPermissionProviders(), startedAt);
 }
 
+/**
+ * Aprovação humana é propriedade da operação inteira, não do candidato que a
+ * cadeia avalia primeiro. Quem chama com vários pedidos equivalentes (ex.: os
+ * candidatos de um comando do CLI) usa isto antes de aceitar um allow: cada
+ * provider que pode exigir aprovação é consultado para cada pedido, sem o
+ * curto-circuito da cadeia — o deny de outro provider num candidato não pode
+ * esconder a exigência, nem a ordem dos candidatos decidir se ela vale.
+ */
+export function findApprovalRequirement(
+  requests: PermissionProviderRequest[],
+  options: AuthorizePermissionOptions = {},
+): PermissionProviderDecision | null {
+  const providers = (options.providers ?? getConfiguredPermissionProviders()).filter(
+    (provider) => provider.mayRequireApproval === true,
+  );
+  if (providers.length === 0) return null;
+  for (const request of requests) {
+    const startedAt = Date.now();
+    const runtimeRequest = withRequestId(request);
+    for (const provider of providers) {
+      if (!provider.supports(runtimeRequest)) continue;
+      const decision = authorizeProvider(provider, runtimeRequest);
+      if (decision.decision === "needs_approval") return normalizeDecision(runtimeRequest, decision, startedAt);
+    }
+  }
+  return null;
+}
+
 export function can(
   subjectType: string,
   subjectId: string,

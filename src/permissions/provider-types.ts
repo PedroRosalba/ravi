@@ -93,6 +93,11 @@ export interface PermissionProvider {
   id: string;
   version: string;
   required: boolean;
+  /**
+   * O provider pode devolver `needs_approval`. Esses providers são consultados
+   * também por `findApprovalRequirement`, fora do curto-circuito da cadeia.
+   */
+  mayRequireApproval?: boolean;
   supports(request: PermissionProviderRequest): boolean;
   authorize(request: PermissionProviderRequest): PermissionProviderDecision;
   materializeCapabilities?(

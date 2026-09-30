@@ -21,6 +21,31 @@ import {
 } from "../../runtime/runtime-defaults.js";
 import { DEFAULT_RUNTIME_PROVIDER_ID, listRegisteredRuntimeProviderIds } from "../../runtime/provider-registry.js";
 import { validateRuntimeModelSelector } from "../../runtime/model-validation.js";
+import { getScopeContext, isScopeEnforced } from "../../permissions/scope.js";
+import {
+  PERMISSION_PROVIDER_IDS_SETTING,
+  listRegisteredPermissionProviderIds,
+  parsePermissionProviderIds,
+} from "../../permissions/provider-registry.js";
+import {
+  EXTERNAL_AUTHORITY_ASSERTION_SETTING,
+  EXTERNAL_AUTHORITY_AUDIENCE_SETTING,
+  EXTERNAL_AUTHORITY_PUBKEY_SETTING,
+} from "../../permissions/external-authority-provider.js";
+
+/**
+ * Settings `permissions.*` definem QUEM tem autoridade (cadeia de providers e
+ * raiz de confiança externa). Mudar isso equivale a conceder admin system:*,
+ * então exige superadmin — `settings` como grupo exige só admin.
+ */
+const PERMISSION_SETTINGS_PREFIX = "permissions.";
+
+function assertCanMutatePermissionSetting(key: string): void {
+  if (!key.startsWith(PERMISSION_SETTINGS_PREFIX)) return;
+  if (isScopeEnforced(getScopeContext())) {
+    fail(`Permission denied: ${key} requires admin on system:* (superadmin)`);
+  }
+}
 
 /** Notify gateway that config changed */
 function emitConfigChanged() {
@@ -127,6 +152,30 @@ const KNOWN_SETTINGS: Record<string, { description: string; validate?: (value: s
         throw new Error("Invalid value. Must be one of: true, false");
       }
     },
+  },
+  [PERMISSION_PROVIDER_IDS_SETTING]: {
+    description:
+      "Authorization provider chain, comma-separated (default: operator-control,context-capabilities). operator-control is always kept for the local operator. Superadmin only",
+    validate: (value: string) => {
+      const ids = parsePermissionProviderIds(value);
+      const registered = listRegisteredPermissionProviderIds();
+      const unknown = ids.filter((id) => !registered.includes(id));
+      if (ids.length === 0 || unknown.length > 0) {
+        throw new Error(
+          `Invalid provider ids${unknown.length ? `: ${unknown.join(", ")}` : ""}. Available: ${registered.join(", ")}`,
+        );
+      }
+    },
+  },
+  [EXTERNAL_AUTHORITY_ASSERTION_SETTING]: {
+    description: "Path to the signed external authority assertion JSON. Superadmin only",
+  },
+  [EXTERNAL_AUTHORITY_PUBKEY_SETTING]: {
+    description:
+      "External authority public key: inline PEM or path to a PEM file (must not be group/world-writable). Superadmin only",
+  },
+  [EXTERNAL_AUTHORITY_AUDIENCE_SETTING]: {
+    description: "Expected audience (aud) of external authority assertions. Superadmin only",
   },
   defaultAgent: {
     description: "Default agent when no route matches",
@@ -441,6 +490,7 @@ export class SettingsCommands {
     if (isLegacyAccountSetting(key)) {
       fail(`Legacy setting shadowed by instances: ${key}. ${legacyAccountSettingHint(key)}`);
     }
+    assertCanMutatePermissionSetting(key);
 
     // Validate known settings (exact match first, then pattern-based)
     const meta = KNOWN_SETTINGS[key];
@@ -499,6 +549,7 @@ export class SettingsCommands {
     })
     execute?: boolean,
   ) {
+    assertCanMutatePermissionSetting(key);
     const legacy = isLegacyAccountSetting(key);
     const currentValue = dbGetSetting(key);
     // Not-found fires BEFORE the brake (exit 1, never 3).
