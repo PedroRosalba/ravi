@@ -58,6 +58,14 @@ mock.module("../../router/router-db.js", () => ({
   },
 }));
 
+let scopeEnforced = false;
+const actualScopeModule = await import("../../permissions/scope.js");
+mock.module("../../permissions/scope.js", () => ({
+  ...actualScopeModule,
+  getScopeContext: () => ({ agentId: "some-admin-agent" }),
+  isScopeEnforced: () => scopeEnforced,
+}));
+
 const { SettingsCommands } = await import("./settings.js");
 const { ContractError } = await import("../agent-contract.js");
 const { getCommandAccessMetadata } = await import("../decorators.js");
@@ -81,7 +89,29 @@ function captureLogs(run: () => void): string {
 describe("SettingsCommands", () => {
   beforeEach(() => {
     settingsStore = {};
+    scopeEnforced = false;
     emitMock.mockClear();
+  });
+
+  it("requires superadmin to set or delete permissions.* settings", () => {
+    scopeEnforced = true;
+    settingsStore = { "permissions.provider_ids": "operator-control,context-capabilities" };
+    const commands = new SettingsCommands();
+
+    expect(() => commands.set("permissions.provider_ids", "external-authority")).toThrow(/superadmin/);
+    expect(() => commands.set("permissions.external_authority.pubkey", "/tmp/k.pem")).toThrow(/superadmin/);
+    expect(() => commands.delete("permissions.provider_ids", false, true)).toThrow(/superadmin/);
+    expect(settingsStore["permissions.provider_ids"]).toBe("operator-control,context-capabilities");
+
+    scopeEnforced = false;
+    captureLogs(() => commands.set("permissions.provider_ids", "external-authority"));
+    expect(settingsStore["permissions.provider_ids"]).toBe("external-authority");
+  });
+
+  it("rejects unknown permission provider ids", () => {
+    expect(() => new SettingsCommands().set("permissions.provider_ids", "operator-control,nao-existe")).toThrow(
+      /nao-existe/,
+    );
   });
 
   it("hides legacy account settings from the default list output", () => {
@@ -108,7 +138,7 @@ describe("SettingsCommands", () => {
       new SettingsCommands().list(true);
     });
 
-    expect(output).toContain("Settings (18 returned of 18, limit 50, offset 0):");
+    expect(output).toContain("Settings (22 returned of 22, limit 50, offset 0):");
     expect(output).toContain("account.main.dmPolicy: pairing");
     expect(output).toContain("section: legacy");
   });
