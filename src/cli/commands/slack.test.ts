@@ -289,6 +289,7 @@ mock.module("../../contacts.js", () => ({
 
 mock.module("../../router/router-db.js", () => ({
   dbCreateContext: () => null,
+  dbGetSetting: () => null,
   dbFindChat: () => null,
   dbFindChatMessage: () => null,
   dbGetAgent: () => null,

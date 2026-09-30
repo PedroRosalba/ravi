@@ -12,6 +12,8 @@ const actualRouterIndexModule = await import("../router/index.js");
 const actualRouterSessionsModule = await import("../router/sessions.js");
 const actualChatDbModule = await import("../db.js");
 const actualSessionStreamModule = await import("./session-stream.js");
+// Cópia: o namespace é mutado in-place por mock.module.
+const actualContactsModule = { ...(await import("../contacts.js")) };
 const actualDbSaveMessageMeta = actualRouterDbModule.dbSaveMessageMeta;
 const actualDbGetMessageMeta = actualRouterDbModule.dbGetMessageMeta;
 const actualDbUpsertChat = actualRouterDbModule.dbUpsertChat;
@@ -160,6 +162,7 @@ mock.module("../config-store.js", () => ({
 }));
 
 mock.module("../contacts.js", () => ({
+  ...actualContactsModule,
   isContactAllowedForAgent: () => true,
   saveAccountPending: () => false,
   buildMentionedContactPromptContexts: mock((input: { mentions?: Array<{ id: string; displayName?: string }> }) =>
@@ -292,6 +295,9 @@ const { OmniConsumer, supportsOmniReadReceipts } = await import("./consumer.js")
 afterAll(() => {
   loggerChildSpy.mockRestore();
   mock.restore();
+  // mock.restore() não desfaz mock.module: o getContact fake (fallback
+  // { status: "allowed" } sem identities) vazava para outros arquivos.
+  mock.module("../contacts.js", () => actualContactsModule);
 });
 
 describe("supportsOmniReadReceipts", () => {

@@ -221,6 +221,7 @@ mock.module("../../contacts.js", () => ({
 
 mock.module("../../router/router-db.js", () => ({
   getRaviDbPath: () => "/tmp/ravi.db",
+  dbGetSetting: () => null,
   getDb: () => ({
     prepare: () => ({
       all: () => [],
