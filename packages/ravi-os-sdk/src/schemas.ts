@@ -60176,56 +60176,6 @@ export const RuntimeProvidersGrokLoginStatusReturnSchema = {
   "type": "object"
 } as const satisfies SdkJsonSchema;
 
-/** JSON Schema for the input body of `sandbox.template.build`. */
-export const SandboxTemplateBuildInputSchema = {
-  "additionalProperties": false,
-  "properties": {
-    "cpu": {
-      "description": "vCPUs (default 2)",
-      "type": "string"
-    },
-    "memory": {
-      "description": "Memory in MB (default 4096)",
-      "type": "string"
-    },
-    "name": {
-      "description": "Template name",
-      "type": "string"
-    },
-    "ref": {
-      "description": "Ravi branch or tag baked into the template (default dev)",
-      "type": "string"
-    }
-  },
-  "type": "object"
-} as const satisfies SdkJsonSchema;
-
-/** JSON Schema for the return shape of `sandbox.template.build`. */
-export const SandboxTemplateBuildReturnSchema = {
-  "additionalProperties": false,
-  "properties": {
-    "durationMs": {
-      "type": "number"
-    },
-    "name": {
-      "type": "string"
-    },
-    "ref": {
-      "type": "string"
-    },
-    "templateId": {
-      "type": "string"
-    }
-  },
-  "required": [
-    "name",
-    "templateId",
-    "ref",
-    "durationMs"
-  ],
-  "type": "object"
-} as const satisfies SdkJsonSchema;
-
 /** JSON Schema for the input body of `sdk.client.check`. */
 export const SdkClientCheckInputSchema = {
   "additionalProperties": false,

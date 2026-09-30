@@ -29,6 +29,8 @@ const REPO_DIR = "/home/user/work/repo";
 const DAEMON_LOG = "/home/user/.ravi/daemon.log";
 const TERMINAL_STATUSES = new Set(["done", "failed", "blocked"]);
 const CLAUDE_CREDENTIAL_KEYS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
+const CLONE_TIMEOUT_MS = 10 * 60_000;
+const SIGNAL_CLEANUP_TIMEOUT_MS = 15_000;
 
 export class SandboxConfigError extends Error {
   constructor(message: string) {
@@ -77,6 +79,30 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+/** GITHUB_TOKEN is only ever sent to github.com over https. */
+export function githubCloneAuth(repo: string, token?: string): { username: string; password: string } | null {
+  if (!token) return null;
+  try {
+    const url = new URL(repo);
+    if (url.protocol === "https:" && url.hostname === "github.com")
+      return { username: "x-access-token", password: token };
+  } catch {
+    // Not a URL (e.g. scp-style git@host:path); never attach the token.
+  }
+  return null;
+}
+
+/** Turn an E2B CommandExitError into an error that says which command failed and why. */
+export function describeCommandError(cmd: string, err: unknown): Error {
+  if (err && typeof err === "object" && "exitCode" in err) {
+    const { exitCode, stderr } = err as { exitCode?: number; stderr?: string };
+    const label = cmd.length > 120 ? `${cmd.slice(0, 117)}...` : cmd;
+    const tail = (stderr ?? "").trim().split("\n").slice(-20).join("\n");
+    return new Error(`\`${label}\` exited with code ${exitCode}${tail ? `: ${tail}` : ""}`);
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
 // ---------------------------------------------------------------------------
 // Template
 
@@ -123,6 +149,9 @@ export async function buildE2bTemplate(options: BuildE2bTemplateOptions): Promis
       ],
       { user: "root" },
     )
+    // Without this E2B reuses the cached clone layer and a rebuild never picks up
+    // new commits on the ref. Everything from here on (install, build) reruns.
+    .skipCache()
     .gitClone(RAVI_REPO, TEMPLATE_RAVI_DIR, { branch: ref, depth: 1 })
     .runCmd(`cd ${TEMPLATE_RAVI_DIR} && bun install --frozen-lockfile && bun run build`)
     .runCmd("mkdir -p /home/user/.ravi/jetstream /home/user/work")
@@ -164,6 +193,7 @@ export interface SandboxHandle {
         depth?: number;
         username?: string;
         password?: string;
+        timeoutMs?: number;
       },
     ): Promise<unknown>;
   };
@@ -195,6 +225,8 @@ export interface RunSandboxTaskOptions {
   createSandbox?: (input: CreateSandboxInput) => Promise<SandboxHandle>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Called after Ctrl-C/SIGTERM cleanup; defaults to process.exit. */
+  exit?: (code: number) => void;
 }
 
 export interface RunSandboxTaskResult {
@@ -248,19 +280,55 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
   }
   const files: string[] = [];
 
-  const sh = async (cmd: string, cmdTimeoutMs = 120_000) => {
-    const result = await sandbox.commands.run(cmd, { timeoutMs: cmdTimeoutMs });
-    return result.stdout.trim();
+  // Ctrl-C or SIGTERM must not leave a billable, credential-holding sandbox running.
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const onSignal = (signal: NodeJS.Signals) => {
+    step(`${signal} received, ${options.keep ? "pausing" : "killing"} sandbox ${sandbox.sandboxId}`);
+    const cleanup = options.keep ? sandbox.pause() : sandbox.kill();
+    const limit = new Promise((resolve) => setTimeout(resolve, SIGNAL_CLEANUP_TIMEOUT_MS).unref?.());
+    void Promise.race([cleanup, limit])
+      .catch(() => {})
+      .finally(() => exit(signal === "SIGINT" ? 130 : 143));
   };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+
+  const run = async (cmd: string, cmdTimeoutMs = 120_000) => {
+    try {
+      return (await sandbox.commands.run(cmd, { timeoutMs: cmdTimeoutMs })).stdout;
+    } catch (err) {
+      throw describeCommandError(cmd, err);
+    }
+  };
+  const sh = async (cmd: string, cmdTimeoutMs?: number) => (await run(cmd, cmdTimeoutMs)).trim();
+
+  // Tree of the clone's working copy (untracked files included), written with a
+  // throwaway index so the worker's view of `git status` is left untouched.
+  const worktreeTreeCmd =
+    `(cd ${REPO_DIR} && tmp=$(mktemp) && cp .git/index "$tmp" && GIT_INDEX_FILE="$tmp" git add -A && ` +
+    `GIT_INDEX_FILE="$tmp" git write-tree; rc=$?; rm -f "$tmp"; exit $rc)`;
+  // Set once Ravi has scaffolded the worker's cwd, so the patch holds only the
+  // task's changes (committed or not) and not Ravi's AGENTS.md/CLAUDE.md files.
+  let baselineTree: string | null = null;
 
   const collectOutputs = async (taskId: string | null) => {
-    const grab = async (name: string, cmd: string) => {
-      const content = await sh(cmd).catch((error) => `(failed: ${error instanceof Error ? error.message : error})`);
-      writeFileSync(join(outputDir, name), `${content}\n`);
+    const grab = async (name: string, cmd: string, raw = false) => {
+      let content: string;
+      try {
+        // The patch is written byte for byte; trimming would corrupt it.
+        content = raw ? await run(cmd) : `${await sh(cmd)}\n`;
+      } catch (error) {
+        content = `(failed: ${error instanceof Error ? error.message : error})\n`;
+      }
+      writeFileSync(join(outputDir, name), content);
       files.push(name);
     };
     await grab("daemon.log", `tail -500 ${DAEMON_LOG}`);
-    await grab("changes.patch", `cd ${REPO_DIR} && git add -A && git diff --cached HEAD`);
+    await grab(
+      "changes.patch",
+      `cur=$(${worktreeTreeCmd}) && cd ${REPO_DIR} && git diff --binary ${baselineTree ?? "HEAD"} "$cur"`,
+      true,
+    );
     if (taskId) {
       await grab("task.json", `ravi tasks show ${taskId} --json`);
       await grab("TASK.md", `cat /home/user/.ravi/tasks/${taskId}/TASK.md`);
@@ -279,12 +347,19 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
 
     step(`Cloning ${options.repo}`);
     const githubToken = options.credentials.githubToken;
-    await sandbox.git.clone(options.repo, {
-      path: REPO_DIR,
-      branch: options.branch,
-      depth: 50,
-      ...(githubToken ? { username: "x-access-token", password: githubToken } : {}),
-    });
+    try {
+      await sandbox.git.clone(options.repo, {
+        path: REPO_DIR,
+        branch: options.branch,
+        depth: 50,
+        timeoutMs: CLONE_TIMEOUT_MS,
+        ...githubCloneAuth(options.repo, githubToken),
+      });
+    } catch (err) {
+      const cloneError = describeCommandError(`git clone ${options.repo}`, err);
+      if (githubToken) cloneError.message = cloneError.message.replaceAll(githubToken, "***");
+      throw cloneError;
+    }
     // Ravi writes .claude/settings.json into the agent cwd; keep it out of the
     // patch unless the repo already tracks that file.
     await sh(`echo .claude/settings.json >> ${REPO_DIR}/.git/info/exclude`);
@@ -302,6 +377,7 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
     const model = options.model ?? DEFAULT_SANDBOX_MODEL;
     await sh(`ravi agents create worker ${REPO_DIR} --provider claude --model ${shellQuote(model)}`);
     await sh("ravi agents permissions worker full-access --execute");
+    baselineTree = await sh(worktreeTreeCmd);
     // `tasks create` outside a Ravi session needs an existing session to report to.
     await sh("ravi agents create operator /home/user/work --provider claude --model haiku");
     await sh('ravi sessions send -a operator operator "Operator inbox for sandbox task reports. Reply OK."');
@@ -350,6 +426,8 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
   try {
     await collectOutputs(taskId);
   } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
     try {
       if (options.keep) {
         await sandbox.pause();

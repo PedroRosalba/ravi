@@ -19525,57 +19525,6 @@ public struct RuntimeProvidersGrokLoginStatusReturn: Codable, Sendable {
   }
 }
 
-public struct SandboxTemplateBuildOptions: Codable, Sendable {
-  public var cpu: String?
-  public var memory: String?
-  public var ref: String?
-
-  public init(cpu: String? = nil, memory: String? = nil, ref: String? = nil) {
-    self.cpu = cpu
-    self.memory = memory
-    self.ref = ref
-  }
-
-  enum CodingKeys: String, CodingKey {
-    case cpu = "cpu"
-    case memory = "memory"
-    case ref = "ref"
-  }
-
-  func encodeBody(into body: inout [String: RaviJSON]) throws {
-    if let value = self.cpu {
-      body["cpu"] = try RaviJSON.fromEncodable(value)
-    }
-    if let value = self.memory {
-      body["memory"] = try RaviJSON.fromEncodable(value)
-    }
-    if let value = self.ref {
-      body["ref"] = try RaviJSON.fromEncodable(value)
-    }
-  }
-}
-
-public struct SandboxTemplateBuildReturn: Codable, Sendable {
-  public var durationMs: Double
-  public var name: String
-  public var ref: String
-  public var templateId: String
-
-  public init(durationMs: Double, name: String, ref: String, templateId: String) {
-    self.durationMs = durationMs
-    self.name = name
-    self.ref = ref
-    self.templateId = templateId
-  }
-
-  enum CodingKeys: String, CodingKey {
-    case durationMs = "durationMs"
-    case name = "name"
-    case ref = "ref"
-    case templateId = "templateId"
-  }
-}
-
 public struct SdkClientCheckOptions: Codable, Sendable {
   public var out: String?
   public var version: String?

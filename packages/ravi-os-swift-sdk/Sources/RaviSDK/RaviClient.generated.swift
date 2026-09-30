@@ -187,10 +187,6 @@ public final class RaviClient {
     RuntimeNamespace(transport: transport)
   }
 
-  public var sandbox: SandboxNamespace {
-    SandboxNamespace(transport: transport)
-  }
-
   public var sdk: SdkNamespace {
     SdkNamespace(transport: transport)
   }
@@ -4363,35 +4359,6 @@ public struct RuntimeProvidersGrokLoginNamespace: Sendable {
       requestBody["id"] = try RaviJSON.fromEncodable(id)
     }
     return try await transport.call(groupSegments: ["runtime","providers","grok","login"], command: "status", body: requestBody, as: RuntimeProvidersGrokLoginStatusReturn.self)
-  }
-}
-
-public struct SandboxNamespace: Sendable {
-  private let transport: any RaviTransport
-
-  init(transport: any RaviTransport) {
-    self.transport = transport
-  }
-
-  public var template: SandboxTemplateNamespace {
-    SandboxTemplateNamespace(transport: transport)
-  }
-}
-
-public struct SandboxTemplateNamespace: Sendable {
-  private let transport: any RaviTransport
-
-  init(transport: any RaviTransport) {
-    self.transport = transport
-  }
-
-  public func build(_ name: String? = nil, _ options: SandboxTemplateBuildOptions = .init()) async throws -> SandboxTemplateBuildReturn {
-    var requestBody: [String: RaviJSON] = [:]
-    if let name {
-      requestBody["name"] = try RaviJSON.fromEncodable(name)
-    }
-    try options.encodeBody(into: &requestBody)
-    return try await transport.call(groupSegments: ["sandbox","template"], command: "build", body: requestBody, as: SandboxTemplateBuildReturn.self)
   }
 }
 

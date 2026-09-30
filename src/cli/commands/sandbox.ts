@@ -44,7 +44,13 @@ function parsePositiveNumber(value: string | undefined, label: string, fallback:
 function readInstructions(task?: string, taskFile?: string): string {
   if (task?.trim() && taskFile?.trim()) fail("Use either --task or --task-file, not both.");
   if (task?.trim()) return task;
-  if (taskFile?.trim()) return readFileSync(taskFile, "utf8");
+  if (taskFile?.trim()) {
+    try {
+      return readFileSync(taskFile, "utf8");
+    } catch (error) {
+      fail(`Cannot read --task-file: ${errorMessage(error)}`);
+    }
+  }
   fail("--task or --task-file is required.");
 }
 
@@ -134,19 +140,24 @@ export class SandboxCommands {
       fail(errorMessage(error));
     }
 
-    const result = await runE2bSandboxTask({
-      repo,
-      instructions,
-      title,
-      branch,
-      template,
-      model,
-      timeoutMin: timeout,
-      keep,
-      outputDir: output,
-      credentials,
-      onStep: asJson ? undefined : (message) => console.log(message),
-    });
+    let result;
+    try {
+      result = await runE2bSandboxTask({
+        repo,
+        instructions,
+        title,
+        branch,
+        template,
+        model,
+        timeoutMin: timeout,
+        keep,
+        outputDir: output,
+        credentials,
+        onStep: asJson ? undefined : (message) => console.log(message),
+      });
+    } catch (error) {
+      fail(errorMessage(error));
+    }
 
     if (asJson) {
       console.log(JSON.stringify(result, null, 2));
@@ -178,6 +189,9 @@ export class SandboxTemplateCommands {
     action: "template.build",
     risk: "medium",
   })
+  // A template build runs for several minutes, longer than a gateway call may
+  // stay idle, so like `sandbox run` it is only available from the CLI.
+  @CliOnly()
   @Returns(sandboxTemplateBuildReturnSchema)
   async build(
     @Arg("name", { description: "Template name", required: false })

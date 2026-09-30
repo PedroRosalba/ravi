@@ -16767,50 +16767,6 @@ class RuntimeProvidersGrokLoginStatusReturn {
 
 RuntimeProvidersGrokLoginStatusReturn runtimeProvidersGrokLoginStatusReturnFromJson(Object? json) => RuntimeProvidersGrokLoginStatusReturn.fromJsonValue(json);
 
-class SandboxTemplateBuildOptions {
-  const SandboxTemplateBuildOptions({this.cpu, this.memory, this.ref});
-
-  final String? cpu;
-  final String? memory;
-  final String? ref;
-
-  void encodeBody(Map<String, RaviJson> into) {
-    if (cpu != null) {
-      into["cpu"] = RaviJson.from(cpu);
-    }
-    if (memory != null) {
-      into["memory"] = RaviJson.from(memory);
-    }
-    if (ref != null) {
-      into["ref"] = RaviJson.from(ref);
-    }
-  }
-}
-
-class SandboxTemplateBuildReturn {
-  const SandboxTemplateBuildReturn({required this.durationMs, required this.name, required this.ref, required this.templateId});
-
-  final double durationMs;
-  final String name;
-  final String ref;
-  final String templateId;
-
-  factory SandboxTemplateBuildReturn.fromJson(Map<String, Object?> json) {
-    return SandboxTemplateBuildReturn(
-      durationMs: raviJsonAsDouble(json["durationMs"]),
-      name: raviJsonAsString(json["name"]),
-      ref: raviJsonAsString(json["ref"]),
-      templateId: raviJsonAsString(json["templateId"]),
-    );
-  }
-
-  static SandboxTemplateBuildReturn fromJsonValue(Object? json) {
-    return SandboxTemplateBuildReturn.fromJson(raviJsonObject(json, "SandboxTemplateBuildReturn"));
-  }
-}
-
-SandboxTemplateBuildReturn sandboxTemplateBuildReturnFromJson(Object? json) => SandboxTemplateBuildReturn.fromJsonValue(json);
-
 class SdkClientCheckOptions {
   const SdkClientCheckOptions({this.out, this.version});
 

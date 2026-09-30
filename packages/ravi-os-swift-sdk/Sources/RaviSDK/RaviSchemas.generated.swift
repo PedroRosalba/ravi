@@ -61063,58 +61063,6 @@ public enum RaviSchemas {
   }
   """#
 
-  public static let SandboxTemplateBuildInputSchema = #"""
-  {
-    "additionalProperties": false,
-    "properties": {
-      "cpu": {
-        "description": "vCPUs (default 2)",
-        "type": "string"
-      },
-      "memory": {
-        "description": "Memory in MB (default 4096)",
-        "type": "string"
-      },
-      "name": {
-        "description": "Template name",
-        "type": "string"
-      },
-      "ref": {
-        "description": "Ravi branch or tag baked into the template (default dev)",
-        "type": "string"
-      }
-    },
-    "type": "object"
-  }
-  """#
-
-  public static let SandboxTemplateBuildReturnSchema = #"""
-  {
-    "additionalProperties": false,
-    "properties": {
-      "durationMs": {
-        "type": "number"
-      },
-      "name": {
-        "type": "string"
-      },
-      "ref": {
-        "type": "string"
-      },
-      "templateId": {
-        "type": "string"
-      }
-    },
-    "required": [
-      "name",
-      "templateId",
-      "ref",
-      "durationMs"
-    ],
-    "type": "object"
-  }
-  """#
-
   public static let SdkClientCheckInputSchema = #"""
   {
     "additionalProperties": false,

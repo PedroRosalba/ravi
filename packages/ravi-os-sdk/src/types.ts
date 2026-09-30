@@ -12120,22 +12120,6 @@ export type RuntimeProvidersGrokLoginStatusReturn = {
   };
 };
 
-/** Input shape for `sandbox.template.build`. */
-export type SandboxTemplateBuildInput = {
-  cpu?: string;
-  memory?: string;
-  name?: string;
-  ref?: string;
-};
-
-/** Return shape for `sandbox.template.build`. */
-export type SandboxTemplateBuildReturn = {
-  durationMs: number;
-  name: string;
-  ref: string;
-  templateId: string;
-};
-
 /** Input shape for `sdk.client.check`. */
 export type SdkClientCheckInput = {
   out?: string;

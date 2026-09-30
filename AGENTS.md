@@ -374,9 +374,12 @@ ravi sandbox run --repo https://github.com/owner/repo.git --task "..." \
 
 - Credentials come from the environment: `E2B_API_KEY`, plus `CLAUDE_CODE_OAUTH_TOKEN` or
   `ANTHROPIC_API_KEY` (the `RAVI_`-prefixed names also work, for hosts that hide the standard ones).
-  `GITHUB_TOKEN` is used only to clone private repos.
+  `GITHUB_TOKEN` is used only to clone private repos, and only for `https://github.com/...` URLs.
 - Outputs default to `~/.ravi/sandbox-runs/<sandbox-id>/`. Exit code is 1 unless the task ends `done`.
-- `--keep` pauses the sandbox instead of killing it.
+- `changes.patch` holds everything the task changed, committed or not, minus the `AGENTS.md`/`CLAUDE.md`
+  scaffolding Ravi adds to the worker's cwd. Apply it with `git apply`.
+- `--keep` pauses the sandbox instead of killing it. Ctrl-C kills (or, with `--keep`, pauses) it too.
+- Both commands are CLI-only (not exposed through the gateway/SDK): they run for minutes and use host paths.
 
 ## Router (`~/.ravi/ravi.db`)
 

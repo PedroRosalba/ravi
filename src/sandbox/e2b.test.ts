@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   SandboxConfigError,
+  describeCommandError,
+  githubCloneAuth,
   resolveSandboxCredentials,
   runE2bSandboxTask,
   shellQuote,
@@ -25,13 +27,17 @@ afterEach(() => {
 interface FakeOptions {
   statuses?: string[];
   failOn?: RegExp;
+  failWith?: unknown;
 }
+
+const PATCH = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n \n-a\n+b\n";
 
 function fakeSandbox(options: FakeOptions = {}) {
   const commands: string[] = [];
   const statuses = [...(options.statuses ?? ["in_progress", "done"])];
   const state = {
     killed: false,
+    kills: 0,
     paused: false,
     created: null as CreateSandboxInput | null,
     cloned: null as unknown,
@@ -41,7 +47,7 @@ function fakeSandbox(options: FakeOptions = {}) {
     commands: {
       async run(cmd) {
         commands.push(cmd);
-        if (options.failOn?.test(cmd)) throw new Error(`boom: ${cmd}`);
+        if (options.failOn?.test(cmd)) throw options.failWith ?? new Error(`boom: ${cmd}`);
         if (cmd.startsWith("ravi tasks create")) return { stdout: JSON.stringify({ task: { id: "task-1" } }) };
         if (cmd.startsWith("ravi tasks show")) {
           const status = statuses.length > 1 ? statuses.shift() : statuses[0];
@@ -55,7 +61,8 @@ function fakeSandbox(options: FakeOptions = {}) {
             }),
           };
         }
-        if (cmd.includes("git diff")) return { stdout: "diff --git a/x b/x" };
+        if (cmd.includes("git diff")) return { stdout: PATCH };
+        if (cmd.includes("git write-tree")) return { stdout: "tree-base\n" };
         if (cmd.startsWith("cat ")) return { stdout: "# TASK" };
         return { stdout: "" };
       },
@@ -67,6 +74,7 @@ function fakeSandbox(options: FakeOptions = {}) {
     },
     async kill() {
       state.killed = true;
+      state.kills += 1;
     },
     async pause() {
       state.paused = true;
@@ -141,7 +149,85 @@ describe("runE2bSandboxTask", () => {
     expect(fake.commands.some((cmd) => cmd.includes(`--instructions 'Fix it'\\''s typo'`))).toBe(true);
     expect(fake.commands.some((cmd) => cmd.includes(".git/info/exclude"))).toBe(true);
     expect(result.files.sort()).toEqual(["TASK.md", "changes.patch", "daemon.log", "task.json"]);
-    expect(readFileSync(join(outputDir, "changes.patch"), "utf8")).toContain("diff --git");
+    // Written byte for byte: trimming would drop the blank context line and the final newline.
+    expect(readFileSync(join(outputDir, "changes.patch"), "utf8")).toBe(PATCH);
+    // The patch is taken against the tree captured after Ravi scaffolded the worker's cwd.
+    const baselineAt = fake.commands.findIndex((cmd) => cmd.includes("git write-tree"));
+    const permissionsAt = fake.commands.findIndex((cmd) => cmd.startsWith("ravi agents permissions worker"));
+    const tasksAt = fake.commands.findIndex((cmd) => cmd.startsWith("ravi tasks create"));
+    expect(baselineAt).toBeGreaterThan(permissionsAt);
+    expect(baselineAt).toBeLessThan(tasksAt);
+    expect(fake.commands.some((cmd) => cmd.includes("git diff --binary tree-base"))).toBe(true);
+    expect(fake.state.cloned).toMatchObject({ timeoutMs: 600_000 });
+  });
+
+  it("sends GITHUB_TOKEN only when cloning from github.com over https", async () => {
+    const fake = fakeSandbox();
+    await runE2bSandboxTask({
+      repo: "https://gitlab.example.com/o/r.git",
+      instructions: "x",
+      credentials: { ...credentials, githubToken: "ghp_secret" },
+      outputDir: tempDir(),
+      createSandbox: fake.create,
+      sleep: async () => {},
+    });
+    expect(fake.state.cloned).not.toHaveProperty("password");
+
+    expect(githubCloneAuth("https://github.com/o/r.git", "t")).toEqual({ username: "x-access-token", password: "t" });
+    expect(githubCloneAuth("http://github.com/o/r.git", "t")).toBeNull();
+    expect(githubCloneAuth("https://github.com.evil.dev/o/r.git", "t")).toBeNull();
+    expect(githubCloneAuth("git@github.com:o/r.git", "t")).toBeNull();
+    expect(githubCloneAuth("https://github.com/o/r.git")).toBeNull();
+  });
+
+  it("reports which command failed with its stderr", async () => {
+    const fake = fakeSandbox({
+      failOn: /ravi agents create worker/,
+      failWith: Object.assign(new Error("exit status 1"), {
+        exitCode: 2,
+        stderr: "noise\nprovider claude is not configured\n",
+      }),
+    });
+    const result = await runE2bSandboxTask({
+      repo: "https://github.com/o/r.git",
+      instructions: "x",
+      credentials,
+      outputDir: tempDir(),
+      createSandbox: fake.create,
+      sleep: async () => {},
+    });
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("ravi agents create worker");
+    expect(result.error).toContain("exited with code 2");
+    expect(result.error).toContain("provider claude is not configured");
+    expect(describeCommandError("x", new Error("plain")).message).toBe("plain");
+  });
+
+  it("kills the sandbox on Ctrl-C and removes its signal handlers afterwards", async () => {
+    const fake = fakeSandbox({ statuses: ["in_progress", "done"] });
+    const before = process.listeners("SIGINT");
+    const termBefore = process.listeners("SIGTERM");
+    const exits: number[] = [];
+    await runE2bSandboxTask({
+      repo: "https://github.com/o/r.git",
+      instructions: "x",
+      credentials,
+      outputDir: tempDir(),
+      createSandbox: fake.create,
+      exit: (code) => {
+        exits.push(code);
+      },
+      sleep: async () => {
+        const handler = process.listeners("SIGINT").find((listener) => !before.includes(listener));
+        (handler as (signal: NodeJS.Signals) => void)("SIGINT");
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      },
+    });
+    // Once from the signal handler, once from the normal cleanup (exit is stubbed here).
+    expect(fake.state.kills).toBe(2);
+    expect(exits).toEqual([130]);
+    expect(process.listeners("SIGINT")).toEqual(before);
+    expect(process.listeners("SIGTERM")).toEqual(termBefore);
   });
 
   it("reports the error, still collects logs and pauses when keep is set", async () => {
