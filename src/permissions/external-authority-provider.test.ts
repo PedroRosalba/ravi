@@ -4,14 +4,22 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  EXTERNAL_AUTHORITY_ASSERTION_SETTING,
   EXTERNAL_AUTHORITY_PROVIDER_ID,
+  EXTERNAL_AUTHORITY_PUBKEY_SETTING,
   canonicalize,
   createExternalAuthorityProvider,
   evaluateExternalAssertion,
+  isInlinePem,
+  readExternalAuthorityConfig,
   resetExternalAuthorityCacheForTests,
 } from "./external-authority-provider.js";
 import { authorizePermission } from "./provider-runtime.js";
-import { DEFAULT_PERMISSION_PROVIDER_IDS, getConfiguredPermissionProviders } from "./provider-registry.js";
+import {
+  DEFAULT_PERMISSION_PROVIDER_IDS,
+  PERMISSION_PROVIDER_IDS_SETTING,
+  getConfiguredPermissionProviders,
+} from "./provider-registry.js";
 import type { PermissionProviderRequest } from "./provider-types.js";
 
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -41,6 +49,8 @@ function signed(assertion: Record<string, unknown>): Record<string, unknown> {
   return { ...assertion, sig: signature };
 }
 
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+
 const request: PermissionProviderRequest = {
   subject: { type: "agent", id: "cursor-grok-lab" },
   permission: "execute",
@@ -63,7 +73,7 @@ describe("external authority provider", () => {
       signed({
         iss: "https://console.ravi.bot",
         sub: "agent:cursor-grok-lab",
-        exp: Date.now() + 60_000,
+        exp: nowSeconds() + 60,
         scope: [{ permission: "execute", objectType: "group", objectId: "pages" }],
       }),
     );
@@ -77,7 +87,7 @@ describe("external authority provider", () => {
       signed({
         iss: "issuer",
         sub: "agent:cursor-grok-lab",
-        exp: Date.now() + 60_000,
+        exp: nowSeconds() + 60,
         scope: [{ permission: "execute", objectType: "*", objectId: "*" }],
       }),
     );
@@ -89,7 +99,7 @@ describe("external authority provider", () => {
       signed({
         iss: "issuer",
         sub: "agent:cursor-grok-lab",
-        exp: Date.now() + 60_000,
+        exp: nowSeconds() + 60,
         scope: [{ permission: "execute", objectType: "group", objectId: "pages", requiresApproval: true }],
       }),
     );
@@ -102,7 +112,7 @@ describe("external authority provider", () => {
       signed({
         iss: "issuer",
         sub: "agent:cursor-grok-lab",
-        exp: Date.now() + 60_000,
+        exp: nowSeconds() + 60,
         scope: [{ permission: "read", objectType: "group", objectId: "pages" }],
       }),
     );
@@ -114,7 +124,7 @@ describe("external authority provider", () => {
     const assertion = signed({
       iss: "issuer",
       sub: "agent:cursor-grok-lab",
-      exp: Date.now() + 60_000,
+      exp: nowSeconds() + 60,
       scope: [{ permission: "execute", objectType: "group", objectId: "pages" }],
     });
     const tampered = { ...assertion, scope: [{ permission: "execute", objectType: "*", objectId: "*" }] };
@@ -128,7 +138,7 @@ describe("external authority provider", () => {
       signed({
         iss: "issuer",
         sub: "agent:cursor-grok-lab",
-        exp: Date.now() - 1_000,
+        exp: nowSeconds() - 1,
         scope: [{ permission: "execute", objectType: "group", objectId: "pages" }],
       }),
     );
@@ -136,12 +146,44 @@ describe("external authority provider", () => {
     expect(verdict.reasonCode).toBe("external_assertion_expired");
   });
 
+  it("interpreta exp em segundos (convenção JWT)", () => {
+    const verdict = evaluate(
+      signed({
+        iss: "issuer",
+        sub: "agent:cursor-grok-lab",
+        exp: 1_790_000_000,
+        scope: [{ permission: "execute", objectType: "group", objectId: "pages" }],
+      }),
+      1_789_999_000 * 1000,
+    );
+    expect(verdict.decision).toBe("allow");
+  });
+
+  for (const [label, exp] of [
+    ["ausente", undefined],
+    ["null", null],
+    ["string", "1790000000"],
+  ] as const) {
+    it(`deny quando exp é ${label} (afirmação sem validade não vale para sempre)`, () => {
+      const verdict = evaluate(
+        signed({
+          iss: "issuer",
+          sub: "agent:cursor-grok-lab",
+          exp,
+          scope: [{ permission: "execute", objectType: "group", objectId: "pages" }],
+        }),
+      );
+      expect(verdict.decision).toBe("deny");
+      expect(verdict.reasonCode).toBe("external_assertion_malformed");
+    });
+  }
+
   it("deny quando o subject não é o do pedido", () => {
     const verdict = evaluate(
       signed({
         iss: "issuer",
         sub: "agent:outro-agente",
-        exp: Date.now() + 60_000,
+        exp: nowSeconds() + 60,
         scope: [{ permission: "execute", objectType: "group", objectId: "pages" }],
       }),
     );
@@ -156,7 +198,7 @@ describe("external authority provider", () => {
           iss: "issuer",
           sub: "agent:cursor-grok-lab",
           aud: "outra-instalacao",
-          exp: Date.now() + 60_000,
+          exp: nowSeconds() + 60,
           scope: [{ permission: "execute", objectType: "group", objectId: "pages" }],
         }),
       ),
@@ -198,7 +240,7 @@ describe("external authority provider", () => {
       signed({
         iss: "issuer",
         sub: "agent:cursor-grok-lab",
-        exp: Date.now() + 60_000,
+        exp: nowSeconds() + 60,
         scope: [{ permission: "execute", objectType: "group", objectId: "pages" }],
       }),
     );
@@ -209,23 +251,72 @@ describe("external authority provider", () => {
   });
 });
 
+describe("external authority config", () => {
+  it("reconhece qualquer bloco PEM como inline", () => {
+    expect(isInlinePem(publicKeyPem)).toBe(true);
+    expect(isInlinePem("-----BEGIN RSA PUBLIC KEY-----\nabc")).toBe(true);
+    expect(isInlinePem("-----BEGIN CERTIFICATE-----\nabc")).toBe(true);
+    expect(isInlinePem("/etc/ravi/authority.pem")).toBe(false);
+  });
+
+  it("lê a config dos settings do host, não do env", () => {
+    const previous = process.env.RAVI_EXTERNAL_AUTHORITY_ASSERTION;
+    process.env.RAVI_EXTERNAL_AUTHORITY_ASSERTION = "/tmp/forjado.json";
+    try {
+      expect(readExternalAuthorityConfig(() => null)).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.RAVI_EXTERNAL_AUTHORITY_ASSERTION;
+      else process.env.RAVI_EXTERNAL_AUTHORITY_ASSERTION = previous;
+    }
+  });
+
+  it("deny explícito quando o arquivo da pubkey não existe", () => {
+    const settings: Record<string, string> = {
+      [EXTERNAL_AUTHORITY_ASSERTION_SETTING]: join(dir, "assertion.json"),
+      [EXTERNAL_AUTHORITY_PUBKEY_SETTING]: join(dir, "nao-existe.pem"),
+    };
+    const provider = createExternalAuthorityProvider(() => readExternalAuthorityConfig((key) => settings[key] ?? null));
+    const decision = provider.authorize(request);
+    expect(decision.decision).toBe("deny");
+    expect(decision.reasonCode).toBe("external_authority_pubkey_unreadable");
+  });
+});
+
+const chainSetting = (value: string | null) => (key: string) =>
+  key === PERMISSION_PROVIDER_IDS_SETTING ? value : null;
+
 describe("permission provider chain", () => {
   it("mantém a cadeia default quando nada é configurado", () => {
-    const providers = getConfiguredPermissionProviders({} as NodeJS.ProcessEnv);
+    const providers = getConfiguredPermissionProviders(chainSetting(null));
     expect(providers.map((provider) => provider.id)).toEqual([...DEFAULT_PERMISSION_PROVIDER_IDS]);
   });
 
+  it("mantém a cadeia default quando o banco não está disponível", () => {
+    const providers = getConfiguredPermissionProviders(() => {
+      throw new Error("no db");
+    });
+    expect(providers.map((provider) => provider.id)).toEqual([...DEFAULT_PERMISSION_PROVIDER_IDS]);
+  });
+
+  it("ignora RAVI_PERMISSION_PROVIDER_IDS no env (controlável pelo agente)", () => {
+    const previous = process.env.RAVI_PERMISSION_PROVIDER_IDS;
+    process.env.RAVI_PERMISSION_PROVIDER_IDS = "external-authority";
+    try {
+      const providers = getConfiguredPermissionProviders(chainSetting(null));
+      expect(providers.map((provider) => provider.id)).toEqual([...DEFAULT_PERMISSION_PROVIDER_IDS]);
+    } finally {
+      if (previous === undefined) delete process.env.RAVI_PERMISSION_PROVIDER_IDS;
+      else process.env.RAVI_PERMISSION_PROVIDER_IDS = previous;
+    }
+  });
+
   it("aceita a autoridade externa na cadeia por configuração", () => {
-    const providers = getConfiguredPermissionProviders({
-      RAVI_PERMISSION_PROVIDER_IDS: "external-authority",
-    } as NodeJS.ProcessEnv);
+    const providers = getConfiguredPermissionProviders(chainSetting("external-authority"));
     expect(providers.map((provider) => provider.id)).toEqual([EXTERNAL_AUTHORITY_PROVIDER_ID]);
   });
 
   it("nega (fail-closed) quando um id configurado não existe", () => {
-    const providers = getConfiguredPermissionProviders({
-      RAVI_PERMISSION_PROVIDER_IDS: "operator-control,provider-que-nao-existe",
-    } as NodeJS.ProcessEnv);
+    const providers = getConfiguredPermissionProviders(chainSetting("operator-control,provider-que-nao-existe"));
     const decision = authorizePermission(request, { providers });
     expect(decision.decision).toBe("deny");
     expect(decision.allowed).toBe(false);
@@ -233,9 +324,7 @@ describe("permission provider chain", () => {
   });
 
   it("cadeia externa nega sem afirmação válida, mesmo com o resto saudável", () => {
-    const providers = getConfiguredPermissionProviders({
-      RAVI_PERMISSION_PROVIDER_IDS: "external-authority",
-    } as NodeJS.ProcessEnv);
+    const providers = getConfiguredPermissionProviders(chainSetting("external-authority"));
     const decision = authorizePermission(request, { providers });
     expect(decision.decision).toBe("deny");
     expect(decision.reasonCode).toBe("external_authority_not_configured");

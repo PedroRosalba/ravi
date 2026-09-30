@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
-import type { ContextCapability } from "../router/router-db.js";
+import { dbGetSetting, type ContextCapability } from "../router/router-db.js";
 import type { PermissionProvider, PermissionProviderDecision, PermissionProviderRequest } from "./provider-types.js";
 
 /**
@@ -10,18 +10,26 @@ import type { PermissionProvider, PermissionProviderDecision, PermissionProvider
  * Ravi apenas VERIFICA localmente. Não há chamada de rede no caminho crítico:
  * a afirmação é lida de um arquivo e validada com chave pública.
  *
- * Fail-closed por construção: ausência, expiração, assinatura inválida ou
- * escopo que não cobre o pedido resultam em `deny`. Nunca `allow` por engano,
- * nunca fallback silencioso para outra fonte de autoridade.
+ * Fail-closed por construção: ausência, expiração (ou `exp` ausente),
+ * assinatura inválida ou escopo que não cobre o pedido resultam em `deny`.
+ * Nunca `allow` por engano, nunca fallback silencioso para outra fonte de
+ * autoridade.
  *
- * Configuração (env):
- *   RAVI_EXTERNAL_AUTHORITY_ASSERTION  caminho do JSON assinado (obrigatório)
- *   RAVI_EXTERNAL_AUTHORITY_PUBKEY     PEM inline ou caminho de arquivo PEM (obrigatório)
- *   RAVI_EXTERNAL_AUTHORITY_AUD        audience esperada (opcional, recomendado)
+ * `iat`/`exp` seguem a convenção JWT: segundos desde epoch. `exp` é obrigatório.
+ *
+ * Configuração (settings do host, nunca env — o env do processo é controlável
+ * pelo agente que está sendo autorizado):
+ *   permissions.external_authority.assertion  caminho do JSON assinado (obrigatório)
+ *   permissions.external_authority.pubkey     PEM inline ou caminho de arquivo PEM (obrigatório)
+ *   permissions.external_authority.audience   audience esperada (opcional, recomendado)
  */
 
 export const EXTERNAL_AUTHORITY_PROVIDER_ID = "external-authority";
 export const EXTERNAL_AUTHORITY_PROVIDER_VERSION = "0.1.0";
+
+export const EXTERNAL_AUTHORITY_ASSERTION_SETTING = "permissions.external_authority.assertion";
+export const EXTERNAL_AUTHORITY_PUBKEY_SETTING = "permissions.external_authority.pubkey";
+export const EXTERNAL_AUTHORITY_AUDIENCE_SETTING = "permissions.external_authority.audience";
 
 export interface ExternalScope {
   permission: string;
@@ -49,6 +57,7 @@ export interface ExternalAuthorityConfig {
 
 export type ExternalAuthorityFailure =
   | "external_authority_not_configured"
+  | "external_authority_pubkey_unreadable"
   | "external_assertion_missing"
   | "external_assertion_unreadable"
   | "external_assertion_malformed"
@@ -83,12 +92,36 @@ export function assertionFingerprint(assertion: ExternalAssertion): string {
   return `sha256:${createHash("sha256").update(canonicalize(payload)).digest("hex")}`;
 }
 
-export function readExternalAuthorityConfig(env: NodeJS.ProcessEnv = process.env): ExternalAuthorityConfig | null {
-  const assertionPath = env.RAVI_EXTERNAL_AUTHORITY_ASSERTION?.trim();
-  const pubkeyRaw = env.RAVI_EXTERNAL_AUTHORITY_PUBKEY?.trim();
+/** Qualquer bloco PEM (SPKI, PKCS#1, certificado) é inline; o resto é caminho. */
+export function isInlinePem(value: string): boolean {
+  return value.trimStart().startsWith("-----BEGIN ");
+}
+
+export class ExternalAuthorityConfigError extends Error {
+  constructor(
+    readonly reasonCode: "external_authority_pubkey_unreadable",
+    readonly path: string,
+  ) {
+    super(`${reasonCode}: ${path}`);
+  }
+}
+
+function readSetting(getSetting: (key: string) => string | null, key: string): string | undefined {
+  try {
+    return getSetting(key)?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function readExternalAuthorityConfig(
+  getSetting: (key: string) => string | null = dbGetSetting,
+): ExternalAuthorityConfig | null {
+  const assertionPath = readSetting(getSetting, EXTERNAL_AUTHORITY_ASSERTION_SETTING);
+  const pubkeyRaw = readSetting(getSetting, EXTERNAL_AUTHORITY_PUBKEY_SETTING);
   if (!assertionPath || !pubkeyRaw) return null;
-  const audience = env.RAVI_EXTERNAL_AUTHORITY_AUD?.trim() || undefined;
-  const publicKeyPem = pubkeyRaw.includes("BEGIN PUBLIC KEY") ? pubkeyRaw : readFileSync(pubkeyRaw, "utf8");
+  const audience = readSetting(getSetting, EXTERNAL_AUTHORITY_AUDIENCE_SETTING);
+  const publicKeyPem = isInlinePem(pubkeyRaw) ? pubkeyRaw : readPubkeyFile(pubkeyRaw);
   return { assertionPath, publicKeyPem, audience };
 }
 
@@ -172,8 +205,12 @@ export function evaluateExternalAssertion(input: {
       evidence: [{ ...audit, expectedAudience: input.audience }],
     };
   }
-  const now = input.now ?? Date.now();
-  if (typeof assertion.exp === "number" && now >= assertion.exp) {
+  // Segundos (convenção JWT). Sem `exp` numérico e finito = sem validade = deny.
+  const now = Math.floor((input.now ?? Date.now()) / 1000);
+  if (typeof assertion.exp !== "number" || !Number.isFinite(assertion.exp)) {
+    return { decision: "deny", reasonCode: "external_assertion_malformed", evidence: [{ ...audit, kind: "exp" }] };
+  }
+  if (now >= assertion.exp) {
     return { decision: "deny", reasonCode: "external_assertion_expired", evidence: [{ ...audit, now }] };
   }
   if (assertion.scope.length === 0) {
@@ -192,6 +229,26 @@ export function evaluateExternalAssertion(input: {
 
 type CacheEntry = { mtimeMs: number; size: number; raw: string };
 const assertionCache = new Map<string, CacheEntry>();
+const pubkeyCache = new Map<string, CacheEntry>();
+
+function readPubkeyFile(path: string): string {
+  let stat: ReturnType<typeof statSync>;
+  try {
+    stat = statSync(path);
+  } catch {
+    pubkeyCache.delete(path);
+    throw new ExternalAuthorityConfigError("external_authority_pubkey_unreadable", path);
+  }
+  const cached = pubkeyCache.get(path);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.raw;
+  try {
+    const raw = readFileSync(path, "utf8");
+    pubkeyCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, raw });
+    return raw;
+  } catch {
+    throw new ExternalAuthorityConfigError("external_authority_pubkey_unreadable", path);
+  }
+}
 
 /** Leitura com cache por mtime/tamanho: evita I/O repetido sem mascarar mudança. */
 function readAssertionRaw(
@@ -217,6 +274,7 @@ function readAssertionRaw(
 
 export function resetExternalAuthorityCacheForTests(): void {
   assertionCache.clear();
+  pubkeyCache.clear();
 }
 
 function decisionFor(
@@ -250,13 +308,23 @@ export function createExternalAuthorityProvider(
       return Boolean(subjectRef(request));
     },
     authorize(request: PermissionProviderRequest): PermissionProviderDecision {
-      const config = readConfig();
+      let config: ExternalAuthorityConfig | null;
+      try {
+        config = readConfig();
+      } catch (error) {
+        if (!(error instanceof ExternalAuthorityConfigError)) throw error;
+        return decisionFor(request, {
+          decision: "deny",
+          reasonCode: error.reasonCode,
+          evidence: [{ kind: "config", setting: EXTERNAL_AUTHORITY_PUBKEY_SETTING, path: error.path }],
+        });
+      }
       if (!config) {
         return decisionFor(request, {
           decision: "deny",
           reasonCode: "external_authority_not_configured",
           evidence: [
-            { kind: "config", expected: ["RAVI_EXTERNAL_AUTHORITY_ASSERTION", "RAVI_EXTERNAL_AUTHORITY_PUBKEY"] },
+            { kind: "config", expected: [EXTERNAL_AUTHORITY_ASSERTION_SETTING, EXTERNAL_AUTHORITY_PUBKEY_SETTING] },
           ],
         });
       }

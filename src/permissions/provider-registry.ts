@@ -1,3 +1,4 @@
+import { dbGetSetting } from "../router/router-db.js";
 import { contextCapabilitiesProvider } from "./context-capabilities-provider.js";
 import type { PermissionProvider, PermissionProviderDecision, PermissionProviderRequest } from "./provider-types.js";
 import { agentIdentityPermissionsProvider } from "./agent-identity-permissions-provider.js";
@@ -12,9 +13,13 @@ export const localOperatorProvider: PermissionProvider = operatorControlProvider
 /**
  * Registro de providers de autorização endereçáveis por id.
  *
- * A cadeia passa a ser escolhida por configuração (`RAVI_PERMISSION_PROVIDER_IDS`),
- * em vez de constante — é o ponto que faltava para plugar uma autoridade
- * EXTERNA (on-chain, serviço, MCP) sem editar o runtime.
+ * A cadeia passa a ser escolhida por configuração (setting
+ * `permissions.provider_ids`), em vez de constante — é o ponto que faltava para
+ * plugar uma autoridade EXTERNA (on-chain, serviço, MCP) sem editar o runtime.
+ *
+ * A configuração vem do banco do host, NUNCA do env do processo: a checagem de
+ * permissão roda dentro do `ravi` que o próprio agente dispara pelo Bash, então
+ * env controlável pelo agente decidiria quem tem autoridade sobre ele.
  */
 const PROVIDER_REGISTRY: Record<string, () => PermissionProvider> = {
   "operator-control": () => operatorControlProvider,
@@ -25,6 +30,10 @@ const PROVIDER_REGISTRY: Record<string, () => PermissionProvider> = {
 export const DEFAULT_PERMISSION_PROVIDER_IDS = ["operator-control", "context-capabilities"] as const;
 
 export const EXTERNAL_AUTHORITY_PROVIDER_IDS = ["external-authority"] as const;
+
+export const PERMISSION_PROVIDER_IDS_SETTING = "permissions.provider_ids";
+
+export type PermissionSettingReader = (key: string) => string | null;
 
 /**
  * Provider que representa uma configuração inválida.
@@ -65,10 +74,27 @@ export function parsePermissionProviderIds(raw: string | undefined | null): stri
     .filter((entry) => entry.length > 0);
 }
 
-export function getConfiguredPermissionProviders(env: NodeJS.ProcessEnv = process.env): PermissionProvider[] {
-  const configured = parsePermissionProviderIds(env.RAVI_PERMISSION_PROVIDER_IDS);
-  const ids = configured.length > 0 ? configured : [...DEFAULT_PERMISSION_PROVIDER_IDS];
-  return ids.map((id) => PROVIDER_REGISTRY[id]?.() ?? unavailableProvider(id));
+function readProviderIdsSetting(getSetting: PermissionSettingReader): string | null {
+  try {
+    return getSetting(PERMISSION_PROVIDER_IDS_SETTING);
+  } catch {
+    // Sem banco (bootstrap/testes): a cadeia default é a constante histórica,
+    // que não concede autoridade nova — seguro cair nela.
+    return null;
+  }
+}
+
+export function getConfiguredPermissionProviderIds(getSetting: PermissionSettingReader = dbGetSetting): string[] {
+  const configured = parsePermissionProviderIds(readProviderIdsSetting(getSetting));
+  return configured.length > 0 ? configured : [...DEFAULT_PERMISSION_PROVIDER_IDS];
+}
+
+export function getConfiguredPermissionProviders(
+  getSetting: PermissionSettingReader = dbGetSetting,
+): PermissionProvider[] {
+  return getConfiguredPermissionProviderIds(getSetting).map(
+    (id) => PROVIDER_REGISTRY[id]?.() ?? unavailableProvider(id),
+  );
 }
 
 export function listRegisteredPermissionProviderIds(): string[] {

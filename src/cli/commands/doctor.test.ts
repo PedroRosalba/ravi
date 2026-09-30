@@ -298,6 +298,24 @@ describe("inspectDoctor", () => {
     expect(rewritten.hooks.PreToolUse[0]?.matcher).toBe("^(Bash|shell)$");
   });
 
+  it("accepts a custom authorization chain made of registered providers", () => {
+    const deps = makeHealthyDeps();
+    deps.getConfiguredPermissionProviders = () => [{ id: "external-authority" }] as any;
+    const report = inspectDoctor(deps);
+    const check = report.checks.find((item) => item.id === "permissions.provider_runtime_default_chain");
+    expect(check?.status).toBe("pass");
+    expect(check?.data?.customAuthorization).toBe(true);
+  });
+
+  it("fails the authorization chain check when a configured provider is unregistered", () => {
+    const deps = makeHealthyDeps();
+    deps.getConfiguredPermissionProviders = () => [{ id: "operator-control" }, { id: "unavailable:nao-existe" }] as any;
+    const report = inspectDoctor(deps);
+    const check = report.checks.find((item) => item.id === "permissions.provider_runtime_default_chain");
+    expect(check?.status).toBe("fail");
+    expect(check?.data?.unavailableAuthorization).toEqual(["unavailable:nao-existe"]);
+  });
+
   it("passes the disk/temp pressure check when free space is healthy", () => {
     const deps = makeHealthyDeps();
     const report = inspectDoctor(deps);
