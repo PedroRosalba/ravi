@@ -184,21 +184,16 @@ export function shouldAutoUseHostCliGateway(env: NodeJS.ProcessEnv = process.env
 
 /**
  * State dirs that may hold the host CLI gateway socket, in probe order.
- * `RAVI_STATE_DIR` wins (the daemon's sessions inherit it). Otherwise the OS
- * account home comes first, so `HOME=/tmp/x ravi ...` does not lose the host
- * socket; `$HOME` stays as a fallback for a daemon started with its own HOME.
+ * `RAVI_STATE_DIR` wins (the daemon's sessions inherit it). Otherwise only the
+ * OS account home is used, never `$HOME`: `HOME=/tmp/x ravi ...` must neither
+ * lose the host socket nor reach a socket the caller planted under that HOME.
+ * A daemon with a non-default state dir publishes it via `RAVI_STATE_DIR`.
  * Either way a missing socket fails closed (`requiresRemoteGateway`).
  */
 export function resolveHostCliGatewayStateDirs(env: NodeJS.ProcessEnv = process.env): string[] {
   const explicit = env.RAVI_STATE_DIR?.trim();
   if (explicit) return [explicit];
-  const dirs = [join(accountHomedir(), ".ravi")];
-  const envHome = env.HOME?.trim();
-  if (envHome) {
-    const envDir = join(envHome, ".ravi");
-    if (!dirs.includes(envDir)) dirs.push(envDir);
-  }
-  return dirs;
+  return [join(accountHomedir(), ".ravi")];
 }
 
 function accountHomedir(): string {

@@ -757,12 +757,9 @@ describe("gateway requirement for runtime context keys", () => {
     expect(error.message).not.toContain("rctx_");
   });
 
-  it("probes the account home before $HOME", async () => {
+  it("probes only the account home, never $HOME", async () => {
     const accountDir = join(userInfo().homedir, ".ravi");
-    expect(resolveHostCliGatewayStateDirs({ HOME: "/tmp/agent-controlled" })).toEqual([
-      accountDir,
-      "/tmp/agent-controlled/.ravi",
-    ]);
+    expect(resolveHostCliGatewayStateDirs({ HOME: "/tmp/agent-controlled" })).toEqual([accountDir]);
     const probed: string[] = [];
     const config = await resolveRemoteGatewayConfig(
       { RAVI_CONTEXT_KEY: "rctx_test", HOME: "/tmp/agent-controlled" },
@@ -778,13 +775,13 @@ describe("gateway requirement for runtime context keys", () => {
     expect(config?.socketPath).toBe(join(accountDir, "cli-gateway.sock"));
   });
 
-  it("falls back to $HOME when the account home has no socket", async () => {
+  it("does not reach a socket planted under $HOME when the account home has none", async () => {
     const config = await resolveRemoteGatewayConfig(
-      { RAVI_CONTEXT_KEY: "rctx_test", HOME: "/srv/daemon-home" },
+      { RAVI_CONTEXT_KEY: "rctx_test", HOME: "/tmp/agent-controlled" },
       "pages published",
-      { probeSocket: async (socketPath) => socketPath.startsWith("/srv/daemon-home/") },
+      { probeSocket: async (socketPath) => socketPath.startsWith("/tmp/agent-controlled/") },
     );
-    expect(config?.socketPath).toBe("/srv/daemon-home/.ravi/cli-gateway.sock");
+    expect(config).toBeNull();
   });
 
   it("keeps RAVI_STATE_DIR as the only socket location when the daemon publishes it", () => {
