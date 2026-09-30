@@ -6077,17 +6077,6 @@ class SandboxNamespace {
   final RaviTransport _transport;
 
   SandboxTemplateNamespace get template => SandboxTemplateNamespace(_transport);
-
-  Future<SandboxRunReturn> run([SandboxRunOptions options = const SandboxRunOptions()]) async {
-    final requestBody = <String, RaviJson>{};
-    options.encodeBody(requestBody);
-    return _transport.callJson(
-      groupSegments: const ["sandbox"],
-      command: "run",
-      body: requestBody,
-      decode: sandboxRunReturnFromJson,
-    );
-  }
 }
 
 class SandboxTemplateNamespace {

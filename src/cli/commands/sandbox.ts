@@ -5,7 +5,7 @@
 import "reflect-metadata";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { Arg, Command, CommandAccess, Group, Option, Returns } from "../decorators.js";
+import { Arg, CliOnly, Command, CommandAccess, Group, Option, Returns } from "../decorators.js";
 import { fail } from "../context.js";
 import {
   DEFAULT_E2B_TEMPLATE,
@@ -68,6 +68,9 @@ export class SandboxCommands {
     action: "run",
     risk: "high",
   })
+  // Host-local only: it reads --task-file and writes --output on the executing
+  // host, and runs for up to an hour, so it is not exposed through the gateway/SDK.
+  @CliOnly()
   @Returns(sandboxRunReturnSchema)
   async run(
     @Option({

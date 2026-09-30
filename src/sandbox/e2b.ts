@@ -239,7 +239,13 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
   step(`Sandbox ${sandbox.sandboxId} is up`);
 
   const outputDir = options.outputDir ?? join(getRaviStateDir(), "sandbox-runs", sandbox.sandboxId);
-  mkdirSync(outputDir, { recursive: true });
+  try {
+    mkdirSync(outputDir, { recursive: true });
+  } catch (err) {
+    // Don't leave a billable, credential-holding sandbox running until its timeout.
+    await sandbox.kill().catch(() => {});
+    throw err;
+  }
   const files: string[] = [];
 
   const sh = async (cmd: string, cmdTimeoutMs = 120_000) => {
@@ -344,12 +350,19 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
   try {
     await collectOutputs(taskId);
   } finally {
-    if (options.keep) {
-      await sandbox.pause();
-      step(`Sandbox ${sandbox.sandboxId} paused`);
-    } else {
-      await sandbox.kill();
-      step("Sandbox killed");
+    try {
+      if (options.keep) {
+        await sandbox.pause();
+        step(`Sandbox ${sandbox.sandboxId} paused`);
+      } else {
+        await sandbox.kill();
+        step("Sandbox killed");
+      }
+    } catch (err) {
+      // Keep the collected result; report the lifecycle failure alongside it.
+      const message = `Failed to ${options.keep ? "pause" : "kill"} sandbox: ${err instanceof Error ? err.message : String(err)}`;
+      error = error ? `${error}; ${message}` : message;
+      step(message);
     }
   }
 

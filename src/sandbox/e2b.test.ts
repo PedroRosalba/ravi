@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -183,6 +183,46 @@ describe("runE2bSandboxTask", () => {
     });
 
     expect(result.status).toBe("timeout");
+    expect(fake.state.killed).toBe(true);
+  });
+
+  it("records a kill failure in the result instead of rejecting", async () => {
+    const fake = fakeSandbox();
+    const create = async (input: CreateSandboxInput) => {
+      const handle = await fake.create(input);
+      handle.kill = async () => {
+        throw new Error("api down");
+      };
+      return handle;
+    };
+    const result = await runE2bSandboxTask({
+      repo: "https://github.com/o/r.git",
+      instructions: "x",
+      credentials,
+      outputDir: tempDir(),
+      createSandbox: create,
+      sleep: async () => {},
+    });
+
+    expect(result.status).toBe("done");
+    expect(result.taskId).toBe("task-1");
+    expect(result.error).toContain("Failed to kill sandbox: api down");
+  });
+
+  it("kills the sandbox when the output directory cannot be created", async () => {
+    const fake = fakeSandbox();
+    const blocker = join(tempDir(), "file");
+    writeFileSync(blocker, "x");
+    await expect(
+      runE2bSandboxTask({
+        repo: "https://github.com/o/r.git",
+        instructions: "x",
+        credentials,
+        outputDir: join(blocker, "sub"),
+        createSandbox: fake.create,
+        sleep: async () => {},
+      }),
+    ).rejects.toThrow();
     expect(fake.state.killed).toBe(true);
   });
 });

@@ -4376,12 +4376,6 @@ public struct SandboxNamespace: Sendable {
   public var template: SandboxTemplateNamespace {
     SandboxTemplateNamespace(transport: transport)
   }
-
-  public func run(_ options: SandboxRunOptions = .init()) async throws -> SandboxRunReturn {
-    var requestBody: [String: RaviJSON] = [:]
-    try options.encodeBody(into: &requestBody)
-    return try await transport.call(groupSegments: ["sandbox"], command: "run", body: requestBody, as: SandboxRunReturn.self)
-  }
 }
 
 public struct SandboxTemplateNamespace: Sendable {
