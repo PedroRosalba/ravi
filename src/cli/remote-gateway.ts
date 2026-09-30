@@ -156,18 +156,22 @@ export async function resolveAutoHostCliGateway(
   options: ResolveRemoteGatewayConfigOptions = {},
 ): Promise<RemoteGatewayConfig | null> {
   if (!shouldAutoUseHostCliGateway(env)) return null;
-  const socketPath = getHostCliGatewaySocketPath(options.stateDir ?? resolveHostCliGatewayStateDir(env));
+  const stateDirs = options.stateDir ? [options.stateDir] : resolveHostCliGatewayStateDirs(env);
   const probe = options.probeSocket ?? probeUnixSocket;
-  try {
-    if (!(await probe(socketPath))) return null;
-  } catch {
-    return null;
+  for (const stateDir of stateDirs) {
+    const socketPath = getHostCliGatewaySocketPath(stateDir);
+    try {
+      if (!(await probe(socketPath))) continue;
+    } catch {
+      continue;
+    }
+    return {
+      url: `${HOST_CLI_GATEWAY_URL_PREFIX}${socketPath}`,
+      source: "host-socket",
+      socketPath,
+    };
   }
-  return {
-    url: `${HOST_CLI_GATEWAY_URL_PREFIX}${socketPath}`,
-    source: "host-socket",
-    socketPath,
-  };
+  return null;
 }
 
 export function shouldAutoUseHostCliGateway(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -179,15 +183,22 @@ export function shouldAutoUseHostCliGateway(env: NodeJS.ProcessEnv = process.env
 }
 
 /**
- * State dir that holds the host CLI gateway socket. `RAVI_STATE_DIR` still
- * wins (the daemon publishes it to its sessions), but the fallback is the OS
- * account home, not `$HOME`: a `HOME=/tmp/x ravi ...` must not lose the host
- * socket.
+ * State dirs that may hold the host CLI gateway socket, in probe order.
+ * `RAVI_STATE_DIR` wins (the daemon's sessions inherit it). Otherwise the OS
+ * account home comes first, so `HOME=/tmp/x ravi ...` does not lose the host
+ * socket; `$HOME` stays as a fallback for a daemon started with its own HOME.
+ * Either way a missing socket fails closed (`requiresRemoteGateway`).
  */
-export function resolveHostCliGatewayStateDir(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveHostCliGatewayStateDirs(env: NodeJS.ProcessEnv = process.env): string[] {
   const explicit = env.RAVI_STATE_DIR?.trim();
-  if (explicit) return explicit;
-  return join(accountHomedir(), ".ravi");
+  if (explicit) return [explicit];
+  const dirs = [join(accountHomedir(), ".ravi")];
+  const envHome = env.HOME?.trim();
+  if (envHome) {
+    const envDir = join(envHome, ".ravi");
+    if (!dirs.includes(envDir)) dirs.push(envDir);
+  }
+  return dirs;
 }
 
 function accountHomedir(): string {

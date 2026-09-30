@@ -19,7 +19,7 @@ import {
   gatewayRequiredError,
   getRemoteGatewayConfig,
   requiresRemoteGateway,
-  resolveHostCliGatewayStateDir,
+  resolveHostCliGatewayStateDirs,
   resolveRemoteGatewayConfig,
   remoteDispatchOutput,
   remoteGatewayErrorToContractError,
@@ -757,9 +757,12 @@ describe("gateway requirement for runtime context keys", () => {
     expect(error.message).not.toContain("rctx_");
   });
 
-  it("finds the host socket from the account home, not $HOME", async () => {
-    const accountSocket = join(userInfo().homedir, ".ravi", "cli-gateway.sock");
-    expect(resolveHostCliGatewayStateDir({ HOME: "/tmp/agent-controlled" })).toBe(join(userInfo().homedir, ".ravi"));
+  it("probes the account home before $HOME", async () => {
+    const accountDir = join(userInfo().homedir, ".ravi");
+    expect(resolveHostCliGatewayStateDirs({ HOME: "/tmp/agent-controlled" })).toEqual([
+      accountDir,
+      "/tmp/agent-controlled/.ravi",
+    ]);
     const probed: string[] = [];
     const config = await resolveRemoteGatewayConfig(
       { RAVI_CONTEXT_KEY: "rctx_test", HOME: "/tmp/agent-controlled" },
@@ -771,13 +774,22 @@ describe("gateway requirement for runtime context keys", () => {
         },
       },
     );
-    expect(probed).toEqual([accountSocket]);
-    expect(config?.socketPath).toBe(accountSocket);
+    expect(probed).toEqual([join(accountDir, "cli-gateway.sock")]);
+    expect(config?.socketPath).toBe(join(accountDir, "cli-gateway.sock"));
   });
 
-  it("keeps RAVI_STATE_DIR as the socket location published by the daemon", () => {
-    expect(resolveHostCliGatewayStateDir({ RAVI_STATE_DIR: "/srv/ravi-state", HOME: "/tmp/x" })).toBe(
-      "/srv/ravi-state",
+  it("falls back to $HOME when the account home has no socket", async () => {
+    const config = await resolveRemoteGatewayConfig(
+      { RAVI_CONTEXT_KEY: "rctx_test", HOME: "/srv/daemon-home" },
+      "pages published",
+      { probeSocket: async (socketPath) => socketPath.startsWith("/srv/daemon-home/") },
     );
+    expect(config?.socketPath).toBe("/srv/daemon-home/.ravi/cli-gateway.sock");
+  });
+
+  it("keeps RAVI_STATE_DIR as the only socket location when the daemon publishes it", () => {
+    expect(resolveHostCliGatewayStateDirs({ RAVI_STATE_DIR: "/srv/ravi-state", HOME: "/tmp/x" })).toEqual([
+      "/srv/ravi-state",
+    ]);
   });
 });
