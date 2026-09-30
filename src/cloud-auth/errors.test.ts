@@ -4,8 +4,22 @@ import {
   CloudAuthError,
   classifyConsoleNetworkError,
   cloudAuthErrorFromUnknown,
+  isRetryableCloudAuthError,
   normalizeCloudAuthErrorCode,
 } from "./errors.js";
+
+describe("CloudAuthError retry hints", () => {
+  it("keeps Retry-After off the public error JSON", () => {
+    const error = new CloudAuthError("RATE_LIMITED", "limited", { status: 429, retryAfterMs: 15_000 });
+
+    expect(error.retryAfterMs).toBe(15_000);
+    expect(error.toJSON()).toEqual({
+      code: "RATE_LIMITED",
+      message: "limited",
+      status: 429,
+    });
+  });
+});
 
 describe("cloudAuthErrorFromUnknown", () => {
   it("preserves an already classified cloud error", () => {
@@ -60,6 +74,23 @@ describe("classifyConsoleNetworkError", () => {
     });
     expect(contract.details.suggestedAction).toContain("host");
     expect(JSON.stringify(contract.envelope())).not.toContain("pi");
+  });
+
+  it("lets an explicit retryable flag override the code default", () => {
+    const misconfigured = new CloudAuthError("SERVER_UNAVAILABLE", "Console CLI auth is not configured.", {
+      retryable: false,
+    });
+
+    expect(isRetryableCloudAuthError(misconfigured)).toBe(false);
+    expect(isRetryableCloudAuthError(new CloudAuthError("SERVER_UNAVAILABLE", "down"))).toBe(true);
+    expect(cloudErrorToContractError("login", misconfigured)).toMatchObject({
+      code: "SERVER_UNAVAILABLE",
+      details: { retryable: false },
+    });
+    expect(misconfigured.toJSON()).toEqual({
+      code: "SERVER_UNAVAILABLE",
+      message: "Console CLI auth is not configured.",
+    });
   });
 });
 

@@ -201,7 +201,7 @@ export class ConsoleApiClient {
 
     const payload = await readJsonBody(response);
     if (!response.ok) {
-      throw mapConsoleError(response.status, payload);
+      throw mapConsoleError(response.status, payload, response.headers);
     }
     return (payload ?? {}) as T;
   }
@@ -225,7 +225,7 @@ export class ConsoleApiClient {
 
     const payload = await readJsonBody(response);
     if (!response.ok) {
-      throw mapOAuthDeviceError(response.status, payload);
+      throw mapOAuthDeviceError(response.status, payload, response.headers);
     }
     return (payload ?? {}) as T;
   }
@@ -506,7 +506,7 @@ function parseOptionalActorBinding(payload: unknown): ActorBinding | null {
   }
 }
 
-function mapConsoleError(status: number, payload: unknown): CloudAuthError {
+function mapConsoleError(status: number, payload: unknown, headers?: Headers): CloudAuthError {
   const data = objectValue(payload);
   const nested = objectValue(data?.error);
   const rawCode = data?.code ?? nested?.code ?? data?.error;
@@ -518,33 +518,84 @@ function mapConsoleError(status: number, payload: unknown): CloudAuthError {
     stringValue(data?.error_description) ??
     defaultErrorMessage(code);
   const issues = projectPublicIssues(data?.issues ?? nested?.issues);
-  return new CloudAuthError(code, message, { status, ...(issues ? { issues } : {}) });
+  return new CloudAuthError(code, message, cloudAuthErrorOptions(status, headers, data, issues));
 }
 
-function mapOAuthDeviceError(status: number, payload: unknown): CloudAuthError {
+function mapOAuthDeviceError(status: number, payload: unknown, headers?: Headers): CloudAuthError {
   const data = objectValue(payload);
   const rawCode = stringValue(data?.error);
   const rawDescription = stringValue(data?.error_description) ?? stringValue(data?.message);
   const normalized = rawCode?.toLowerCase();
+  const options = cloudAuthErrorOptions(status, headers, data);
 
   if (normalized === "authorization_pending" || normalized === "slow_down") {
-    return new CloudAuthError("AUTH_PENDING", rawDescription ?? "Login is still pending.", { status });
+    return new CloudAuthError("AUTH_PENDING", rawDescription ?? "Login is still pending.", options);
   }
   if (normalized === "expired_token") {
-    return new CloudAuthError("AUTH_EXPIRED", rawDescription ?? "Login code expired.", { status });
+    return new CloudAuthError("AUTH_EXPIRED", rawDescription ?? "Login code expired.", options);
   }
   if (normalized === "access_denied") {
-    return new CloudAuthError("ORG_ACCESS_DENIED", rawDescription ?? "Login was denied.", { status });
+    return new CloudAuthError("ORG_ACCESS_DENIED", rawDescription ?? "Login was denied.", options);
   }
   if (normalized === "invalid_client") {
     return new CloudAuthError("SERVER_UNAVAILABLE", rawDescription ?? "Console CLI auth client is misconfigured.", {
-      status,
+      ...options,
+      retryable: false,
     });
   }
 
   const fallback = statusToErrorCode(status);
   const code = normalizeCloudAuthErrorCode(rawCode, fallback);
-  return new CloudAuthError(code, rawDescription ?? defaultErrorMessage(code), { status });
+  return new CloudAuthError(code, rawDescription ?? defaultErrorMessage(code), options);
+}
+
+function cloudAuthErrorOptions(
+  status: number,
+  headers: Headers | undefined,
+  payload: Record<string, unknown> | null,
+  issues?: ReturnType<typeof projectPublicIssues>,
+): { status: number; issues?: NonNullable<ReturnType<typeof projectPublicIssues>>; retryAfterMs?: number } {
+  const retryAfterMs = retryAfterMsFrom(headers, payload);
+  return {
+    status,
+    ...(issues ? { issues } : {}),
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+  };
+}
+
+/** Prefer the HTTP Retry-After header. Fall back to a numeric `retry_after` / `retryAfter` body field (seconds). */
+function retryAfterMsFrom(
+  headers: Headers | undefined,
+  payload: Record<string, unknown> | null,
+  nowMs = Date.now(),
+): number | undefined {
+  const fromHeader = retryAfterMsFromHeader(headers?.get("retry-after"), nowMs);
+  if (fromHeader !== undefined) return fromHeader;
+  return retryAfterMsFromPayload(payload);
+}
+
+function retryAfterMsFromHeader(value: string | null | undefined, nowMs: number): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) return secondsToRetryMs(Number(trimmed));
+  const timestamp = Date.parse(trimmed);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return Math.max(0, timestamp - nowMs);
+}
+
+function retryAfterMsFromPayload(payload: Record<string, unknown> | null): number | undefined {
+  if (!payload) return undefined;
+  const nested = objectValue(payload.error);
+  const raw = payload.retry_after ?? payload.retryAfter ?? nested?.retry_after ?? nested?.retryAfter;
+  if (typeof raw === "number") return secondsToRetryMs(raw);
+  if (typeof raw === "string" && raw.trim()) return secondsToRetryMs(Number(raw));
+  return undefined;
+}
+
+function secondsToRetryMs(seconds: number): number | undefined {
+  if (!Number.isFinite(seconds) || seconds < 0) return undefined;
+  return Math.round(seconds * 1000);
 }
 
 function statusToErrorCode(status: number) {
@@ -613,7 +664,7 @@ function expiresInToIso(value: number | null): string | null {
 function requireClientId(config: ConsoleAuthConfig): string {
   const clientId = stringValue(config.clientId);
   if (config.configured === false || !clientId) {
-    throw new CloudAuthError("SERVER_UNAVAILABLE", "Console CLI auth is not configured.");
+    throw new CloudAuthError("SERVER_UNAVAILABLE", "Console CLI auth is not configured.", { retryable: false });
   }
   return clientId;
 }
@@ -621,7 +672,7 @@ function requireClientId(config: ConsoleAuthConfig): string {
 function requireAuthEndpoint(config: ConsoleAuthConfig, key: "deviceAuthorization" | "token"): string {
   const endpoint = stringValue(config.endpoints?.[key]);
   if (config.configured === false || !endpoint) {
-    throw new CloudAuthError("SERVER_UNAVAILABLE", "Console CLI auth is not configured.");
+    throw new CloudAuthError("SERVER_UNAVAILABLE", "Console CLI auth is not configured.", { retryable: false });
   }
   return endpoint;
 }

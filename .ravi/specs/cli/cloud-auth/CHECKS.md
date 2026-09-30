@@ -20,6 +20,11 @@
   and never required.
 - No remote-login discovery, post-login provider, or remote installation
   credential module is present in the root auth implementation.
+- Login polling retries `AUTH_PENDING`, `RATE_LIMITED`, and `SERVER_UNAVAILABLE`
+  on the same device code until the timeout, and does not retry other auth
+  errors or auth misconfiguration (`invalid_client`, missing client/endpoint).
+- In provider mode, a Console exchange retry reuses the provider token and does
+  not poll the provider again with the consumed device code.
 
 ## Login Smoke
 

@@ -98,7 +98,17 @@ The CLI SHOULD implement a browser/device OAuth flow:
 2. Start provider login using public client metadata.
 3. Display the complete verification URL (with `user_code`) and the user code
    when provided.
-4. Poll or receive completion according to the provider flow.
+4. Poll or receive completion according to the provider flow. While polling,
+   keep the same device code and retry `AUTH_PENDING`, `RATE_LIMITED`, and
+   `SERVER_UNAVAILABLE` until the login timeout. `AUTH_PENDING` waits the
+   configured poll interval. `RATE_LIMITED` and `SERVER_UNAVAILABLE` wait with
+   exponential backoff and jitter, and wait at least as long as a positive
+   `Retry-After` when the response exposes one. Any other auth error stops the
+   poll immediately, and so does a `SERVER_UNAVAILABLE` that reports an auth
+   misconfiguration (`invalid_client`, missing client or endpoint). Once the
+   provider grants a token, retries reuse it and only repeat the Console
+   exchange, because the device code is single-use. Reaching the timeout stops
+   further retries.
 5. Send the provider access token to the Console exchange endpoint.
 6. Store only Ravi-owned CLI credentials returned by Console.
 7. Use Ravi CLI access token for API requests.
@@ -235,6 +245,9 @@ safe error code.
 ## Acceptance Criteria
 
 - `ravi login` can link a local CLI without storing provider or browser secrets.
+- `ravi login` polling retries rate limits and temporary Console outages on the
+  same device code, and still fails closed on timeout and non-retryable auth
+  errors.
 - `ravi login` human output and `--json` expose
   `https://<console>/cli/authorize?user_code=<CODE>` as the URL to open whenever
   a device `user_code` exists. The bare `/cli/authorize` URL is never the link
