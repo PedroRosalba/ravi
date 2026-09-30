@@ -300,11 +300,19 @@ describe("inspectDoctor", () => {
 
   it("accepts a custom authorization chain made of registered providers", () => {
     const deps = makeHealthyDeps();
-    deps.getConfiguredPermissionProviders = () => [{ id: "external-authority" }] as any;
+    deps.getConfiguredPermissionProviders = () => [{ id: "operator-control" }, { id: "external-authority" }] as any;
     const report = inspectDoctor(deps);
     const check = report.checks.find((item) => item.id === "permissions.provider_runtime_default_chain");
     expect(check?.status).toBe("pass");
     expect(check?.data?.customAuthorization).toBe(true);
+  });
+
+  it("fails the authorization chain check when operator-control is missing", () => {
+    const deps = makeHealthyDeps();
+    deps.getConfiguredPermissionProviders = () => [{ id: "external-authority" }] as any;
+    const report = inspectDoctor(deps);
+    const check = report.checks.find((item) => item.id === "permissions.provider_runtime_default_chain");
+    expect(check?.status).toBe("fail");
   });
 
   it("fails the authorization chain check when a configured provider is unregistered", () => {

@@ -17,9 +17,12 @@ export const localOperatorProvider: PermissionProvider = operatorControlProvider
  * `permissions.provider_ids`), em vez de constante — é o ponto que faltava para
  * plugar uma autoridade EXTERNA (on-chain, serviço, MCP) sem editar o runtime.
  *
- * A configuração vem do banco do host, NUNCA do env do processo: a checagem de
- * permissão roda dentro do `ravi` que o próprio agente dispara pelo Bash, então
- * env controlável pelo agente decidiria quem tem autoridade sobre ele.
+ * A configuração vem de settings do banco, não de variáveis de env como
+ * `RAVI_PERMISSION_PROVIDER_IDS`: o env do processo é do agente que está sendo
+ * autorizado. Limite: o banco só é autoritativo quando a checagem roda no
+ * daemon (gateway do host, tools in-process). Um `ravi` executado localmente
+ * abre o banco que o próprio env aponta (`RAVI_STATE_DIR`/`HOME`), igual a
+ * contexts e capabilities — não é uma fronteira nova desta cadeia.
  */
 const PROVIDER_REGISTRY: Record<string, () => PermissionProvider> = {
   "operator-control": () => operatorControlProvider,
@@ -41,13 +44,17 @@ export type PermissionSettingReader = (key: string) => string | null;
  * Fail-closed: se o operador configura um id que não existe (ou indisponível
  * neste build), a decisão é NEGAR com causa explícita. Silenciar e voltar ao
  * default seria fail-open — autoridade pedida não é autoridade concedida.
+ *
+ * Pedidos puros do operador local ficam de fora (quem decide é o
+ * `operator-control` fixo): senão um id inválido gravado direto no banco
+ * trancaria o operador fora do `ravi` que corrige a config.
  */
 function unavailableProvider(missingId: string): PermissionProvider {
   return {
     id: `unavailable:${missingId}`,
     version: "0",
     required: true,
-    supports: () => true,
+    supports: (request) => !operatorControlProvider.supports(request),
     authorize(request: PermissionProviderRequest): PermissionProviderDecision {
       return {
         decision: "deny",

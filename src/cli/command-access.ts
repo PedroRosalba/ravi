@@ -101,17 +101,42 @@ export function enforceCliCommandAccess(input: CliCommandAccessInput): CliComman
     if (decision.allowed) {
       return { allowed: true, errorMessage: "", decision, attempted };
     }
+    // Um provider exigiu aprovação humana para este pedido: tentar o próximo
+    // candidato (ex.: o legado execute:group:<grupo>) poderia casar outro
+    // escopo sem essa exigência e liberar o comando por fora da aprovação.
+    if (decision.decision === "needs_approval") break;
   }
 
-  const errorMessage = buildCommandAccessDenialMessage(inputWithAccess, authority.label);
-  recordCliCommandAccessDenial(inputWithAccess, authority, attempted, operation, errorMessage);
+  const last = attempted[attempted.length - 1];
+  const needsApproval = last?.decision === "needs_approval";
+  const errorMessage = needsApproval
+    ? buildCommandAccessApprovalMessage(inputWithAccess, authority.label, last)
+    : buildCommandAccessDenialMessage(inputWithAccess, authority.label);
+  recordCliCommandAccessDenial(inputWithAccess, authority, attempted, operation, errorMessage, needsApproval);
 
   return {
     allowed: false,
     errorMessage,
-    decision: attempted[attempted.length - 1],
+    decision: last,
     attempted,
   };
+}
+
+/**
+ * `needs_approval` não tem canal humano no caminho do CLI (processo curto e
+ * síncrono), então nega — mas diz o motivo real. A orientação de grant do
+ * Ravi fica de fora: um grant local não supera a exigência de aprovação.
+ */
+function buildCommandAccessApprovalMessage(
+  input: CliCommandAccessInput & { access: CommandAccessOptions },
+  authorityLabel: string,
+  decision: PermissionProviderDecision,
+): string {
+  return [
+    `Approval required: ${authorityLabel} cannot execute ${formatCommand(input)} (${input.access.kind} ${input.access.resource}.${input.access.action}, risk ${input.access.risk})`,
+    `${decision.providerId}@${decision.providerVersion} (${decision.reasonCode}) requires human approval for ${decision.permission}:${decision.objectType}:${decision.objectId}.`,
+    "The CLI cannot request approval inline; ask the authority to reissue the scope without requiresApproval, or have the operator run it.",
+  ].join("\n");
 }
 
 function buildCommandAccessDenialMessage(
@@ -282,6 +307,7 @@ function recordCliCommandAccessDenial(
   attempted: PermissionProviderDecision[],
   operation: PermissionProviderCliCommandOperation,
   reason: string,
+  needsApproval = false,
 ): void {
   const context = authority.request.context as
     | (CapabilityContextLike & {
@@ -340,7 +366,7 @@ function recordCliCommandAccessDenial(
       denied: `${requested.permission}:${requested.objectType}:${requested.objectId}`,
       reason,
       command,
-      blockType: "cli_command_access_missing_grant",
+      blockType: needsApproval ? "cli_command_access_needs_approval" : "cli_command_access_missing_grant",
       guidance: {
         canonicalCapability: guidance.canonicalCapability,
         candidateCapabilities: guidance.candidateCapabilities,

@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { generateKeyPairSync, sign as signPayload } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
@@ -17,7 +18,14 @@ import {
   createIsolatedRaviState,
   RAVI_RUNTIME_CONTEXT_ENV_KEYS,
 } from "../test/ravi-state.js";
-import type { ContextRecord } from "../router/router-db.js";
+import { dbSetSetting, type ContextRecord } from "../router/router-db.js";
+import {
+  EXTERNAL_AUTHORITY_ASSERTION_SETTING,
+  EXTERNAL_AUTHORITY_PUBKEY_SETTING,
+  canonicalize,
+  resetExternalAuthorityCacheForTests,
+} from "../permissions/external-authority-provider.js";
+import { PERMISSION_PROVIDER_IDS_SETTING } from "../permissions/provider-registry.js";
 import {
   flushPermissionAuditEvents,
   listPermissionDenials,
@@ -160,6 +168,38 @@ describe("CLI command access enforcement", () => {
     });
     expect(operation.input).not.toHaveProperty("extra");
     expect(operation.input).not.toHaveProperty("ignored");
+  });
+
+  it("stops at needs_approval instead of trying a broader candidate the authority allows", () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const payload = {
+      iss: "issuer",
+      sub: "agent:main",
+      exp: Math.floor(Date.now() / 1000) + 60,
+      scope: [
+        { permission: "mutate", objectType: "demo.items", objectId: "create", requiresApproval: true },
+        // Candidato legado execute:group:demo, sem exigência de aprovação.
+        { permission: "execute", objectType: "group", objectId: "demo" },
+      ],
+    };
+    const sig = signPayload(null, Buffer.from(canonicalize(payload)), privateKey).toString("base64");
+    const assertionPath = join(stateDir!, "assertion.json");
+    writeFileSync(assertionPath, JSON.stringify({ ...payload, sig }));
+    dbSetSetting(PERMISSION_PROVIDER_IDS_SETTING, "external-authority");
+    dbSetSetting(EXTERNAL_AUTHORITY_ASSERTION_SETTING, assertionPath);
+    dbSetSetting(EXTERNAL_AUTHORITY_PUBKEY_SETTING, publicKey.export({ type: "spki", format: "pem" }).toString());
+    resetExternalAuthorityCacheForTests();
+    const record = createRuntimeContext({ kind: "cli-runtime", agentId: "main", capabilities: [], ttlMs: 0 });
+    process.env.RAVI_CONTEXT_KEY = record.contextKey;
+
+    const result = enforceCliCommandAccess({ group: "demo", command: "create", access: ACCESS, source: "cli" });
+
+    expect(result.allowed).toBe(false);
+    expect(result.attempted).toHaveLength(1);
+    expect(result.decision?.decision).toBe("needs_approval");
+    expect(result.errorMessage).toContain("Approval required: agent:main cannot execute demo create");
+    expect(result.errorMessage).toContain("external_authority_requires_approval");
+    expect(result.errorMessage).not.toContain("ravi agents allow");
   });
 
   it("allows explicit local operator execution when no runtime principal exists", () => {

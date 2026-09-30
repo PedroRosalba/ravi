@@ -17,11 +17,15 @@ import type { PermissionProvider, PermissionProviderDecision, PermissionProvider
  *
  * `iat`/`exp` seguem a convenção JWT: segundos desde epoch. `exp` é obrigatório.
  *
- * Configuração (settings do host, nunca env — o env do processo é controlável
- * pelo agente que está sendo autorizado):
+ * Configuração (settings do banco, não env — o env do processo é do agente que
+ * está sendo autorizado; ver o limite dessa garantia em provider-registry.ts):
  *   permissions.external_authority.assertion  caminho do JSON assinado (obrigatório)
  *   permissions.external_authority.pubkey     PEM inline ou caminho de arquivo PEM (obrigatório)
  *   permissions.external_authority.audience   audience esperada (opcional, recomendado)
+ *
+ * A pubkey é a raiz de confiança: quem escreve nela forja afirmações. Arquivo
+ * de pubkey gravável por grupo/outros é recusado; ainda assim ele deve ficar
+ * fora do alcance de escrita dos agentes (o dono do arquivo é o mesmo usuário).
  */
 
 export const EXTERNAL_AUTHORITY_PROVIDER_ID = "external-authority";
@@ -58,6 +62,7 @@ export interface ExternalAuthorityConfig {
 export type ExternalAuthorityFailure =
   | "external_authority_not_configured"
   | "external_authority_pubkey_unreadable"
+  | "external_authority_pubkey_insecure"
   | "external_assertion_missing"
   | "external_assertion_unreadable"
   | "external_assertion_malformed"
@@ -99,7 +104,7 @@ export function isInlinePem(value: string): boolean {
 
 export class ExternalAuthorityConfigError extends Error {
   constructor(
-    readonly reasonCode: "external_authority_pubkey_unreadable",
+    readonly reasonCode: "external_authority_pubkey_unreadable" | "external_authority_pubkey_insecure",
     readonly path: string,
   ) {
     super(`${reasonCode}: ${path}`);
@@ -238,6 +243,10 @@ function readPubkeyFile(path: string): string {
   } catch {
     pubkeyCache.delete(path);
     throw new ExternalAuthorityConfigError("external_authority_pubkey_unreadable", path);
+  }
+  if (process.platform !== "win32" && (stat.mode & 0o022) !== 0) {
+    pubkeyCache.delete(path);
+    throw new ExternalAuthorityConfigError("external_authority_pubkey_insecure", path);
   }
   const cached = pubkeyCache.get(path);
   if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.raw;

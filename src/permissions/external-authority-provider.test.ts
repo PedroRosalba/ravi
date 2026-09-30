@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { generateKeyPairSync, sign as signPayload } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -270,6 +270,42 @@ describe("external authority config", () => {
     }
   });
 
+  it("aceita pubkey em arquivo só gravável pelo dono", () => {
+    const path = assertionFile(
+      "assertion.json",
+      signed({
+        iss: "issuer",
+        sub: "agent:cursor-grok-lab",
+        exp: nowSeconds() + 60,
+        scope: [{ permission: "execute", objectType: "group", objectId: "pages" }],
+      }),
+    );
+    const pubkeyPath = join(dir, "authority.pem");
+    writeFileSync(pubkeyPath, publicKeyPem);
+    chmodSync(pubkeyPath, 0o644);
+    const settings: Record<string, string> = {
+      [EXTERNAL_AUTHORITY_ASSERTION_SETTING]: path,
+      [EXTERNAL_AUTHORITY_PUBKEY_SETTING]: pubkeyPath,
+    };
+    const provider = createExternalAuthorityProvider(() => readExternalAuthorityConfig((key) => settings[key] ?? null));
+    expect(provider.authorize(request).decision).toBe("allow");
+  });
+
+  it("deny quando o arquivo da pubkey é gravável por grupo ou outros", () => {
+    if (process.platform === "win32") return;
+    const pubkeyPath = join(dir, "authority.pem");
+    writeFileSync(pubkeyPath, publicKeyPem);
+    chmodSync(pubkeyPath, 0o666);
+    const settings: Record<string, string> = {
+      [EXTERNAL_AUTHORITY_ASSERTION_SETTING]: join(dir, "assertion.json"),
+      [EXTERNAL_AUTHORITY_PUBKEY_SETTING]: pubkeyPath,
+    };
+    const provider = createExternalAuthorityProvider(() => readExternalAuthorityConfig((key) => settings[key] ?? null));
+    const decision = provider.authorize(request);
+    expect(decision.decision).toBe("deny");
+    expect(decision.reasonCode).toBe("external_authority_pubkey_insecure");
+  });
+
   it("deny explícito quando o arquivo da pubkey não existe", () => {
     const settings: Record<string, string> = {
       [EXTERNAL_AUTHORITY_ASSERTION_SETTING]: join(dir, "assertion.json"),
@@ -329,6 +365,17 @@ describe("permission provider chain", () => {
     const providers = getConfiguredPermissionProviders(chainSetting("external-authority"));
     const decision = authorizePermission({ ...request, localOperator: true }, { providers });
     expect(decision.allowed).toBe(false);
+  });
+
+  it("id desconhecido nega agentes mas não tranca o operador local", () => {
+    const providers = getConfiguredPermissionProviders(chainSetting("external-authority,nao-existe"));
+    const operator = authorizePermission(
+      { localOperator: true, permission: "admin", objectType: "system", objectId: "*" },
+      { providers },
+    );
+    expect(operator.decision).toBe("allow");
+    const agent = authorizePermission(request, { providers });
+    expect(agent.decision).toBe("deny");
   });
 
   it("remove ids duplicados sem mudar a ordem", () => {

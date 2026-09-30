@@ -17,6 +17,7 @@ import { checkAppManifests, discoverAppManifests } from "../../apps/service.js";
 import {
   DEFAULT_PERMISSION_PROVIDER_IDS,
   PERMISSION_PROVIDER_IDS_SETTING,
+  PINNED_PERMISSION_PROVIDER_ID,
   getConfiguredCapabilityMaterializers,
   getConfiguredPermissionProviders,
 } from "../../permissions/provider-registry.js";
@@ -2274,7 +2275,8 @@ function buildPermissionProviderRuntimeChainCheck(deps: DoctorDeps): LegacyDocto
     "agent-identity-permissions",
     "contact-policy-permissions",
   ];
-  const authOk = authorizationProviders.length > 0 && unavailableAuthorization.length === 0;
+  const authOk =
+    authorizationProviders.includes(PINNED_PERMISSION_PROVIDER_ID) && unavailableAuthorization.length === 0;
   const materializersOk = sameStringList(capabilityMaterializers, expectedMaterializers);
 
   if (!authOk || !materializersOk) {
@@ -2285,7 +2287,7 @@ function buildPermissionProviderRuntimeChainCheck(deps: DoctorDeps): LegacyDocto
       status: "fail",
       severity: "error",
       summary: !authOk
-        ? `authorization provider chain references unregistered providers (${PERMISSION_PROVIDER_IDS_SETTING})`
+        ? `authorization provider chain is missing ${PINNED_PERMISSION_PROVIDER_ID} or references unregistered providers (${PERMISSION_PROVIDER_IDS_SETTING})`
         : "default permission provider chain drifted from the provider-runtime contract",
       details: [
         `authorization: ${authorizationProviders.join(", ") || "(none)"}`,

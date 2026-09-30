@@ -155,7 +155,7 @@ const KNOWN_SETTINGS: Record<string, { description: string; validate?: (value: s
   },
   [PERMISSION_PROVIDER_IDS_SETTING]: {
     description:
-      "Authorization provider chain, comma-separated (default: operator-control,context-capabilities). Superadmin only",
+      "Authorization provider chain, comma-separated (default: operator-control,context-capabilities). operator-control is always kept for the local operator. Superadmin only",
     validate: (value: string) => {
       const ids = parsePermissionProviderIds(value);
       const registered = listRegisteredPermissionProviderIds();
@@ -171,7 +171,8 @@ const KNOWN_SETTINGS: Record<string, { description: string; validate?: (value: s
     description: "Path to the signed external authority assertion JSON. Superadmin only",
   },
   [EXTERNAL_AUTHORITY_PUBKEY_SETTING]: {
-    description: "External authority public key: inline PEM or path to a PEM file. Superadmin only",
+    description:
+      "External authority public key: inline PEM or path to a PEM file (must not be group/world-writable). Superadmin only",
   },
   [EXTERNAL_AUTHORITY_AUDIENCE_SETTING]: {
     description: "Expected audience (aud) of external authority assertions. Superadmin only",
