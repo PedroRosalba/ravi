@@ -1,6 +1,10 @@
 import { getContext } from "./context.js";
 import type { CommandAccessOptions, ScopeType } from "./decorators.js";
-import { authorizePermission, type PermissionProviderDecision } from "../permissions/provider-runtime.js";
+import {
+  authorizePermission,
+  findApprovalRequirement,
+  type PermissionProviderDecision,
+} from "../permissions/provider-runtime.js";
 import { buildAuditContextProvenance } from "../permissions/audit-provenance.js";
 import { recordAndEmitPermissionDenial } from "../permissions/denials.js";
 import { enforceScopeCheck } from "../permissions/scope.js";
@@ -89,21 +93,27 @@ export function enforceCliCommandAccess(input: CliCommandAccessInput): CliComman
   const operation = buildCliCommandOperation(inputWithAccess);
   const attempted: PermissionProviderDecision[] = [];
 
-  for (const candidate of commandAccessCandidates(inputWithAccess)) {
-    const decision = authorizePermission({
-      ...authority.request,
-      permission: candidate.permission,
-      objectType: candidate.objectType,
-      objectId: candidate.objectId,
-      operation,
-    });
+  const candidates = commandAccessCandidates(inputWithAccess);
+  const requestFor = (candidate: AuthorizationCapability): PermissionProviderRequest => ({
+    ...authority.request,
+    permission: candidate.permission,
+    objectType: candidate.objectType,
+    objectId: candidate.objectId,
+    operation,
+  });
+
+  for (const candidate of candidates) {
+    const decision = authorizePermission(requestFor(candidate));
     attempted.push(decision);
     if (decision.allowed) {
-      return { allowed: true, errorMessage: "", decision, attempted };
+      // Aprovação exigida para QUALQUER candidato vale para o comando: um
+      // candidato liberado (ex.: o legado execute:group:<grupo>) não pode passar
+      // por fora dela, nem o deny de outro provider esconder a exigência.
+      const approval = findApprovalRequirement(candidates.map(requestFor));
+      if (!approval) return { allowed: true, errorMessage: "", decision, attempted };
+      attempted.push(approval);
+      break;
     }
-    // Um provider exigiu aprovação humana para este pedido: tentar o próximo
-    // candidato (ex.: o legado execute:group:<grupo>) poderia casar outro
-    // escopo sem essa exigência e liberar o comando por fora da aprovação.
     if (decision.decision === "needs_approval") break;
   }
 
@@ -135,9 +145,12 @@ function buildCommandAccessApprovalMessage(
   return [
     `Approval required: ${authorityLabel} cannot execute ${formatCommand(input)} (${input.access.kind} ${input.access.resource}.${input.access.action}, risk ${input.access.risk})`,
     `${decision.providerId}@${decision.providerVersion} (${decision.reasonCode}) requires human approval for ${decision.permission}:${decision.objectType}:${decision.objectId}.`,
-    "The CLI cannot request approval inline; ask the authority to reissue the scope without requiresApproval, or have the operator run it.",
+    APPROVAL_REQUIRED_HINT,
   ].join("\n");
 }
+
+const APPROVAL_REQUIRED_HINT =
+  "The CLI cannot request approval inline; ask the authority to reissue the scope without requiresApproval, or have the operator run it.";
 
 function buildCommandAccessDenialMessage(
   input: CliCommandAccessInput & { access: CommandAccessOptions },
@@ -319,13 +332,25 @@ function recordCliCommandAccessDenial(
     | undefined;
   if (!context) return;
 
-  const requested = attempted[0];
+  // Com aprovação pendente, o que importa é o pedido que a exigiu; grant local
+  // não resolve, então a orientação de grant/tags fica de fora do audit.
+  const requested = needsApproval ? attempted[attempted.length - 1] : attempted[0];
   if (!requested) return;
   const command = `${input.group} ${input.command}`;
-  const guidance = buildCommandAccessGuidance(
+  const grantGuidance = buildCommandAccessGuidance(
     input,
     context.agentId ? { type: "agent", id: context.agentId } : undefined,
   );
+  const guidance = needsApproval
+    ? {
+        kind: "approval-required",
+        providerId: requested.providerId,
+        reasonCode: requested.reasonCode,
+        canonicalCapability: grantGuidance.canonicalCapability,
+        candidateCapabilities: grantGuidance.candidateCapabilities,
+        message: APPROVAL_REQUIRED_HINT,
+      }
+    : grantGuidance;
 
   const provenance = buildAuditContextProvenance({
     contextId: context.contextId,
@@ -367,13 +392,19 @@ function recordCliCommandAccessDenial(
       reason,
       command,
       blockType: needsApproval ? "cli_command_access_needs_approval" : "cli_command_access_missing_grant",
-      guidance: {
-        canonicalCapability: guidance.canonicalCapability,
-        candidateCapabilities: guidance.candidateCapabilities,
-        recommendedPath: guidance.preferredPath.message,
-        allowCommand: guidance.preferredPath.allowCommand,
-        suggestedTags: guidance.preferredPath.suggestedTags,
-      },
+      guidance: needsApproval
+        ? {
+            canonicalCapability: grantGuidance.canonicalCapability,
+            candidateCapabilities: grantGuidance.candidateCapabilities,
+            recommendedPath: APPROVAL_REQUIRED_HINT,
+          }
+        : {
+            canonicalCapability: grantGuidance.canonicalCapability,
+            candidateCapabilities: grantGuidance.candidateCapabilities,
+            recommendedPath: grantGuidance.preferredPath.message,
+            allowCommand: grantGuidance.preferredPath.allowCommand,
+            suggestedTags: grantGuidance.preferredPath.suggestedTags,
+          },
       ...(provenance ? { context: provenance } : {}),
     },
   });

@@ -311,6 +311,7 @@ export function createExternalAuthorityProvider(
     id: EXTERNAL_AUTHORITY_PROVIDER_ID,
     version: EXTERNAL_AUTHORITY_PROVIDER_VERSION,
     required: false,
+    mayRequireApproval: true,
     supports(request: PermissionProviderRequest): boolean {
       // Só participa quando o pedido tem um ator identificável: autoridade
       // externa é sobre QUEM age, não sobre o que existe no sistema.

@@ -170,36 +170,97 @@ describe("CLI command access enforcement", () => {
     expect(operation.input).not.toHaveProperty("ignored");
   });
 
-  it("stops at needs_approval instead of trying a broader candidate the authority allows", () => {
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const payload = {
-      iss: "issuer",
-      sub: "agent:main",
-      exp: Math.floor(Date.now() / 1000) + 60,
-      scope: [
-        { permission: "mutate", objectType: "demo.items", objectId: "create", requiresApproval: true },
-        // Candidato legado execute:group:demo, sem exigência de aprovação.
+  describe("with an external authority that requires approval", () => {
+    function configureExternalAuthority(chain: string, scope: Array<Record<string, unknown>>): void {
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const payload = { iss: "issuer", sub: "agent:dev", exp: Math.floor(Date.now() / 1000) + 60, scope };
+      const sig = signPayload(null, Buffer.from(canonicalize(payload)), privateKey).toString("base64");
+      const assertionPath = join(stateDir!, "assertion.json");
+      writeFileSync(assertionPath, JSON.stringify({ ...payload, sig }));
+      dbSetSetting(PERMISSION_PROVIDER_IDS_SETTING, chain);
+      dbSetSetting(EXTERNAL_AUTHORITY_ASSERTION_SETTING, assertionPath);
+      dbSetSetting(EXTERNAL_AUTHORITY_PUBKEY_SETTING, publicKey.export({ type: "spki", format: "pem" }).toString());
+      resetExternalAuthorityCacheForTests();
+    }
+
+    function runDemoCreate(capabilities: ContextRecord["capabilities"]) {
+      return runWithContext({ agentId: "dev", context: context(capabilities) }, () =>
+        enforceCliCommandAccess({ group: "demo", command: "create", access: ACCESS, source: "gateway" }),
+      );
+    }
+
+    const approvalOnSemantic = [
+      { permission: "mutate", objectType: "demo.items", objectId: "create", requiresApproval: true },
+      // Candidato legado execute:group:demo, sem exigência de aprovação.
+      { permission: "execute", objectType: "group", objectId: "demo" },
+    ];
+    const legacyGrant = [{ permission: "execute", objectType: "group", objectId: "demo", source: "test" }];
+
+    afterEach(() => resetExternalAuthorityCacheForTests());
+
+    it("stops at needs_approval instead of trying a broader candidate the authority allows", async () => {
+      delete process.env.RAVI_SUPPRESS_AUDIT_EVENTS;
+      configureExternalAuthority("external-authority", approvalOnSemantic);
+
+      const result = runDemoCreate([]);
+      await flushPermissionAuditEvents();
+
+      expect(result.allowed).toBe(false);
+      expect(result.attempted).toHaveLength(1);
+      expect(result.decision?.decision).toBe("needs_approval");
+      expect(result.errorMessage).toStartWith("Approval required: agent:dev cannot execute demo create");
+      expect(result.errorMessage).toContain("external_authority_requires_approval");
+      expect(result.errorMessage).not.toContain("Missing capability");
+      expect(result.errorMessage).not.toContain("ravi permissions allow");
+      expect(auditEvents).toEqual([
+        {
+          topic: "ravi.audit.denied",
+          data: expect.objectContaining({
+            blockType: "cli_command_access_needs_approval",
+            denied: "mutate:demo.items:create",
+            guidance: expect.not.objectContaining({ allowCommand: expect.anything() }),
+          }),
+        },
+      ]);
+    });
+
+    it("keeps the approval when context-capabilities denies earlier candidates first", () => {
+      // Ordem natural: autoridade externa somada à cadeia default. O deny de
+      // context-capabilities nos candidatos semânticos encerra a cadeia antes
+      // da autoridade externa; só o legado execute:group:demo é liberado.
+      configureExternalAuthority("operator-control,context-capabilities,external-authority", approvalOnSemantic);
+
+      const result = runDemoCreate(legacyGrant);
+
+      expect(result.allowed).toBe(false);
+      expect(result.decision?.decision).toBe("needs_approval");
+      expect(result.decision?.objectType).toBe("demo.items");
+      expect(result.errorMessage).toStartWith("Approval required:");
+    });
+
+    it("keeps the approval when an earlier candidate matches an unconditional scope", () => {
+      configureExternalAuthority("external-authority", [
+        { permission: "mutate", objectType: "*", objectId: "*" },
+        { permission: "execute", objectType: "group", objectId: "demo", requiresApproval: true },
+      ]);
+
+      const result = runDemoCreate([]);
+
+      expect(result.allowed).toBe(false);
+      expect(result.decision?.decision).toBe("needs_approval");
+      expect(result.decision?.objectId).toBe("demo");
+    });
+
+    it("still allows when no candidate requires approval", () => {
+      configureExternalAuthority("operator-control,context-capabilities,external-authority", [
         { permission: "execute", objectType: "group", objectId: "demo" },
-      ],
-    };
-    const sig = signPayload(null, Buffer.from(canonicalize(payload)), privateKey).toString("base64");
-    const assertionPath = join(stateDir!, "assertion.json");
-    writeFileSync(assertionPath, JSON.stringify({ ...payload, sig }));
-    dbSetSetting(PERMISSION_PROVIDER_IDS_SETTING, "external-authority");
-    dbSetSetting(EXTERNAL_AUTHORITY_ASSERTION_SETTING, assertionPath);
-    dbSetSetting(EXTERNAL_AUTHORITY_PUBKEY_SETTING, publicKey.export({ type: "spki", format: "pem" }).toString());
-    resetExternalAuthorityCacheForTests();
-    const record = createRuntimeContext({ kind: "cli-runtime", agentId: "main", capabilities: [], ttlMs: 0 });
-    process.env.RAVI_CONTEXT_KEY = record.contextKey;
+      ]);
 
-    const result = enforceCliCommandAccess({ group: "demo", command: "create", access: ACCESS, source: "cli" });
+      const result = runDemoCreate(legacyGrant);
 
-    expect(result.allowed).toBe(false);
-    expect(result.attempted).toHaveLength(1);
-    expect(result.decision?.decision).toBe("needs_approval");
-    expect(result.errorMessage).toContain("Approval required: agent:main cannot execute demo create");
-    expect(result.errorMessage).toContain("external_authority_requires_approval");
-    expect(result.errorMessage).not.toContain("ravi agents allow");
+      expect(result.allowed).toBe(true);
+      expect(result.decision?.providerId).toBe("external-authority");
+    });
   });
 
   it("allows explicit local operator execution when no runtime principal exists", () => {

@@ -14,7 +14,7 @@ import {
   readExternalAuthorityConfig,
   resetExternalAuthorityCacheForTests,
 } from "./external-authority-provider.js";
-import { authorizePermission } from "./provider-runtime.js";
+import { authorizePermission, findApprovalRequirement } from "./provider-runtime.js";
 import {
   DEFAULT_PERMISSION_PROVIDER_IDS,
   PERMISSION_PROVIDER_IDS_SETTING,
@@ -376,6 +376,11 @@ describe("permission provider chain", () => {
     expect(operator.decision).toBe("allow");
     const agent = authorizePermission(request, { providers });
     expect(agent.decision).toBe("deny");
+  });
+
+  it("findApprovalRequirement não consulta nada na cadeia default", () => {
+    const providers = getConfiguredPermissionProviders(chainSetting(null));
+    expect(findApprovalRequirement([request], { providers })).toBeNull();
   });
 
   it("remove ids duplicados sem mudar a ordem", () => {
