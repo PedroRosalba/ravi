@@ -497,12 +497,14 @@ errors.
 ## Acceptance Criteria
 
 - A runtime command launched inside a session with a session Console scope can
-  run `ravi pages create <slug> --json` without passing a project.
-- The same command with explicit `--project other-project` uses the explicit
-  project and reports `source="explicit"` in JSON/debug output.
+  run `ravi pages create <slug> --json --execute` without passing a project.
+  Without `--execute` the command exits 3 before scope resolution.
+- The same command with explicit `--project other-project` and `--execute` uses
+  the explicit project and reports `source="explicit"` in JSON/debug output.
 - A child CLI using only `RAVI_CONTEXT_KEY` can recover the same effective scope.
-- `ravi pages publish docs ./dist --json` resolves the project from
-  the shared scope when no `--project` is passed.
+- `ravi pages publish docs ./dist --json --execute` resolves the project from
+  the shared scope when no `--project` is passed. Without `--execute` it exits
+  3 before scope resolution.
 - `ravi connectors connect google` resolves a project from the shared scope or
   fails with a clear next command when ambiguous.
 - `ravi login` with multiple organizations is completed through Console-side org

@@ -9,18 +9,19 @@
   alone MUST NOT become a new host slug. A positional slug remains a legacy
   extra host: it MAY create or reuse that slug and MUST warn. Slugs `ravi`
   and `ravi-*` MUST NOT be created.
-- `pages ship` without `--execute` MUST ensure the host (the project default
-  host, or the explicit legacy slug) then publish+activate. It MUST NOT exit 3 with
-  `WRITE_REQUIRES_EXECUTE` and MUST talk to Console when args are valid.
-  `--execute` MUST be accepted as an unused no-op. `--body` MUST be wrapped
-  in a simple HTML5 document. Success JSON MUST include
-  `{url, site, slug, route, visibility, artifactId}`.
-- `pages create` without `--execute` MUST write the host record. It MUST NOT
-  exit 3 with `WRITE_REQUIRES_EXECUTE`. `--execute` MUST be accepted as an
-  unused no-op.
-- `pages publish` without `--execute` MUST upload/publish. It MUST NOT exit 3
-  with `WRITE_REQUIRES_EXECUTE` and MUST talk to Console when args are valid.
-  `--execute` MUST be accepted as an unused no-op.
+- `pages ship` without `--execute` MUST exit 3 with `WRITE_REQUIRES_EXECUTE`
+  and a plan, and MUST NOT call Console. With `--execute` it MUST ensure the
+  host (the project default host, or the explicit legacy slug) then
+  publish+activate. `--body` MUST be wrapped in a simple HTML5 document.
+  Success JSON MUST include `{url, site, slug, route, visibility, artifactId}`.
+  A successful ship MUST arm or reuse a `page.comment.created` trigger for
+  the current agent, filtered to that page. The dry-run plan MUST NOT contain
+  the HTML body or a host slug derived from `--title`.
+- `pages create` without `--execute` MUST exit 3 with `WRITE_REQUIRES_EXECUTE`
+  before any Console call. With `--execute` it MUST write the host record.
+- `pages publish` without `--execute` MUST exit 3 with `WRITE_REQUIRES_EXECUTE`
+  and MUST NOT talk to Console. With `--execute` and valid args it MUST
+  upload/publish.
 - `pages domains` without `--execute` MUST exit 3 before credential reads,
   project resolution or any Console/provider request.
 - `pages password set` without `--execute` MUST exit 3 BEFORE the hidden
@@ -50,9 +51,10 @@
   with exit 1; other provider messages MUST remain redacted.
 - `pages list --fields a,b,c --json` and `pages published --fields a,b,c
   --json` MUST return items containing only the requested fields.
-- Unbraked ops (`ship`, `create`, `publish`, visibility reductions and
-  `password status`) MUST keep immediate behavior and be declared as unbraked
-  in the spec.
+- Braked publish ops (`ship`, `create`, `publish`) MUST stay dry-run until
+  `--execute` and be declared that way in the spec. Unbraked ops (visibility
+  reductions and `password status`) MUST keep immediate behavior and be
+  declared as unbraked in the spec.
 - The dry-run plan of `pages domains` MUST work without saved Console scope,
   showing `(Console scope default)` placeholders instead of resolved refs.
 - `ravi skills show pages` and `ravi skills show ravi-system-pages` MUST
@@ -61,11 +63,14 @@
 - `pages assertion audiences set` and `remove` without `--execute` MUST exit 3
   before credentials or Console. `list` MUST stay read-only. The contract is
   `pages/assertion-audiences`.
-- The `pages` skill MUST teach `ravi pages ship … --json` as the only happy
-  path to get a URL, without required `--execute`, and MUST NOT teach
-  `create` + `publish` choreography. The happy path MUST be project → default
-  host → route, MUST say not to create one host per page, and MUST tell the
-  caller to list routes before publish. `create`/`publish` MAY appear only under
-  an advanced/compat or legacy section.
+- The `pages` skill MUST teach the caller to publish itself with
+  `ravi pages ship … --json --execute` as the only happy path to get a URL.
+  It MUST say not to ask another agent to publish. It MUST document the ship
+  write brake (exit 3 without `--execute`; public visibility allowed in the
+  same call). It MUST NOT teach `create` + `publish` choreography. The happy
+  path MUST be project → default host → route, MUST say `--title` does not
+  create a host, and MUST tell the caller to list routes before publish.
+  `create`/`publish` MAY appear only under an advanced/compat or legacy
+  section, and that section MUST show their `--execute` brake.
 - `bun test src/cli/commands/pages.test.ts` SHOULD pass after any change to
   the pages contract surface.

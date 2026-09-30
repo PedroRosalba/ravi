@@ -51,12 +51,17 @@ contract errors rethrow first, recognizable Console not-found failures map to
    `ravi pages published --json`. Sites/routes live only in Console, so there
    is no cheap local candidate source — listing suggestedAction, never
    similarity suggestions.
-4. `pages ship`, `pages create` and `pages publish` MUST execute immediately
-   when invoked with valid args. They MUST NOT dry-run, MUST NOT exit 3 with
-   `WRITE_REQUIRES_EXECUTE`, and MUST talk to Console (or fail on credentials /
-   usage) without `--execute`. `--execute` MAY remain as an unused
-   compatibility no-op so existing scripts keep working. Public visibility on
-   `ship`/`create`/`publish` is allowed in the same call. `pages domains` MUST
+4. `pages ship`, `pages create` and `pages publish` MUST default to dry-run.
+   Without `--execute` they MUST exit 3 with `WRITE_REQUIRES_EXECUTE` and a
+   plan, and MUST NOT call Console (no host create, upload session, or
+   release). With `--execute` they perform the write. Public visibility on
+   `ship`/`create`/`publish` is allowed in the same call once `--execute` is
+   set; omitting `--execute` stays a dry-run even when visibility is `public`.
+   Ship usage checks (required `--title`, exactly one of `--body` / `--html` /
+   `--dir`, reserved host slug `ravi` / `ravi-*`) MUST run before the brake, so
+   those failures stay usage errors on the dry-run path. The ship plan MUST
+   describe source shape only (kind, path, or body size) and MUST NOT carry
+   the HTML body or a host slug derived from `--title`. `pages domains` MUST
    still default to dry-run and require `--execute` before credential, project
    or provider resolution. Its plan MUST contain only parsed identifiers,
    counts and presence metadata.
@@ -84,7 +89,7 @@ contract errors rethrow first, recognizable Console not-found failures map to
     proves Console is up. Isolated CLIs MAY use the host unix-socket CLI
     gateway when `RAVI_CONTEXT_KEY` is set and `~/.ravi/cli-gateway.sock` is
     reachable. They MUST NOT auto-open raw `127.0.0.1`.
-11. `pages ship` without a positional slug MUST publish a route on the
+11. With `--execute`, `pages ship` without a positional slug MUST publish a route on the
     project's default Pages host: a listed site with `isDefault`, otherwise
     the project-owned slug `<orgSlug>-<projectSlug>` (created once, with
     `isDefault`, when it is missing and the slug is computable). `--title`
@@ -103,14 +108,14 @@ contract errors rethrow first, recognizable Console not-found failures map to
 
 | op | class | brake |
 |---|---|---|
-| ship | publishes a route on the project default host (creates that one host when missing). A positional slug is a legacy extra host | not braked / executes immediately (`--execute` unused no-op) |
-| publish | uploads bytes and (default) activates a hosted route | not braked / executes immediately (`--execute` unused no-op) |
+| ship | publishes a route on the project default host (creates that one host when missing). A positional slug is a legacy extra host | dry-run + `--execute`, before any Console call |
+| publish | uploads bytes and (default) activates a hosted route | dry-run + `--execute`, before any Console call |
 | password set | flips the route access policy on a live site (high) | dry-run + `--execute`, braked before the secret prompt |
 | password remove | widens who can reach the route, up to fully public (high) | dry-run + `--execute`, visibility validated first |
 | update / visibility → `public` | exposes already-hosted content to the open web | conditional dry-run + `--execute` |
 | visibility --route → `public` | flips one published route's access policy without re-uploading bytes | conditional dry-run + `--execute`; plan names site vs route and current vs target |
 | update / visibility → `private`/`protected_link` | reduces exposure, reversible | not braked (declared) |
-| create | creates a host record in Ravi Console | not braked / executes immediately (`--execute` unused no-op) |
+| create | creates a host record in Ravi Console | dry-run + `--execute`, before any Console call |
 | domains | changes provider-backed hostname bindings and routing | dry-run + `--execute` |
 | assertion audiences set | registers Pages host origins that may receive a viewer assertion for one aud | dry-run + `--execute` (see `pages/assertion-audiences`) |
 | assertion audiences remove | drops one assertion audience | dry-run + `--execute` (see `pages/assertion-audiences`) |
@@ -136,14 +141,17 @@ route.
 
 The agent-first happy path is `ravi pages ship`, taught by the `pages` skill
 (`ravi skills show pages` / `ravi skills show ravi-system-pages`) and by
-`AGENTS.md` ("Ravi Pages Publishing"). Agents MUST NOT choreograph
-`create` + `publish` to get a URL. `create` and `publish` remain implemented
-as advanced/compat commands (host-only create; publish onto an existing host
-or a local `art_*`) and MUST keep working. They MUST NOT be taught as the
-default path. The `contentPublishCommand` hint returned by `pages create`
-(`src/pages/client.ts`) still points at `pages publish` without a required
-`--execute`. The `artifacts` skill MUST NOT teach Pages publishing; it points
-at skill `pages`.
+`AGENTS.md` ("Ravi Pages Publishing"). The agent that needs a URL MUST run
+`ravi pages ship … --execute` itself. It MUST NOT hand the publish to another
+agent. Agents MUST NOT choreograph `create` + `publish` to get a URL.
+`create` and `publish` remain implemented as advanced/compat commands
+(host-only create; publish onto an existing host or a local `art_*`) and MUST
+keep working, including the same dry-run until `--execute`. They MUST NOT be
+taught as the default path. The `contentPublishCommand` hint returned by
+`pages create` (`src/pages/client.ts`) still points at `pages publish` without
+`--execute`, so copying that hint verbatim is a dry-run (exit 3) until the
+caller adds `--execute`. The `artifacts` skill MUST NOT teach Pages
+publishing; it points at skill `pages`.
 
 The default skill gate `pages` (`/^pages(?:[._]|$)/` → `ravi-system-pages`)
 MUST load the skill for `ravi pages …` and `pages.password`.
@@ -161,10 +169,12 @@ MUST load the skill for `ravi pages …` and `pages.password`.
 - `bun test src/cli/commands/pages.test.ts` green (contract block included),
   no new failures vs the `dev` baseline.
 - Live checks on the local CLI: `pages ship --title T --route /weekly --body "<p>x</p>" --json`
+  → exit 3, plan only, no Console call. The same command with `--execute`
   → project default host + that route and JSON `{url,site,slug,route,visibility,artifactId}`.
   `slug` is the host, not a slug derived from the title.
-  (passing leftover `--execute` is a no-op); `pages create p s --json` →
-  writes the host immediately; `pages publish p s ./site --json` → publishes;
+  `pages create p s --json` → exit 3; `pages create p s --json --execute` →
+  writes the host; `pages publish p s ./site --json` → exit 3;
+  `pages publish p s ./site --json --execute` → publishes;
   `pages domains p s docs.example.com --json` → exit 3 before credentials;
   `pages password set p s --json`
   → exit 3 without prompting;   `pages visibility p s public --json` → exit 3;
@@ -188,4 +198,5 @@ MUST load the skill for `ravi pages …` and `pages.password`.
   credential/provider state. Braking `password set` AFTER the prompt would
   make dry-runs read secret material; the brake fires right after arg
   parsing, before prompt and before any Console call. `create`, `publish` and
-  `ship` are unbraked on purpose; leftover `--execute` is ignored.
+  `ship` use the same early brake: a reachable host or release is never
+  implied. Leftover calls without `--execute` exit 3 and do not upload.

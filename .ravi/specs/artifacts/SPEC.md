@@ -204,22 +204,22 @@ site record only. `ravi pages publish` remains the advanced upload primitive
 (directory/file or an existing local `art_*`). `ravi artifacts publish`
 remains the generic primitive under the hood.
 
-Canonical one-shot:
+Canonical one-shot (dry-run until `--execute`):
 
 ```bash
-ravi pages ship --title "Demo" --dir ./site --json
+ravi pages ship --title "Demo" --dir ./site --json --execute
 ```
 
-Advanced directory publish (existing host):
+Advanced directory publish (existing host; also dry-run until `--execute`):
 
 ```bash
-ravi pages publish <project-ref> <site-slug> ./site --route / --visibility public --entrypoint index.html
+ravi pages publish <project-ref> <site-slug> ./site --route / --visibility public --entrypoint index.html --execute
 ```
 
 Advanced local artifact publish:
 
 ```bash
-ravi pages publish <project-ref> <site-slug> <artifact-id> --route / --visibility public
+ravi pages publish <project-ref> <site-slug> <artifact-id> --route / --visibility public --execute
 ```
 
 Synchronous generation remains available only when explicitly requested:

@@ -51,33 +51,40 @@ Load the Pages skill first:
 ravi skills show pages
 ```
 
-Happy path is one command — `ravi pages ship`. Do not choreograph `create` + `publish`.
+You publish yourself with `ravi pages ship`. Do not ask another agent to publish
+for you. Happy path is one command. Do not choreograph `create` + `publish`.
 One project owns one default host (`<orgSlug>-<projectSlug>.ravi.page`). Pages are
 routes on that host. `--title` is the page title and does not create a host.
 List routes before choosing `--route`. Do not create one site per page.
 Prefixes `ravi` and `ravi-*` are reserved and are not user-creatable.
+Pass exactly one of `--body`, `--html`, or `--dir`.
 
 ```bash
 ravi pages published --project <project> --json
-ravi pages ship --project <project> --title "Weekly report" --route /weekly --body "<h1>OK</h1>" --json
-ravi pages ship --title "Weekly report" --body "<h1>OK</h1>" --json
+ravi pages ship --project <project> --title "Weekly report" --route /weekly --body "<h1>OK</h1>" --visibility public --json --execute
+ravi pages ship --title "Weekly report" --body "<h1>OK</h1>" --json --execute
 ```
 
 The command without `--route` publishes the project home `/` on the default host.
 A positional slug is a legacy extra host, not the happy path.
+Success JSON is `{ url, site, slug, route, visibility, artifactId }`.
+A successful ship arms or reuses a `page.comment.created` trigger for the
+current agent, filtered to that page.
 
 `create` is host-only compatibility. `publish` is the advanced upload primitive
 (including an existing local `art_*`). They stay available; the agent happy
 path is `ravi pages ship`, not `artifacts publish`.
 
 ```bash
-ravi pages create <project-ref> <site-slug> --visibility public
-ravi pages publish <project-ref> <site-slug> <artifact-id> --route / --visibility public
+ravi pages create <project-ref> <site-slug> --visibility public --execute
+ravi pages publish <project-ref> <site-slug> <artifact-id> --route / --visibility public --execute
 ```
 
-`ship`, `create` and `publish` execute immediately. Leftover `--execute` on
-those ops is ignored. Domain binding, password changes, and switching a site
-to public visibility are dry-run by default (exit 3): re-run with `--execute`.
+`ship`, `create` and `publish` are dry-run by default. Without `--execute`
+nothing is uploaded (exit 3 + plan). With `--execute` they write. Public
+visibility is allowed in the same call. Domain binding, password changes, and
+switching a site to public visibility stay dry-run by default (exit 3): re-run
+with `--execute`. Reducing visibility writes immediately.
 
 Change who can reach an already-published route without re-uploading files:
 
