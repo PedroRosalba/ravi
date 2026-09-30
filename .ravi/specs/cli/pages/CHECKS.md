@@ -15,12 +15,11 @@
   `--execute` MUST be accepted as an unused no-op. `--body` MUST be wrapped
   in a simple HTML5 document. Success JSON MUST include
   `{url, site, slug, route, visibility, artifactId}`.
-- `pages create` without `--execute` MUST write the host record. It MUST NOT
-  exit 3 with `WRITE_REQUIRES_EXECUTE`. `--execute` MUST be accepted as an
-  unused no-op.
-- `pages publish` without `--execute` MUST upload/publish. It MUST NOT exit 3
-  with `WRITE_REQUIRES_EXECUTE` and MUST talk to Console when args are valid.
-  `--execute` MUST be accepted as an unused no-op.
+- `pages create` without `--execute` MUST exit 3 with `WRITE_REQUIRES_EXECUTE`
+  before any Console call. With `--execute` it MUST write the host record.
+- `pages publish` without `--execute` MUST exit 3 with
+  `WRITE_REQUIRES_EXECUTE` before any Console call. With `--execute` it MUST
+  upload/publish.
 - `pages domains` without `--execute` MUST exit 3 before credential reads,
   project resolution or any Console/provider request.
 - `pages password set` without `--execute` MUST exit 3 BEFORE the hidden

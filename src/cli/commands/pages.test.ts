@@ -1080,7 +1080,7 @@ describe("pages agent-first contract", () => {
     expect(error.details.suggestedAction).toContain("ravi pages published");
   });
 
-  it("ship is dry-run by default and only publishes with --execute", async () => {
+  it("ship publishes without --execute and ignores a leftover --execute", async () => {
     stateDir = await createIsolatedRaviState("ravi-pages-ship-brake-test-");
     const listAndCreate: Array<{ method: string; path: string; body: unknown }> = [];
     const client = {
@@ -1137,35 +1137,25 @@ describe("pages agent-first contract", () => {
         execute,
       );
 
-    const error = await expectContractError(() => ship(), "WRITE_REQUIRES_EXECUTE", 3);
-
-    expect(error.details.plan).toMatchObject({
-      project: "proj",
-      slug: "(project default host)",
-      host: "(project default host)",
-      legacyHost: false,
-      route: "/",
-      entrypoint: "index.html",
-      visibility: "private",
-      source: { kind: "body", bodyChars: 11 },
-    });
-    // The planned ship carries shape and size, never the content itself, and
-    // never a host slug derived from --title.
-    expect(JSON.stringify(error.details.plan)).not.toContain("Weekly report");
-    expect(JSON.stringify(error.details.plan)).not.toContain("weekly-report");
-    // The brake runs before any Console call: a dry-run ship must not create a
-    // host, an upload session or a release.
-    expect(listAndCreate).toEqual([]);
-
-    const withExecute = await captureConsole(() => ship(true));
+    const withoutExecute = await captureConsole(() => ship());
 
     expect(listAndCreate).toEqual([{ method: "GET", path: "/api/cli/projects/proj/pages", body: undefined }]);
-    expect(JSON.parse(withExecute.output)).toMatchObject({
+    expect(JSON.parse(withoutExecute.output)).toMatchObject({
       artifactId: "cloud_art_unbraked_ship",
       slug: "acme-proj",
       success: true,
       url: "https://acme-proj.ravi.page/",
     });
+
+    // Callers that still pass --execute keep working: the flag is ignored.
+    const withExecute = await captureConsole(() => ship(true));
+
+    expect(JSON.parse(withExecute.output)).toMatchObject({
+      artifactId: "cloud_art_unbraked_ship",
+      success: true,
+      url: "https://acme-proj.ravi.page/",
+    });
+    expect(client.finalizeArtifactPublish).toHaveBeenCalledTimes(2);
   });
 
   it("ship with --execute wraps --body as HTML5, reuses an existing slug, and returns the JSON shape", async () => {
