@@ -25644,6 +25644,10 @@ export const ContextIssueInputSchema = {
     "ttl": {
       "description": "TTL like 30m, 2h or 1d (default: 1h, capped by the parent context)",
       "type": "string"
+    },
+    "withSessionActor": {
+      "description": "Admin-only: project the verified human actor of the delegated session's live turn (fails closed otherwise)",
+      "type": "boolean"
     }
   },
   "required": [
