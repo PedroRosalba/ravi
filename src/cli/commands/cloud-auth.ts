@@ -11,7 +11,7 @@ import {
   CloudAuthError,
   cloudAuthErrorFromUnknown,
   isCloudAuthError,
-  isRetryableCloudAuthCode,
+  isRetryableCloudAuthError,
 } from "../../cloud-auth/errors.js";
 import { redactCloudAuthPayload } from "../../cloud-auth/redaction.js";
 import {
@@ -299,21 +299,17 @@ async function exchangeUntilComplete(input: {
   const deadline = input.clock() + input.timeoutSeconds * 1000;
   const intervalMs = input.intervalSeconds * 1000;
   let transientAttempt = 0;
+  const providerToken: { accessToken?: string } = {};
 
   while (true) {
     try {
-      const credentials = await exchangeDeviceCredentials(input);
+      const credentials = await exchangeDeviceCredentials({ ...input, providerToken });
       return {
         ...credentials,
         createdAt: input.existing?.createdAt ?? credentials.createdAt,
       };
     } catch (error) {
-      if (
-        !isCloudAuthError(error) ||
-        !isRetryableCloudAuthCode(error.code) ||
-        !input.poll ||
-        input.clock() >= deadline
-      ) {
+      if (!isCloudAuthError(error) || !isRetryableCloudAuthError(error) || !input.poll || input.clock() >= deadline) {
         throw error;
       }
       if (error.code === "AUTH_PENDING") {
@@ -370,6 +366,8 @@ async function exchangeDeviceCredentials(input: {
   config: ConsoleAuthConfig;
   deviceCode: string;
   installation: NonNullable<Parameters<ConsoleApiClient["exchange"]>[0]["installation"]>;
+  /** Provider token kept across poll retries: the device code is single-use once the provider grants it. */
+  providerToken: { accessToken?: string };
 }) {
   if (input.config.mode === "console_device" || !input.config.endpoints?.token) {
     return input.client.exchange({
@@ -379,10 +377,10 @@ async function exchangeDeviceCredentials(input: {
     });
   }
 
-  const providerToken = await input.client.pollDeviceToken(input.config, input.deviceCode);
+  input.providerToken.accessToken ??= (await input.client.pollDeviceToken(input.config, input.deviceCode)).accessToken;
   return input.client.exchange({
     installationId: input.installationId,
-    workosAccessToken: providerToken.accessToken,
+    workosAccessToken: input.providerToken.accessToken,
     installation: input.installation,
   });
 }

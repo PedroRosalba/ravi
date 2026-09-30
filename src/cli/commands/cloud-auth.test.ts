@@ -536,6 +536,47 @@ describe("cloud auth login polling", () => {
     expectSameDeviceGrant(harness.exchangeBodies, harness.deviceStarts());
   });
 
+  it("keeps the provider token and retries only the Console exchange after RATE_LIMITED", async () => {
+    const harness = scriptedLoginHarness({
+      providerTokens: [providerTokenResponse()],
+      exchanges: [loginErrorResponse("RATE_LIMITED", 429, { "Retry-After": "3" }), loginSuccessResponse()],
+    });
+
+    const { result } = await harness.run();
+
+    expect(result).toMatchObject({ success: true });
+    expect(harness.sleeps).toEqual([3_000]);
+    expect(harness.providerPolls()).toBe(1);
+    expect(harness.exchangeBodies).toHaveLength(2);
+    expect(harness.exchangeBodies.every((body) => body.workosAccessToken === "provider-access-secret")).toBe(true);
+    expect(harness.exchangeBodies.every((body) => body.deviceCode === undefined)).toBe(true);
+  });
+
+  it("keeps polling the provider while it reports authorization_pending", async () => {
+    const harness = scriptedLoginHarness({
+      providerTokens: [oauthErrorResponse("authorization_pending", 400), providerTokenResponse()],
+      exchanges: [loginSuccessResponse()],
+    });
+
+    await harness.run();
+
+    expect(harness.sleeps).toEqual([5_000]);
+    expect(harness.providerPolls()).toBe(2);
+    expect(harness.exchangeBodies).toHaveLength(1);
+  });
+
+  it("does not retry a misconfigured provider client", async () => {
+    const harness = scriptedLoginHarness({
+      providerTokens: [oauthErrorResponse("invalid_client", 401)],
+      exchanges: [],
+    });
+
+    await expect(harness.run()).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE", retryable: false });
+    expect(harness.sleeps).toEqual([]);
+    expect(harness.providerPolls()).toBe(1);
+    expect(harness.exchangeBodies).toHaveLength(0);
+  });
+
   it("does not sleep past the deadline when Retry-After exceeds the remaining timeout", async () => {
     let now = 1_000_000;
     const harness = scriptedLoginHarness({
@@ -570,6 +611,8 @@ async function captureConsole<T>(run: () => T | Promise<T>): Promise<{ output: s
 
 function scriptedLoginHarness(input: {
   exchanges: Response[];
+  /** Provider token endpoint responses. When set, login runs in provider (non console_device) mode. */
+  providerTokens?: Response[];
   options?: { poll?: boolean; timeoutSeconds?: string; intervalSeconds?: string };
   sleep?: (ms: number) => Promise<void>;
   clock?: () => number;
@@ -579,11 +622,17 @@ function scriptedLoginHarness(input: {
   const sleeps: number[] = [];
   let deviceStarts = 0;
   let exchangeIndex = 0;
+  let providerPolls = 0;
   const client = new ConsoleApiClient({
     consoleUrl: "https://console.example",
     fetch: async (url, init) => {
       const path = new URL(url).pathname;
-      if (path === "/api/cli/auth/config") return loginConfigResponse();
+      if (path === "/api/cli/auth/config") return loginConfigResponse(input.providerTokens !== undefined);
+      if (url === PROVIDER_TOKEN_URL) {
+        const response = input.providerTokens?.[providerPolls];
+        providerPolls += 1;
+        return response ?? oauthErrorResponse("expired_token", 400);
+      }
       if (path === "/api/cli/auth/device") {
         deviceStarts += 1;
         return loginDeviceResponse();
@@ -603,6 +652,7 @@ function scriptedLoginHarness(input: {
     exchangeBodies,
     sleeps,
     deviceStarts: () => deviceStarts,
+    providerPolls: () => providerPolls,
     run: () =>
       captureConsole(() =>
         runLogin(
@@ -652,16 +702,26 @@ function loginJson(payload: unknown, status = 200, headers: Record<string, strin
   });
 }
 
-function loginConfigResponse(): Response {
+const PROVIDER_TOKEN_URL = "https://provider.example/oauth/token";
+
+function loginConfigResponse(providerMode = false): Response {
   return loginJson({
     configured: true,
     clientId: "ravi-cli",
-    mode: "console_device",
+    ...(providerMode ? {} : { mode: "console_device" }),
     endpoints: {
       deviceAuthorization: "https://console.example/api/cli/auth/device",
-      token: null,
+      token: providerMode ? PROVIDER_TOKEN_URL : null,
     },
   });
+}
+
+function providerTokenResponse(): Response {
+  return loginJson({ access_token: "provider-access-secret", token_type: "Bearer", expires_in: 300 });
+}
+
+function oauthErrorResponse(error: string, status: number): Response {
+  return loginJson({ error }, status);
 }
 
 function loginDeviceResponse(): Response {

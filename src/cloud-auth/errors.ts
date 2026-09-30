@@ -36,6 +36,15 @@ export function isRetryableCloudAuthCode(code: CloudAuthErrorCode): boolean {
   return RETRYABLE_CLOUD_AUTH_CODES.has(code);
 }
 
+/**
+ * Retryability of a concrete error. An explicit `retryable` on the error wins
+ * over its code, so a misconfiguration reported as `SERVER_UNAVAILABLE` is not
+ * retried.
+ */
+export function isRetryableCloudAuthError(error: CloudAuthError): boolean {
+  return error.retryable ?? isRetryableCloudAuthCode(error.code);
+}
+
 const KNOWN_CODES = new Set<string>(CLOUD_AUTH_ERROR_CODES);
 
 /** Console `/api/cli/link` codes → CLI codes already exposed to agents. */
@@ -50,6 +59,8 @@ export class CloudAuthError extends Error {
   readonly status?: number;
   /** Wait hint from Retry-After or a provider body. Omitted when the server did not say how long to wait. */
   readonly retryAfterMs?: number;
+  /** Overrides the code's default retryability. Omitted when the code decides. */
+  readonly retryable?: boolean;
   readonly issues?: PublicValidationIssue[];
   readonly exitCode: number;
 
@@ -62,6 +73,7 @@ export class CloudAuthError extends Error {
       cause?: unknown;
       issues?: PublicValidationIssue[];
       retryAfterMs?: number;
+      retryable?: boolean;
     } = {},
   ) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
@@ -69,6 +81,7 @@ export class CloudAuthError extends Error {
     this.code = code;
     this.status = options.status;
     this.retryAfterMs = normalizeRetryAfterMs(options.retryAfterMs);
+    this.retryable = options.retryable;
     this.issues = options.issues;
     this.exitCode = options.exitCode ?? defaultExitCode(code);
   }

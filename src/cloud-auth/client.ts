@@ -538,11 +538,10 @@ function mapOAuthDeviceError(status: number, payload: unknown, headers?: Headers
     return new CloudAuthError("ORG_ACCESS_DENIED", rawDescription ?? "Login was denied.", options);
   }
   if (normalized === "invalid_client") {
-    return new CloudAuthError(
-      "SERVER_UNAVAILABLE",
-      rawDescription ?? "Console CLI auth client is misconfigured.",
-      options,
-    );
+    return new CloudAuthError("SERVER_UNAVAILABLE", rawDescription ?? "Console CLI auth client is misconfigured.", {
+      ...options,
+      retryable: false,
+    });
   }
 
   const fallback = statusToErrorCode(status);
@@ -665,7 +664,7 @@ function expiresInToIso(value: number | null): string | null {
 function requireClientId(config: ConsoleAuthConfig): string {
   const clientId = stringValue(config.clientId);
   if (config.configured === false || !clientId) {
-    throw new CloudAuthError("SERVER_UNAVAILABLE", "Console CLI auth is not configured.");
+    throw new CloudAuthError("SERVER_UNAVAILABLE", "Console CLI auth is not configured.", { retryable: false });
   }
   return clientId;
 }
@@ -673,7 +672,7 @@ function requireClientId(config: ConsoleAuthConfig): string {
 function requireAuthEndpoint(config: ConsoleAuthConfig, key: "deviceAuthorization" | "token"): string {
   const endpoint = stringValue(config.endpoints?.[key]);
   if (config.configured === false || !endpoint) {
-    throw new CloudAuthError("SERVER_UNAVAILABLE", "Console CLI auth is not configured.");
+    throw new CloudAuthError("SERVER_UNAVAILABLE", "Console CLI auth is not configured.", { retryable: false });
   }
   return endpoint;
 }

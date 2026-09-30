@@ -104,7 +104,11 @@ The CLI SHOULD implement a browser/device OAuth flow:
    configured poll interval. `RATE_LIMITED` and `SERVER_UNAVAILABLE` wait with
    exponential backoff and jitter, and wait at least as long as a positive
    `Retry-After` when the response exposes one. Any other auth error stops the
-   poll immediately. Reaching the timeout stops further retries.
+   poll immediately, and so does a `SERVER_UNAVAILABLE` that reports an auth
+   misconfiguration (`invalid_client`, missing client or endpoint). Once the
+   provider grants a token, retries reuse it and only repeat the Console
+   exchange, because the device code is single-use. Reaching the timeout stops
+   further retries.
 5. Send the provider access token to the Console exchange endpoint.
 6. Store only Ravi-owned CLI credentials returned by Console.
 7. Use Ravi CLI access token for API requests.
