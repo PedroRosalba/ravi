@@ -3,6 +3,8 @@ import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from "bun:tes
 const actualRouterIndexModule = await import("../router/index.js");
 const actualContactsModule = await import("../contacts.js");
 const actualSessionStreamModule = await import("./session-stream.js");
+// Cópia: o namespace é mutado in-place por mock.module.
+const actualNatsModule = { ...(await import("../nats.js")) };
 const { logger } = await import("../utils/logger.js");
 
 const publishCalls: Array<[string, Record<string, unknown>]> = [];
@@ -101,6 +103,10 @@ const { OmniConsumer } = await import("./consumer.js");
 afterAll(() => {
   loggerChildSpy.mockRestore();
   mock.restore();
+  // mock.restore() não desfaz mock.module: sem isso o `nats` fake vaza para
+  // outros arquivos, e um spyOn(nats, "emit") + mockRestore() posterior zera o
+  // mock() de emit (passa a retornar undefined e quebra `nats.emit(...).catch`).
+  mock.module("../nats.js", () => actualNatsModule);
 });
 
 function makeEvent(instanceId: string) {
