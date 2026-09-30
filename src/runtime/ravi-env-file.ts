@@ -9,6 +9,8 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getRaviStateDir } from "../utils/paths.js";
+import { describeResolvedSecretShapeMismatch } from "./credential-secret-shape.js";
+import { clearRaviEnvFileSourced, isRaviEnvFileSourced, markRaviEnvFileSourced } from "./ravi-env-file-origin.js";
 
 const ENV_DIR_MODE = 0o700;
 const ENV_FILE_MODE = 0o600;
@@ -56,9 +58,13 @@ export class RaviEnvFileError extends Error {
   }
 }
 
+export type RaviEnvOrigin = "file" | "process" | "file+process" | "absent";
+
 export type RaviEnvEntry = {
   key: string;
   present: boolean;
+  processPresent: boolean;
+  origin: RaviEnvOrigin;
   secret: boolean;
   redacted: boolean;
   value: string | null;
@@ -102,6 +108,30 @@ export function assertRaviEnvKey(key: string): string {
   return normalized;
 }
 
+function envOrigin(filePresent: boolean, processPresent: boolean): RaviEnvOrigin {
+  if (filePresent && processPresent) return "file+process";
+  if (filePresent) return "file";
+  if (processPresent) return "process";
+  return "absent";
+}
+
+function assertRaviEnvSecretShape(key: string, value: string): void {
+  const mismatch = describeResolvedSecretShapeMismatch({
+    label: "Ravi env file",
+    authMethod:
+      key === "CLAUDE_CODE_OAUTH_TOKEN" ? "claude-oauth" : key === "ANTHROPIC_API_KEY" ? "api-key" : undefined,
+    targetName: key,
+    value,
+  });
+  if (!mismatch) return;
+  throw new RaviEnvFileError(
+    "SECRET_SHAPE_MISMATCH",
+    mismatch.expected === "oauth"
+      ? `${key} must be a Claude OAuth token (sk-ant-oat), not an Anthropic API key. Put API keys in ANTHROPIC_API_KEY.`
+      : `${key} must be an Anthropic API key (sk-ant-api), not an OAuth token. Put OAuth tokens in CLAUDE_CODE_OAUTH_TOKEN.`,
+  );
+}
+
 export function assertRaviEnvValue(value: string): string {
   if (value.length === 0) {
     throw new RaviEnvFileError("ENV_VALUE_INVALID", "Env value must not be empty. Use unset to remove a key.");
@@ -117,12 +147,20 @@ export function getRaviEnvKey(key: string, env: NodeJS.ProcessEnv = process.env)
   const path = getRaviEnvFilePath(env);
   const fileEnv = readRaviEnvMap(env);
   const present = fileEnv.has(normalized);
+  // The CLI/daemon copy the env file into process.env at startup; that copy is
+  // the file value, not an inherited process value. Once the file changes or
+  // drops the key (e.g. from another CLI process), the retained copy is a real
+  // process value again: this process keeps using it until restart.
+  const fileCopy = isRaviEnvFileSourced(env, normalized, path) && fileEnv.get(normalized) === env[normalized];
+  const processPresent = Boolean(env[normalized]?.trim()) && !fileCopy;
   const secret = isRaviEnvSecretKey(normalized);
   return {
     key: normalized,
     present,
+    processPresent,
+    origin: envOrigin(present, processPresent),
     secret,
-    redacted: secret && present,
+    redacted: secret && (present || processPresent),
     value: present ? (secret ? "[REDACTED]" : (fileEnv.get(normalized) ?? null)) : null,
     path,
   };
@@ -131,8 +169,10 @@ export function getRaviEnvKey(key: string, env: NodeJS.ProcessEnv = process.env)
 export function setRaviEnvKey(key: string, value: string, env: NodeJS.ProcessEnv = process.env): RaviEnvMutation {
   const normalized = assertRaviEnvKey(key);
   const nextValue = assertRaviEnvValue(value);
+  assertRaviEnvSecretShape(normalized, nextValue);
   writeRaviEnvMap(upsertEnvMap(readRaviEnvMap(env), normalized, nextValue), env);
   env[normalized] = nextValue;
+  markRaviEnvFileSourced(env, normalized, nextValue, getRaviEnvFilePath(env));
   return {
     ...getRaviEnvKey(normalized, env),
     action: "set",
@@ -143,15 +183,19 @@ export function setRaviEnvKey(key: string, value: string, env: NodeJS.ProcessEnv
 export function unsetRaviEnvKey(key: string, env: NodeJS.ProcessEnv = process.env): RaviEnvMutation {
   const normalized = assertRaviEnvKey(key);
   const current = readRaviEnvMap(env);
-  if (current.has(normalized)) {
+  const fileHadKey = current.has(normalized);
+  if (fileHadKey) {
     current.delete(normalized);
     writeRaviEnvMap(current, env);
+    if (isRaviEnvFileSourced(env, normalized, getRaviEnvFilePath(env))) {
+      delete env[normalized];
+    }
+    clearRaviEnvFileSourced(env, normalized);
   }
-  delete env[normalized];
   return {
     ...getRaviEnvKey(normalized, env),
     action: "unset",
-    daemonReloadRequired: true,
+    daemonReloadRequired: fileHadKey,
   };
 }
 

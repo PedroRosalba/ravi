@@ -27,11 +27,18 @@ import { buildPluginSkillVisibilitySnapshot, emptySkillVisibilitySnapshot } from
 import { createRuntimeTerminalEventTracker } from "./terminality.js";
 import { materializeRuntimeModelBroker } from "./model-broker-materializer.js";
 import { SANITIZED_ENV_VARS } from "../hooks/sanitize-bash.js";
+import { logger } from "../utils/logger.js";
 import { coalesceAssistantTextBlocks } from "./assistant-transcript.js";
+import {
+  CLAUDE_INHERITED_AUTH_ENV_KEYS,
+  RAVI_CLAUDE_MANAGED_AUTH_ENV,
+  describeResolvedSecretShapeMismatch,
+} from "./credential-secret-shape.js";
 
 const nodeRequire = createRequire(import.meta.url);
+const claudeLog = logger.child("claude-provider");
 const CLAUDE_CODE_EXECUTABLE_ENV_KEYS = ["RAVI_CLAUDE_CODE_EXECUTABLE", "CLAUDE_CODE_EXECUTABLE"] as const;
-const CLAUDE_CODE_AUTH_ENV_KEYS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
+const CLAUDE_CODE_AUTH_ENV_KEYS = CLAUDE_INHERITED_AUTH_ENV_KEYS;
 
 /**
  * Discover the agent's own local skills (its curated arsenal) from the setting
@@ -414,14 +421,60 @@ export function buildClaudeCodeEnvironment(inputEnv?: Record<string, string>): R
     return env;
   }
 
+  const managedAuth = env[RAVI_CLAUDE_MANAGED_AUTH_ENV] === "1";
+  delete env[RAVI_CLAUDE_MANAGED_AUTH_ENV];
+
+  for (const key of CLAUDE_CODE_AUTH_ENV_KEYS) {
+    const current = env[key]?.trim();
+    if (!current) continue;
+    const mismatch = describeResolvedSecretShapeMismatch({
+      label: "Claude runtime env",
+      authMethod: authMethodForClaudeEnvKey(key),
+      targetName: key,
+      value: current,
+    });
+    if (!mismatch) continue;
+    delete env[key];
+    claudeLog.warn("Dropped Claude auth env whose secret shape does not match the variable", {
+      envKey: key,
+      authMethod: authMethodForClaudeEnvKey(key) ?? null,
+      expected: mismatch.expected,
+      detected: mismatch.detected,
+    });
+  }
+
+  // A selected credential already decided which auth keys exist. Do not copy
+  // process/pm2 values back in over an auth profile or a different secret.
+  if (managedAuth) return env;
+
   for (const key of CLAUDE_CODE_AUTH_ENV_KEYS) {
     const processValue = process.env[key]?.trim();
-    if (processValue && !env[key]?.trim()) {
-      env[key] = processValue;
+    if (!processValue || env[key]?.trim()) continue;
+    const mismatch = describeResolvedSecretShapeMismatch({
+      label: "process environment",
+      authMethod: authMethodForClaudeEnvKey(key),
+      targetName: key,
+      value: processValue,
+    });
+    if (mismatch) {
+      claudeLog.warn("Refusing to backfill Claude auth env from the process environment", {
+        envKey: key,
+        authMethod: authMethodForClaudeEnvKey(key) ?? null,
+        expected: mismatch.expected,
+        detected: mismatch.detected,
+      });
+      continue;
     }
+    env[key] = processValue;
   }
 
   return env;
+}
+
+function authMethodForClaudeEnvKey(key: string): string | undefined {
+  if (key === "CLAUDE_CODE_OAUTH_TOKEN") return "claude-oauth";
+  if (key === "ANTHROPIC_API_KEY") return "api-key";
+  return undefined;
 }
 
 export function resolveClaudeCodeExecutable(env: Record<string, string | undefined> = process.env): string | undefined {

@@ -3,6 +3,8 @@ import { executeWrite } from "../db/write-retry.js";
 import { getDb } from "../router/router-db.js";
 import { selectRuntimeCredential, type RuntimeCredentialSelectionResult } from "./credential-pool.js";
 import { refreshRuntimeCredentialPool } from "./credential-refresh.js";
+import { applyRuntimeCredentialShapeInvalid } from "./credential-store.js";
+import { describeResolvedSecretShapeMismatch } from "./credential-secret-shape.js";
 import type {
   RuntimeCredentialAttemptBinding,
   RuntimeCredentialRecord,
@@ -38,7 +40,7 @@ export async function resolveRuntimeCredentialAttemptBinding(
       const managedPoolConfigured = selection.candidates.length > 0 || selection.rejected.length > 0;
 
       for (const candidate of selection.candidates) {
-        const attempt = tryResolveAttemptBinding(candidate, options.env ?? process.env);
+        const attempt = tryResolveAttemptBinding(db, candidate, options.env ?? process.env);
         if (attempt.ok) {
           const attemptId = `rcatt_${randomUUID()}`;
           db.prepare(
@@ -224,6 +226,9 @@ export function serializeRuntimeCredentialAttemptBinding(binding: RuntimeCredent
     authMethod: binding.authMethod ?? null,
     sessionCompatibilityKey: binding.sessionCompatibilityKey ?? null,
     authProfileRef: binding.authProfileRef ? redactPath(binding.authProfileRef) : null,
+    ...(binding.blockedProcessAuthEnvKeys?.length
+      ? { blockedProcessAuthEnvKeys: [...binding.blockedProcessAuthEnvKeys].sort() }
+      : {}),
     envKeys: Object.keys(binding.resolvedEnv).map(redactEnvName).sort(),
     sensitiveEnvKeys: binding.sensitiveEnvKeys.map(redactEnvName).sort(),
     remoteForwardEnvKeys: binding.remoteForwardEnvKeys.map(redactEnvName).sort(),
@@ -240,6 +245,7 @@ export function serializeRuntimeCredentialAttemptBinding(binding: RuntimeCredent
 }
 
 function tryResolveAttemptBinding(
+  db: ReturnType<typeof getDb>,
   credential: RuntimeCredentialRecord,
   env: Record<string, string | undefined>,
 ): { ok: true; binding: RuntimeCredentialAttemptBinding } | { ok: false; reason: string } {
@@ -254,6 +260,18 @@ function tryResolveAttemptBinding(
     const resolved = resolveSecretBinding(binding, env);
     if (!resolved.ok) return resolved;
     resolvedEnv[binding.targetName] = resolved.value;
+  }
+
+  for (const [targetName, value] of Object.entries(resolvedEnv)) {
+    const mismatch = describeResolvedSecretShapeMismatch({
+      label: credential.label,
+      authMethod: credential.authMethod,
+      targetName,
+      value,
+    });
+    if (!mismatch) continue;
+    applyRuntimeCredentialShapeInvalid(db, credential.id, mismatch.message);
+    return { ok: false, reason: mismatch.reason };
   }
 
   return {

@@ -200,6 +200,8 @@ export interface RuntimeCredentialAttemptBinding {
   authMethod?: string;
   sessionCompatibilityKey?: string;
   authProfileRef?: string;
+  /** Process auth env keys removed because this credential is the auth authority. */
+  blockedProcessAuthEnvKeys?: string[];
   resolvedEnv: Record<string, string>;
   sensitiveEnvKeys: string[];
   remoteForwardEnvKeys: string[];

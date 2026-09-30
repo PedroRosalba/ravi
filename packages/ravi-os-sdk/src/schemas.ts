@@ -57142,10 +57142,22 @@ export const RuntimeEnvGetReturnSchema = {
     "key": {
       "type": "string"
     },
+    "origin": {
+      "enum": [
+        "file",
+        "process",
+        "file+process",
+        "absent"
+      ],
+      "type": "string"
+    },
     "path": {
       "type": "string"
     },
     "present": {
+      "type": "boolean"
+    },
+    "processPresent": {
       "type": "boolean"
     },
     "redacted": {
@@ -57168,6 +57180,8 @@ export const RuntimeEnvGetReturnSchema = {
   "required": [
     "key",
     "present",
+    "processPresent",
+    "origin",
     "secret",
     "redacted",
     "value",
@@ -57216,10 +57230,22 @@ export const RuntimeEnvSetReturnSchema = {
     "key": {
       "type": "string"
     },
+    "origin": {
+      "enum": [
+        "file",
+        "process",
+        "file+process",
+        "absent"
+      ],
+      "type": "string"
+    },
     "path": {
       "type": "string"
     },
     "present": {
+      "type": "boolean"
+    },
+    "processPresent": {
       "type": "boolean"
     },
     "redacted": {
@@ -57242,6 +57268,8 @@ export const RuntimeEnvSetReturnSchema = {
   "required": [
     "key",
     "present",
+    "processPresent",
+    "origin",
     "secret",
     "redacted",
     "value",
@@ -57284,10 +57312,22 @@ export const RuntimeEnvUnsetReturnSchema = {
     "key": {
       "type": "string"
     },
+    "origin": {
+      "enum": [
+        "file",
+        "process",
+        "file+process",
+        "absent"
+      ],
+      "type": "string"
+    },
     "path": {
       "type": "string"
     },
     "present": {
+      "type": "boolean"
+    },
+    "processPresent": {
       "type": "boolean"
     },
     "redacted": {
@@ -57310,6 +57350,8 @@ export const RuntimeEnvUnsetReturnSchema = {
   "required": [
     "key",
     "present",
+    "processPresent",
+    "origin",
     "secret",
     "redacted",
     "value",
@@ -58569,10 +58611,22 @@ export const RuntimeProvidersClaudeConfigureReturnSchema = {
         "key": {
           "type": "string"
         },
+        "origin": {
+          "enum": [
+            "file",
+            "process",
+            "file+process",
+            "absent"
+          ],
+          "type": "string"
+        },
         "path": {
           "type": "string"
         },
         "present": {
+          "type": "boolean"
+        },
+        "processPresent": {
           "type": "boolean"
         },
         "redacted": {
@@ -58595,6 +58649,8 @@ export const RuntimeProvidersClaudeConfigureReturnSchema = {
       "required": [
         "key",
         "present",
+        "processPresent",
+        "origin",
         "secret",
         "redacted",
         "value",

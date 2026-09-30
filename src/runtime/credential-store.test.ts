@@ -7,6 +7,7 @@ import {
   createRuntimeCredential,
   getRuntimeCredential,
   getRuntimeCredentialHealth,
+  reconcileRuntimeCredentialSecretShapes,
   recordRuntimeCredentialFailure,
   recordRuntimeCredentialLimitPressure,
   recordRuntimeCredentialSuccess,
@@ -55,6 +56,69 @@ describe("runtime credential store and pool", () => {
     stateDir = null;
     if (previousStateDir) process.env.RAVI_STATE_DIR = previousStateDir;
     previousStateDir = undefined;
+  });
+
+  it("marks an OAuth credential invalid when the bound secret is an API key", () => {
+    const secret = "sk-ant-api03-fake-not-a-real-key";
+    const previous = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = secret;
+    const credential = createRuntimeCredential({
+      id: "rcred_oauth_api_key",
+      label: "claude-oauth",
+      runtimeProvider: "claude",
+      upstreamProvider: "anthropic",
+      authMethod: "claude-oauth",
+      bindings: [
+        {
+          sourceKind: "env",
+          targetKind: "env",
+          targetName: "CLAUDE_CODE_OAUTH_TOKEN",
+          secretRef: "env:CLAUDE_CODE_OAUTH_TOKEN",
+          sourceHint: "CLAUDE_CODE_OAUTH_TOKEN",
+          sensitive: true,
+          remoteForward: false,
+        },
+      ],
+    });
+    expect(credential.status).toBe("invalid");
+    expect(credential.lastErrorCode).toBe("secret_shape_mismatch");
+    expect(credential.lastErrorMessageRedacted).toContain('Credential "claude-oauth" (claude-oauth)');
+    expect(credential.lastErrorMessageRedacted).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    const dumped = JSON.stringify(getDb().prepare("SELECT * FROM runtime_credentials WHERE id = ?").get(credential.id));
+    expect(dumped).not.toContain(secret);
+    if (previous === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    else process.env.CLAUDE_CODE_OAUTH_TOKEN = previous;
+  });
+
+  it("reconciles a healthy OAuth credential after the bound env becomes an API key", () => {
+    const secret = "sk-ant-api03-fake-not-a-real-key";
+    const previous = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    createRuntimeCredential({
+      id: "rcred_oauth_later",
+      label: "claude-oauth",
+      runtimeProvider: "claude",
+      authMethod: "claude-oauth",
+      bindings: [
+        {
+          sourceKind: "env",
+          targetKind: "env",
+          targetName: "CLAUDE_CODE_OAUTH_TOKEN",
+          secretRef: "env:CLAUDE_CODE_OAUTH_TOKEN",
+          sensitive: true,
+          remoteForward: false,
+        },
+      ],
+    });
+    expect(getRuntimeCredential("rcred_oauth_later")?.status).toBe("healthy");
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = secret;
+    expect(reconcileRuntimeCredentialSecretShapes()).toBe(1);
+    const reconciled = getRuntimeCredential("rcred_oauth_later");
+    expect(reconciled?.status).toBe("invalid");
+    expect(reconciled?.lastErrorMessageRedacted).toContain("(claude-oauth)");
+    expect(JSON.stringify(reconciled)).not.toContain(secret);
+    if (previous === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    else process.env.CLAUDE_CODE_OAUTH_TOKEN = previous;
   });
 
   it("stores credential metadata without persisting raw secret values", () => {

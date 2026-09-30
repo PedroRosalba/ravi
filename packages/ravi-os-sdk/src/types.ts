@@ -11504,8 +11504,10 @@ export type RuntimeEnvGetInput = {
 /** Return shape for `runtime.env.get`. */
 export type RuntimeEnvGetReturn = {
   key: string;
+  origin: "file" | "process" | "file+process" | "absent";
   path: string;
   present: boolean;
+  processPresent: boolean;
   redacted: boolean;
   secret: boolean;
   value: string | null;
@@ -11523,8 +11525,10 @@ export type RuntimeEnvSetReturn = {
   action: "set" | "unset";
   daemonReloadRequired: boolean;
   key: string;
+  origin: "file" | "process" | "file+process" | "absent";
   path: string;
   present: boolean;
+  processPresent: boolean;
   redacted: boolean;
   secret: boolean;
   value: string | null;
@@ -11540,8 +11544,10 @@ export type RuntimeEnvUnsetReturn = {
   action: "set" | "unset";
   daemonReloadRequired: boolean;
   key: string;
+  origin: "file" | "process" | "file+process" | "absent";
   path: string;
   present: boolean;
+  processPresent: boolean;
   redacted: boolean;
   secret: boolean;
   value: string | null;
@@ -11820,8 +11826,10 @@ export type RuntimeProvidersClaudeConfigureReturn = {
     action: "set" | "unset";
     daemonReloadRequired: boolean;
     key: string;
+    origin: "file" | "process" | "file+process" | "absent";
     path: string;
     present: boolean;
+    processPresent: boolean;
     redacted: boolean;
     secret: boolean;
     value: string | null;

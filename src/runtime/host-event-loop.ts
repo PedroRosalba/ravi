@@ -40,6 +40,7 @@ import {
 } from "./inactivity-recovery-checkpoint.js";
 import { piContextSaturationUserNotice, readPiContextSaturationNotice } from "./pi-context-saturation.js";
 import { classifyRuntimeCredentialFailure } from "./credential-classifier.js";
+import { explainRuntimeCredentialProviderFailure } from "./credential-secret-shape.js";
 import { isRuntimeProviderLoginStub } from "./provider-login-stub.js";
 import {
   reportRuntimeModelBrokerAttempt,
@@ -3991,6 +3992,12 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
 
         const channelBackendFailure = streaming.currentChannelBackend !== undefined;
         const loginStubFailure = isRuntimeProviderLoginStub(event.error, { provider: runtimeSession.provider });
+        const operatorError = explainRuntimeCredentialProviderFailure(event.error, streaming.currentRuntimeCredential);
+        if (operatorError !== event.error) {
+          // Credential label and auth method stay in logs/trace/observation;
+          // the chat channel keeps the provider's original failure text.
+          log.warn("Runtime credential provider failure", { runId, sessionName, error: operatorError });
+        }
         if (!loginStubFailure) {
           await projectRuntimeEventToChannel(event);
         }
@@ -4011,13 +4018,15 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
             failureDetails: formatRuntimeFailureDetails(event) ?? null,
             rawEvent: rawEventSummary ?? null,
             metadata: event.metadata ?? null,
+            credentialLabel: streaming.currentRuntimeCredential?.label ?? null,
+            authMethod: streaming.currentRuntimeCredential?.authMethod ?? null,
           },
         });
         flushObservationEvents("turn.failed", {
           provider: runtimeSession.provider,
           recoverable: event.recoverable ?? true,
           suppressedRecoverable,
-          error: publicRuntimeFailureDetail(event.error),
+          error: publicRuntimeFailureDetail(operatorError),
           abortReason: null,
         });
         clearTraceTurnState();
@@ -4073,7 +4082,7 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         }
         updateRuntimeLiveState(sessionName, {
           activity: "blocked",
-          summary: truncateLiveSummary(publicRuntimeFailureDetail(event.error)) || "turn failed",
+          summary: truncateLiveSummary(publicRuntimeFailureDetail(operatorError)) || "turn failed",
           agentId: agent.id,
           runId,
           provider: runtimeSession.provider,
