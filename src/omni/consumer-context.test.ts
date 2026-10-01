@@ -15,6 +15,7 @@ const actualSessionStreamModule = await import("./session-stream.js");
 // Cópia: o namespace é mutado in-place por mock.module.
 const actualContactsModule = { ...(await import("../contacts.js")) };
 const actualNatsModule = { ...(await import("../nats.js")) };
+const actualMediaModule = { ...(await import("../utils/media.js")) };
 const actualDbSaveMessageMeta = actualRouterDbModule.dbSaveMessageMeta;
 const actualDbGetMessageMeta = actualRouterDbModule.dbGetMessageMeta;
 const actualDbUpsertChat = actualRouterDbModule.dbUpsertChat;
@@ -271,6 +272,7 @@ mock.module("../session-trace/runtime-trace.js", () => ({
 }));
 
 mock.module("../utils/media.js", () => ({
+  ...actualMediaModule,
   fetchCachedOmniMedia: fetchCachedOmniMediaMock,
   fetchOmniMedia: fetchOmniMediaMock,
   saveToAgentAttachments: saveToAgentAttachmentsMock,
@@ -2190,5 +2192,309 @@ describe("OmniConsumer channel context", () => {
     const [, prompt] = promptCalls[0];
     expect(prompt.prompt).toContain("[Replying to unknown mid:quoted-audio-2]");
     expect(prompt.prompt).toContain("[Audio]\nTranscript:\nhistórico recuperado pelo metadata db");
+  });
+
+  describe("native CHANNEL_INBOUND source", () => {
+    const nativeSubject = (type: string) => `ravi.channel.inbound.${type}.whatsapp-baileys.instance-1`;
+
+    function createSender() {
+      return {
+        send: mock(async () => {}),
+        sendTyping: mock(async () => {}),
+        markRead: mock(async () => {}),
+      };
+    }
+
+    function groupMessageEvent(
+      id: string,
+      source: string | undefined,
+      timestamp: number,
+      content?: Record<string, unknown>,
+    ) {
+      return {
+        id: `evt-${id}`,
+        type: "message.received",
+        payload: {
+          externalId: id,
+          chatId: "120363424772797713@g.us",
+          from: "178035101794451",
+          content: content ?? { type: "text", text: "oi do transporte" },
+          rawPayload: {
+            pushName: "Luis Filipe",
+            chatName: "ravi - dev",
+            resolvedSenderPhone: "5511947879044",
+            isGroup: true,
+          },
+        },
+        metadata: {
+          instanceId: "instance-1",
+          channelType: "whatsapp-baileys" as const,
+          ...(source ? { source } : {}),
+          ingestMode: "realtime" as const,
+        },
+        timestamp,
+      };
+    }
+
+    it("runs native events through the same message pipeline as Omni events", async () => {
+      const timestamp = Date.now();
+      const omniConsumer = new OmniConsumer(createSender() as never, "http://omni.local", "test-key", {
+        resolveGroupMetadata: async () => null,
+      });
+      await omniConsumer["dispatchSourceEvent"](
+        { source: "omni", kind: "message" },
+        "message.received.whatsapp-baileys.instance-1",
+        groupMessageEvent("msg-omni", "omni", timestamp),
+      );
+
+      const nativeConsumer = new OmniConsumer(createSender() as never, null, null, {
+        resolveGroupMetadata: async () => null,
+        sources: ["native"],
+      });
+      await nativeConsumer["dispatchSourceEvent"](
+        { source: "native", kind: "message" },
+        nativeSubject("message.received"),
+        groupMessageEvent("msg-native", "ravi.whatsapp.native", timestamp),
+      );
+
+      expect(promptCalls).toHaveLength(2);
+      const [omniSession, omniPrompt] = promptCalls[0];
+      const [nativeSession, nativePrompt] = promptCalls[1];
+      expect(nativeSession).toBe(omniSession);
+      expect(String(nativePrompt.prompt).replaceAll("msg-native", "msg-omni")).toBe(String(omniPrompt.prompt));
+      expect(nativePrompt.context).toMatchObject({
+        channelId: "whatsapp-baileys",
+        accountId: "main",
+        instanceId: "instance-1",
+        chatId: "120363424772797713@g.us",
+        messageId: "msg-native",
+        senderPhone: "5511947879044",
+        isGroup: true,
+      });
+      expect(chatMessageCalls.map((call) => call.providerMessageId)).toEqual(["msg-omni", "msg-native"]);
+    });
+
+    it("persists native history-sync messages without replaying them to runtime", async () => {
+      contactIntakeMode = "pending";
+      const consumer = new OmniConsumer(createSender() as never, null, null, {
+        resolveGroupMetadata: async () => null,
+        sources: ["native"],
+      });
+
+      await consumer["dispatchSourceEvent"]({ source: "native", kind: "message" }, nativeSubject("message.received"), {
+        id: "evt-native-history",
+        type: "message.received",
+        payload: {
+          externalId: "msg-native-history",
+          chatId: "5511999904321@s.whatsapp.net",
+          from: "5511999904321",
+          content: { type: "text", text: "mensagem antiga" },
+          rawPayload: { pushName: "Lead", resolvedSenderPhone: "5511999904321", isGroup: false },
+        },
+        metadata: {
+          instanceId: "instance-1",
+          channelType: "whatsapp-baileys",
+          source: "ravi.whatsapp.native",
+          ingestMode: "history-sync",
+        },
+        timestamp: Date.now(),
+      });
+
+      expect(chatMessageCalls).toHaveLength(1);
+      expect(chatMessageCalls[0]).toMatchObject({
+        providerMessageId: "msg-native-history",
+        rawProvenance: { ingestMode: "history-sync" },
+      });
+      expect(chatParticipantCalls).toHaveLength(1);
+      expect(ensureContactFromInboundCalls).toHaveLength(1);
+      expect(promptCalls).toHaveLength(0);
+    });
+
+    it("relays native QR codes and connected events like Omni instance events", async () => {
+      const { nats: mockedNats } = await import("../nats.js");
+      const emit = mockedNats.emit as unknown as ReturnType<typeof mock>;
+      emit.mockClear();
+      const consumer = new OmniConsumer(createSender() as never, null, null, { sources: ["native"] });
+
+      await consumer["dispatchSourceEvent"]({ source: "native", kind: "instance" }, nativeSubject("instance.qr_code"), {
+        id: "evt-native-qr",
+        type: "instance.qr_code",
+        payload: { instanceId: "instance-1", channelType: "whatsapp-baileys", qrCode: "QR-DATA", expiresAt: 1 },
+        metadata: { instanceId: "instance-1", channelType: "whatsapp-baileys", source: "ravi.whatsapp.native" },
+        timestamp: Date.now(),
+      });
+      await consumer["dispatchSourceEvent"](
+        { source: "native", kind: "instance" },
+        nativeSubject("instance.connected"),
+        {
+          id: "evt-native-connected",
+          type: "instance.connected",
+          payload: {
+            instanceId: "instance-1",
+            channelType: "whatsapp-baileys",
+            profileName: "Ravi Native",
+            ownerIdentifier: "5511000000000@s.whatsapp.net",
+          },
+          metadata: { instanceId: "instance-1", channelType: "whatsapp-baileys", source: "ravi.whatsapp.native" },
+          timestamp: Date.now(),
+        },
+      );
+
+      expect(emit).toHaveBeenCalledWith("ravi.whatsapp.qr.instance-1", {
+        type: "qr",
+        instanceId: "instance-1",
+        qr: "QR-DATA",
+        channelType: "whatsapp-baileys",
+      });
+      expect(emit).toHaveBeenCalledWith(
+        "ravi.whatsapp.connected.instance-1",
+        expect.objectContaining({ type: "connected", profileName: "Ravi Native" }),
+      );
+      expect(agentPlatformIdentityCalls[0]).toMatchObject({
+        agentId: "main",
+        instanceId: "instance-1",
+        platformUserId: "5511000000000@s.whatsapp.net",
+      });
+    });
+
+    it("ignores Omni events for an instance owned by a native channel before any persistence", async () => {
+      const consumer = new OmniConsumer(createSender() as never, "http://omni.local", "test-key", {
+        resolveGroupMetadata: async () => null,
+        sources: ["native", "omni"],
+        nativeWhatsApp: { isNativeInstance: (id) => id === "instance-1", request: mock() as never },
+      });
+
+      await consumer["dispatchSourceEvent"](
+        { source: "omni", kind: "message" },
+        "message.received.whatsapp-baileys.instance-1",
+        groupMessageEvent("msg-omni-duplicate", "omni", Date.now()),
+      );
+
+      expect(chatMessageCalls).toHaveLength(0);
+      expect(promptCalls).toHaveLength(0);
+    });
+
+    it("reads file:// media from disk without calling the Omni media API", async () => {
+      const mediaRoot = join(stateDir as string, "media");
+      const mediaDir = join(mediaRoot, "whatsapp", "instance-1", "2026-10");
+      mkdirSync(mediaDir, { recursive: true });
+      const mediaPath = join(mediaDir, "msg-native-image.jpg");
+      writeFileSync(mediaPath, Buffer.from("jpeg-bytes"));
+      const attachmentPath = join(agentCwd, "attachments", "msg-native-image.jpg");
+      saveToAgentAttachmentsMock.mockImplementation(async () => attachmentPath);
+
+      const consumer = new OmniConsumer(createSender() as never, "http://omni.local", "test-key", {
+        resolveGroupMetadata: async () => null,
+        sources: ["native", "omni"],
+        localMediaRoots: [mediaRoot],
+      });
+      await consumer["dispatchSourceEvent"](
+        { source: "native", kind: "message" },
+        nativeSubject("message.received"),
+        groupMessageEvent("msg-native-image", "ravi.whatsapp.native", Date.now(), {
+          type: "image",
+          text: "legenda",
+          mediaUrl: `file://${mediaPath}`,
+          localPath: mediaPath,
+          mimeType: "image/jpeg",
+        }),
+      );
+
+      expect(fetchCachedOmniMediaMock).not.toHaveBeenCalled();
+      expect(fetchOmniMediaMock).not.toHaveBeenCalled();
+      expect(saveToAgentAttachmentsMock).toHaveBeenCalledWith(
+        Buffer.from("jpeg-bytes"),
+        agentCwd,
+        "msg-native-image",
+        "image/jpeg",
+      );
+      expect(promptCalls).toHaveLength(1);
+      expect(String(promptCalls[0]?.[1].prompt)).toContain(attachmentPath);
+    });
+
+    it("transcribes native audio read from an absolute localPath", async () => {
+      const mediaRoot = join(stateDir as string, "media");
+      mkdirSync(mediaRoot, { recursive: true });
+      const audioPath = join(mediaRoot, "voice.ogg");
+      writeFileSync(audioPath, Buffer.from("ogg-bytes"));
+      saveToAgentAttachmentsMock.mockImplementation(async () => join(agentCwd, "attachments", "voice.ogg"));
+      transcribeAudioMock.mockImplementation(async () => ({ text: "audio nativo" }));
+
+      const consumer = new OmniConsumer(createSender() as never, null, null, {
+        resolveGroupMetadata: async () => null,
+        sources: ["native"],
+        localMediaRoots: [mediaRoot],
+      });
+      await consumer["dispatchSourceEvent"](
+        { source: "native", kind: "message" },
+        nativeSubject("message.received"),
+        groupMessageEvent("msg-native-audio", "ravi.whatsapp.native", Date.now(), {
+          type: "audio",
+          localPath: audioPath,
+          mimeType: "audio/ogg; codecs=opus",
+          isVoiceNote: true,
+        }),
+      );
+
+      expect(transcribeAudioMock).toHaveBeenCalledWith(Buffer.from("ogg-bytes"), "audio/ogg; codecs=opus");
+      expect(String(promptCalls[0]?.[1].prompt)).toContain("Transcript:\naudio nativo");
+      expect(fetchOmniMediaMock).not.toHaveBeenCalled();
+    });
+
+    it("refuses file:// media outside the Ravi media root and never sends it to Omni", async () => {
+      const mediaRoot = join(stateDir as string, "media");
+      mkdirSync(mediaRoot, { recursive: true });
+      mkdirSync(agentCwd, { recursive: true });
+      const secretPath = join(agentCwd, "secret.txt");
+      writeFileSync(secretPath, "do not copy");
+
+      const consumer = new OmniConsumer(createSender() as never, "http://omni.local", "test-key", {
+        resolveGroupMetadata: async () => null,
+        sources: ["native", "omni"],
+        localMediaRoots: [mediaRoot],
+      });
+      await consumer["dispatchSourceEvent"](
+        { source: "native", kind: "message" },
+        nativeSubject("message.received"),
+        groupMessageEvent("msg-native-escape", "ravi.whatsapp.native", Date.now(), {
+          type: "document",
+          mediaUrl: `file://${secretPath}`,
+          mimeType: "text/plain",
+        }),
+      );
+
+      expect(saveToAgentAttachmentsMock).not.toHaveBeenCalled();
+      expect(fetchCachedOmniMediaMock).not.toHaveBeenCalled();
+      expect(fetchOmniMediaMock).not.toHaveBeenCalled();
+    });
+
+    it("passes the native transport to group metadata resolution", async () => {
+      const nativeWhatsApp = { isNativeInstance: () => true, request: mock() as never };
+      const resolveInputs: Array<Record<string, unknown>> = [];
+      const consumer = new OmniConsumer(createSender() as never, null, null, {
+        sources: ["native"],
+        nativeWhatsApp,
+        resolveGroupMetadata: async (input) => {
+          resolveInputs.push(input as unknown as Record<string, unknown>);
+          return null;
+        },
+      });
+
+      await consumer["dispatchSourceEvent"](
+        { source: "native", kind: "message" },
+        nativeSubject("message.received"),
+        groupMessageEvent("msg-native-group", "ravi.whatsapp.native", Date.now()),
+      );
+
+      expect(resolveInputs).toHaveLength(1);
+      expect(resolveInputs[0]).toMatchObject({
+        omniApiUrl: null,
+        omniApiKey: null,
+        accountId: "main",
+        instanceId: "instance-1",
+        chatId: "120363424772797713@g.us",
+      });
+      expect(resolveInputs[0]?.nativeTransport).toBe(nativeWhatsApp);
+    });
   });
 });
