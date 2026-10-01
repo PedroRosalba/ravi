@@ -85,7 +85,10 @@ mock.module("../../nats.js", () => ({
   },
 }));
 
+// Keep OmniApiError & co: instances.ts reaches them through the routing transport client.
+const actualOmniClientModule = await import("../../omni/client.js");
 mock.module("../../omni/client.js", () => ({
+  ...actualOmniClientModule,
   createOmniClient: () => ({
     instances: {
       list: async () => ({ items: [] }),
