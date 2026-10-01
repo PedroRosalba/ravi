@@ -175,4 +175,21 @@ describe("OmniSender", () => {
     await expect(strict.send(NATIVE_ID, "x@g.us", "hi")).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
     expect(rejecting.requests).toHaveLength(1);
   });
+
+  it("exposes the native WhatsApp transport only for routing clients", () => {
+    const client = createChannelTransportClient({ omni: null, getConfig: nativeConfig });
+    expect(new OmniSender(client).getNativeWhatsApp()).toBe(client.native);
+    expect(new OmniSender("http://omni.local", "key").getNativeWhatsApp()).toBeNull();
+  });
+
+  it("does not retry sends that fail because Omni is not configured", async () => {
+    const client = createChannelTransportClient({ omni: null, getConfig: nativeConfig });
+    const started = Date.now();
+    await expect(new OmniSender(client).send("omni-only-instance", "5511@s.whatsapp.net", "oi")).rejects.toMatchObject({
+      status: 503,
+      code: "OMNI_NOT_CONFIGURED",
+    });
+    // A retry would wait at least 1s before the second attempt.
+    expect(Date.now() - started).toBeLessThan(900);
+  });
 });

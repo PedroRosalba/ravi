@@ -9,7 +9,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ChannelTransportClient } from "../channels/whatsapp/transport-client.js";
+import type { ChannelTransportClient, NativeWhatsAppTransport } from "../channels/whatsapp/transport-client.js";
 import { createOmniClient, type OmniClient } from "./client.js";
 import { logger } from "../utils/logger.js";
 import type { OmniUserMention } from "./mentions.js";
@@ -19,10 +19,18 @@ const log = logger.child("omni:sender");
 const MAX_RETRIES = 3;
 
 /**
+ * 5xx codes that retrying cannot fix. `OMNI_NOT_CONFIGURED` (503, from the routing
+ * client, `OMNI_NOT_CONFIGURED_CODE` in channels/whatsapp/transport-client.ts) means the
+ * instance is neither native nor reachable through a configured Omni.
+ */
+const NON_RETRYABLE_CODES = new Set(["OMNI_NOT_CONFIGURED"]);
+
+/**
  * Determine if an error is retryable (network/server errors, not client errors).
  */
 function isRetryable(err: unknown): boolean {
   if (err instanceof TypeError) return true; // fetch network error (ECONNREFUSED etc.)
+  if (err && typeof err === "object" && "code" in err && NON_RETRYABLE_CODES.has(String(err.code))) return false;
   if (err && typeof err === "object" && "status" in err) {
     const status = (err as { status: number }).status;
     return status >= 500; // Only retry 5xx, not 4xx
@@ -48,6 +56,14 @@ export class OmniSender {
     } else {
       this.client = apiUrlOrClient;
     }
+  }
+
+  /**
+   * Native WhatsApp transport of the routing client, or null for a plain Omni client.
+   * Callers use it for calls with no Omni equivalent (e.g. `groups.metadata`).
+   */
+  getNativeWhatsApp(): NativeWhatsAppTransport | null {
+    return isChannelTransportClient(this.client) ? this.client.native : null;
   }
 
   /**

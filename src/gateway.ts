@@ -506,14 +506,18 @@ export class Gateway {
       return { text: input.text, mentions: mergeMentions(input.mentions) };
     }
 
-    const connection = resolveOmniConnection();
-    if (!connection) {
+    // Natively-owned WhatsApp instances refresh group metadata over the runner RPC.
+    const nativeWhatsApp = this.omniSender.getNativeWhatsApp?.() ?? null;
+    const isNative = nativeWhatsApp?.isNativeInstance(input.instanceId) ?? false;
+    const connection = isNative ? null : resolveOmniConnection();
+    if (!isNative && !connection) {
       return { text: input.text, mentions: mergeMentions(input.mentions) };
     }
 
     const metadata = await resolveOmniGroupMetadata({
-      omniApiUrl: connection.apiUrl,
-      omniApiKey: connection.apiKey,
+      omniApiUrl: connection?.apiUrl ?? null,
+      omniApiKey: connection?.apiKey ?? null,
+      nativeTransport: nativeWhatsApp,
       accountId: input.accountId,
       instanceId: input.instanceId,
       chatId: input.chatId,
