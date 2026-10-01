@@ -247,6 +247,96 @@ export const WhatsAppRpcResponseSchema = z.discriminatedUnion("ok", [
 
 export type WhatsAppRpcResponse = z.infer<typeof WhatsAppRpcResponseSchema>;
 
+/**
+ * `data` returned per method. Shapes mirror what the Omni REST API returns for the
+ * same `OmniClient` call (src/omni/client.ts), so the routing client can hand them
+ * to existing callers unchanged.
+ */
+export type WhatsAppConnectionState = "connected" | "connecting" | "qr" | "disconnected" | "logged_out" | "error";
+
+export interface WhatsAppRpcGroupRecord {
+  id: string;
+  externalId: string;
+  subject: string;
+  name: string;
+  owner?: string;
+  creation?: number;
+  participants: Array<{ id: string; admin: string | null }>;
+  memberCount: number;
+  isCommunity: boolean;
+}
+
+export interface WhatsAppRpcGroupInviteRecord {
+  groupJid: string;
+  code: string;
+  inviteLink: string;
+}
+
+export interface WhatsAppRpcGroupMetadataParticipant {
+  /** Participant JID as WhatsApp reports it (may be `@lid`). */
+  platformUserId: string;
+  phoneJid?: string | null;
+  phoneNumber?: string | null;
+  displayName?: string | null;
+  role: "owner" | "admin" | "member";
+}
+
+export interface WhatsAppRpcGroupMetadata {
+  groupJid: string;
+  subject: string | null;
+  description?: string | null;
+  owner?: string | null;
+  participants: WhatsAppRpcGroupMetadataParticipant[];
+  fetchedAt: number;
+}
+
+export interface WhatsAppRpcSendResult {
+  messageId: string;
+  status: "sent";
+}
+
+export interface WhatsAppRpcResults {
+  "instances.status": { state: WhatsAppConnectionState; isConnected: boolean; profileName: string | null };
+  "instances.connect": { status: string; message: string };
+  "instances.disconnect": Record<string, never>;
+  "instances.logout": Record<string, never>;
+  "instances.pairingCode": { code: string };
+  "instances.listGroups": { items: WhatsAppRpcGroupRecord[] };
+  "instances.createGroup": WhatsAppRpcGroupRecord;
+  "instances.addGroupParticipants": { groupJid: string; results: Array<{ jid: string; status: string }> };
+  "instances.updateGroupParticipants": { groupJid: string; results: Array<{ jid: string; status: string }> };
+  "instances.getGroupInvite": WhatsAppRpcGroupInviteRecord;
+  "instances.revokeGroupInvite": WhatsAppRpcGroupInviteRecord;
+  "instances.joinGroup": { groupJid: string; joined: boolean };
+  "instances.leaveGroup": { groupJid: string; left: boolean };
+  "instances.renameGroup": { groupJid: string; subject: string };
+  "instances.setGroupDescription": { groupJid: string; description: string };
+  "instances.setGroupSettings": { groupJid: string; setting: string };
+  "groups.metadata": WhatsAppRpcGroupMetadata;
+  "messages.send": WhatsAppRpcSendResult;
+  "messages.sendPresence": Record<string, never>;
+  "messages.sendReaction": { messageId: string; success: boolean };
+  "messages.deleteChannel": Record<string, never>;
+  "messages.editChannel": Record<string, never>;
+  "messages.sendMedia": WhatsAppRpcSendResult;
+  "messages.sendSticker": WhatsAppRpcSendResult;
+  "messages.batchMarkRead": Record<string, never>;
+}
+
+export type WhatsAppRpcResult<M extends WhatsAppRpcMethod> = WhatsAppRpcResults[M];
+
+/** Stable error codes shared by the runner and its clients. */
+export const WHATSAPP_RPC_ERROR_CODES = {
+  invalidRequest: "INVALID_REQUEST",
+  notConnected: "NOT_CONNECTED",
+  notFound: "NOT_FOUND",
+  pairingRequired: "PAIRING_REQUIRED",
+  rateLimited: "RATE_LIMITED",
+  transportError: "TRANSPORT_ERROR",
+  runnerUnavailable: "WHATSAPP_RUNNER_UNAVAILABLE",
+  timeout: "WHATSAPP_RPC_TIMEOUT",
+} as const;
+
 // ============================================================================
 // Native ownership
 // ============================================================================
