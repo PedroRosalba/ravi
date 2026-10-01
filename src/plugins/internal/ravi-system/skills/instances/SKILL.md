@@ -2,8 +2,10 @@
 name: instances-manager
 description: |
   Gerencia instâncias de canais do Ravi. Use quando o usuário quiser:
-  - Criar, listar ou configurar instâncias (contas omni)
+  - Criar, listar ou configurar instâncias (contas Omni ou WhatsApp nativo)
   - Conectar/desconectar contas WhatsApp, Matrix, etc
+  - Conectar WhatsApp pelo transporte nativo (Baileys no runner `ravi channels`)
+  - Migrar uma instância WhatsApp do Omni para o transporte nativo
   - Definir policies de DM e grupo por instância
   - Configurar contact intake automático por instância
   - Gerenciar rotas de uma instância específica
@@ -42,7 +44,7 @@ Instância isolada não conta a história toda. Ao diagnosticar o estado, combin
 
 ```bash
 ravi instances list --json                    # canais conectados, intake mode, default tags
-ravi instances show <name> --json             # detalhes + rotas + omni status
+ravi instances show <name> --json             # detalhes + rotas + status ao vivo + transport (native|omni)
 ravi contacts list --json                     # quantos contatos cada instância gerou
 ravi chats list --json                        # quantos chats por instância
 ```
@@ -82,7 +84,7 @@ Keys disponíveis:
 - `groupPolicy` - Política para grupos: `open` | `allowlist` | `closed`
 - `dmScope` - Escopo de sessões DM: `main` | `per-peer` | `per-channel-peer` | `per-account-channel-peer`
 - `contactIntakeMode` - Criação/link automático de contatos em DMs: `off` | `discovered` | `pending`
-- `instanceId` - UUID omni (normalmente auto-preenchido no connect)
+- `instanceId` - UUID de transporte da instância (Omni ou nativo; auto-preenchido no connect, nunca troque numa migração)
 - `channel` - Canal: `whatsapp` | `matrix` | etc
 
 ### Remover instância
@@ -96,17 +98,79 @@ ravi instances delete <name>            # soft-delete imediato, recuperável com
 ```bash
 ravi instances connect <name>
 ravi instances connect vendas --agent vendas-agent
+ravi instances connect vendas --agent vendas-agent --transport native
 ```
 
-### Ver status omni
+`--transport <native|omni>` escolhe quem segura o socket do WhatsApp. Sem a flag, a ordem é:
+
+1. canal não-WhatsApp (telegram, discord, ...) → omni;
+2. instância que já tem canal WhatsApp nativo → native;
+3. setting `whatsapp.transport` (`ravi settings set whatsapp.transport native`);
+4. omni se o Omni estiver configurado, senão native.
+
+`--transport native` com `--channel` não-WhatsApp é erro de uso (exit 2). `--transport omni` numa instância dona de canal nativo falha com `INSTANCE_NATIVE_OWNED`.
+
+### Ver status
 ```bash
 ravi instances status <name>
 ```
+
+Com `--json`, `status`, `show`, `list` e `disconnect` trazem `transport` (`native`, `omni` ou `null`). Instância nativa consulta o runner: `live` traz `state` (`connected`, `connecting`, `qr`, `disconnected`, `logged_out`, `error`). Em `list`, runner fora do ar aparece como `disconnected` sem falhar; em `status`, falha com `WHATSAPP_RUNNER_UNAVAILABLE`.
 
 ### Desconectar
 ```bash
 ravi instances disconnect <name>
 ```
+
+Em instância nativa, `disconnect` fecha o socket no runner sem deslogar o aparelho: um `connect` depois reconecta sem QR.
+
+## WhatsApp Nativo
+
+O transporte nativo roda o Baileys dentro do runner `ravi channels` (processo PM2 `ravi-channels`), sem Omni. O daemon continua processando as mensagens pelo mesmo pipeline do Omni: sessões, chats, contatos e rotas não mudam.
+
+Pré-requisitos:
+
+- `ravi daemon start` rodando (ele repassa os QR codes para o CLI);
+- `ravi channels start` rodando (o daemon não sobe o runner sozinho). Depois de atualizar o Ravi, use `ravi channels restart`.
+
+O que `ravi instances connect <name> --transport native` faz:
+
+1. cria a instância com UUID novo, ou mantém o UUID que ela já tem (ex.: vindo do Omni);
+2. cria o canal `<name>` com provider `whatsapp` (`ravi channels show <name>`); o vínculo canal↔instância é pelo nome;
+3. avisa o runner (`ravi.config.changed`) e espera até 15s ele subir o canal;
+4. imprime QR codes até o celular conectar (até 120s); com `--json`, retorna no primeiro QR.
+
+Erros comuns:
+
+- `WHATSAPP_RUNNER_UNAVAILABLE`: o runner não respondeu. Rode `ravi channels start` (ou `ravi channels restart`) e repita o mesmo comando; instância e canal já ficaram criados.
+- `INSTANCE_CONNECT_TIMEOUT`: nenhum QR/conexão chegou. Confira `ravi daemon status` e `ravi channels status`.
+- `NATIVE_INSTANCE_CONFLICT`: o nome pertence a uma instância não-WhatsApp, a um canal de outro provider ou a um canal WhatsApp desabilitado.
+
+Saúde: `ravi channels status` lista cada canal com estado e motivo (`connected`, `starting (pairing_required)`, `starting (qr_pending)`, `reconnecting`, `disconnected (logged_out|connection_replaced|...)`, `failed (missing_dependency)`). `pairing_required` ou `logged_out` → pareie de novo com `connect`. `connection_replaced` → outro processo usa a mesma sessão; procure um segundo runner.
+
+### Migrar uma instância do Omni para o nativo
+
+Uma instância por vez:
+
+```bash
+ravi instances show vendas --json                      # anote o instanceId (UUID): ele não muda
+ravi channels status                                   # runner rodando? senão: ravi channels start
+ravi instances disconnect vendas                       # ainda pelo Omni
+# remova o aparelho do Omni no celular (WhatsApp > Aparelhos conectados)
+ravi instances connect vendas --transport native       # escaneie o QR novo
+ravi instances status vendas --json                    # transport "native", state "connected"
+```
+
+Depois teste uma DM e um grupo: devem cair nas mesmas sessões de antes.
+
+Rollback:
+
+```bash
+ravi channels set vendas enabled false                 # a instância volta a ser do Omni na hora
+ravi instances connect vendas --transport omni
+```
+
+Para voltar ao nativo: `ravi channels set vendas enabled true` e `ravi instances connect vendas --transport native` (reconecta sem QR se o aparelho não foi deslogado).
 
 ## Policies
 
@@ -183,6 +247,13 @@ ravi instances create main --agent main --channel whatsapp
 ravi instances set main dmPolicy open
 ravi instances set main groupPolicy open
 ravi instances connect main
+```
+
+### Bot sem Omni (WhatsApp nativo)
+```bash
+ravi channels start
+ravi instances connect main --agent main --transport native
+ravi instances set main dmPolicy open
 ```
 
 ### Bot controlado (só contatos aprovados)
