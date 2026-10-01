@@ -20,8 +20,8 @@ const REQUIRED_COMPANIONS = ["WHY.md", "RUNBOOK.md", "CHECKS.md"] as const;
  * routing clients. Any one of them in the diff covers a `src/channels/whatsapp/` change.
  */
 const WHATSAPP_FOCUSED_TESTS = [
-  "src/channels/whatsapp/driver.test.ts",
-  "src/channels/whatsapp/rpc-server.test.ts",
+  "src/channels/whatsapp/__tests__/driver.test.ts",
+  "src/channels/whatsapp/__tests__/rpc-server.test.ts",
   "src/channels/whatsapp/rpc-client.test.ts",
   "src/channels/whatsapp/transport-client.test.ts",
   "src/channels/whatsapp/inbound-stream.test.ts",
