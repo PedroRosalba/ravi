@@ -15,6 +15,26 @@ const SPECS_PREFIX = ".ravi/specs/";
 const REQUIRED_COMPANIONS = ["WHY.md", "RUNBOOK.md", "CHECKS.md"] as const;
 
 /**
+ * Focused tests of the native WhatsApp (Baileys) channel: the runner-side runtime,
+ * driver and RPC server, the ported Omni handlers, and the daemon-side RPC and
+ * routing clients. Any one of them in the diff covers a `src/channels/whatsapp/` change.
+ */
+const WHATSAPP_FOCUSED_TESTS = [
+  "src/channels/whatsapp/__tests__/driver.test.ts",
+  "src/channels/whatsapp/__tests__/rpc-server.test.ts",
+  "src/channels/whatsapp/rpc-client.test.ts",
+  "src/channels/whatsapp/transport-client.test.ts",
+  "src/channels/whatsapp/inbound-stream.test.ts",
+  "src/channels/whatsapp/__tests__/runtime-helpers.test.ts",
+  "src/channels/whatsapp/__tests__/runtime-inbound.test.ts",
+  "src/channels/whatsapp/__tests__/runtime-lifecycle.test.ts",
+  "src/channels/whatsapp/__tests__/runtime-outbound.test.ts",
+  "src/channels/whatsapp/lib/__tests__/auth-store.test.ts",
+  "src/channels/whatsapp/lib/__tests__/connection.test.ts",
+  "src/channels/whatsapp/lib/__tests__/messages-handler.test.ts",
+];
+
+/**
  * Runtime/consumer source path prefixes that require focused test coverage.
  * Each prefix maps to a list of known test file glob patterns.
  */
@@ -31,10 +51,15 @@ export const RUNTIME_PATH_MAP: Record<string, string[]> = {
     "src/channels/session-prompt.test.ts",
     "src/channels/slack/media.test.ts",
     "src/channels/slack/socket-mode.test.ts",
+    // A WhatsApp-only change also matches this prefix; its focused tests count here too.
+    ...WHATSAPP_FOCUSED_TESTS,
   ],
+  "src/channels/whatsapp/": WHATSAPP_FOCUSED_TESTS,
   "src/omni/": [
     "src/omni/consumer-context.test.ts",
     "src/omni/consumer-policy.test.ts",
+    // Native WhatsApp source: CHANNEL_INBOUND durables, prefix strip, Omni events skipped for native instances.
+    "src/omni/consumer-native-source.test.ts",
     "src/omni/session-stream.test.ts",
     // Headless Omni stub: presence/renew no-ops when Omni is not installed.
     "src/omni/stub-consumer.test.ts",

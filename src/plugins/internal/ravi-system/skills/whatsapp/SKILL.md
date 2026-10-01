@@ -13,17 +13,19 @@ description: |
 
 # WhatsApp Manager
 
-Funcionalidades do WhatsApp expostas via Omni/Baileys. Permite criar grupos, registrar rotas/sessões Ravi e operar grupos pelo CLI.
+Funcionalidades do WhatsApp expostas via Baileys, por um de dois transportes: o Omni (bridge legado) ou o transporte nativo do Ravi (Baileys dentro do runner `ravi channels`). Permite criar grupos, registrar rotas/sessões Ravi e operar grupos pelo CLI.
 
-**Importante:** Todos os comandos precisam que o Omni esteja rodando com WhatsApp conectado.
+**Importante:** Todos os comandos precisam da conta WhatsApp conectada no transporte dela. Conta nativa: `ravi channels start` rodando (sem Omni). Conta Omni: Omni rodando. Para saber qual é: `ravi instances status <conta> --json` (campo `transport`).
 
-**Criação de grupo:** `ravi whatsapp group create` usa a API HTTP pública do Omni (`POST /api/v2/instances/:id/groups`) e depois registra chat, rota, participantes e sessão no SQLite local do Ravi. Não use o tópico legado `ravi.whatsapp.group.create`.
+**Transporte nativo:** os mesmos comandos funcionam sem Omni; o Ravi fala com o runner por RPC. No `--json`, `source` vira `native.rpc*` (ex.: `native.rpc.group_participants`) em vez de `omni.rest*`, `group send` traz `transport: "native"`, e mídia enviada por `ravi media send` / `image --send` / `audio --send` vira entrega `whatsapp-native`. Se o runner não responder, o erro é `WHATSAPP_RUNNER_UNAVAILABLE`: rode `ravi channels start` (ou `restart`). Conectar, migrar do Omni e rollback ficam no skill de instâncias (`ravi instances connect <conta> --transport native`).
 
-**Operações de grupo:** `list`, `info` e `invite` são leituras; `list` e `info` tentam REST público do Omni e caem para o modelo local `chats` se o Omni falhar. As mutações usam contratos REST do Omni pelo cliente público. `demote` reduz autoridade e executa imediatamente; as demais mutações (`send`, `add`, `remove`, `promote`, `leave`, `join`, `revoke-invite`, `rename`, `description`, `settings`) são dry-run por default e exigem `--execute` (ver "Contrato Do CLI" abaixo). Não use nem sugira o bridge NATS legado `ravi.whatsapp.group.{op}`; quando um endpoint REST ainda não existir no Omni, o comando deve falhar explicitamente com erro `*_REST_UNAVAILABLE`.
+**Criação de grupo:** `ravi whatsapp group create` usa a API HTTP pública do Omni (`POST /api/v2/instances/:id/groups`), ou o runner nativo quando a conta é nativa, e depois registra chat, rota, participantes e sessão no SQLite local do Ravi. Não use o tópico legado `ravi.whatsapp.group.create`.
+
+**Operações de grupo:** `list`, `info` e `invite` são leituras; `list` e `info` tentam REST público do Omni e caem para o modelo local `chats` se o Omni falhar. As mutações usam contratos REST do Omni pelo cliente público. `demote` reduz autoridade e executa imediatamente; as demais mutações (`send`, `add`, `remove`, `promote`, `leave`, `join`, `revoke-invite`, `rename`, `description`, `settings`) são dry-run por default e exigem `--execute` (ver "Contrato Do CLI" abaixo). Não use nem sugira o bridge NATS legado `ravi.whatsapp.group.{op}`; quando um endpoint REST ainda não existir no Omni, o comando deve falhar explicitamente com erro `*_REST_UNAVAILABLE` (só no transporte Omni).
 
 **Novo fio de trabalho:** quando o usuário pedir para criar um grupo/agent para um assunto novo, use o fluxo transacional de criação. Não tente localizar o grupo com `ravi whatsapp group list`: listagem não registra chat/rota/sessão. Use `group list` apenas para inspeção.
 
-**Gerenciamento de contas/instâncias:** use `ravi instances` (conectar, desconectar, status, policies).
+**Gerenciamento de contas/instâncias:** use `ravi instances` (conectar, desconectar, status, policies, transporte nativo).
 
 ## Contrato Do CLI
 

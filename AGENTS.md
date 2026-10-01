@@ -19,7 +19,7 @@ ravi daemon start
         └── Runners (cron, heartbeat, triggers)
 ```
 
-**Infrastructure:** nats-server starts automatically for local eventing. Slack runs through the native Ravi Slack adapter. Legacy transport bridges may also start as child processes for channels that have not moved to native adapters yet.
+**Infrastructure:** nats-server starts automatically for local eventing. Slack runs through the native Ravi Slack adapter. WhatsApp runs either natively (Baileys inside the `ravi channels` runner, see [Native WhatsApp](#native-whatsapp)) or through the legacy bridge. Legacy transport bridges may also start as child processes for channels that have not moved to native adapters yet.
 
 ## Quick Start
 
@@ -35,13 +35,66 @@ ravi setup
 # 4. Start daemon (nats-server + bot + gateway + configured channel adapters)
 ravi daemon start
 
-# 5. Connect WhatsApp
-ravi whatsapp connect
+# 5. Connect WhatsApp (native transport: needs the channel runner)
+ravi channels start
+ravi instances connect main --agent main --transport native
 
 # 6. Check status
 ravi daemon status
 ravi daemon logs
 ```
+
+## Native WhatsApp
+
+The native WhatsApp transport runs Baileys inside the `ravi channels` runner (PM2
+process `ravi-channels`), without Omni. It emits the same events Omni emits, so
+the daemon's channel consumer, session keys, chats, contacts and routes are the
+same on both transports. Spec: `.ravi/specs/channels/adapters/whatsapp/`.
+
+```bash
+ravi daemon start                                   # consumes inbound events, relays QR codes
+ravi channels start                                 # holds the WhatsApp sockets (not started by the daemon)
+ravi instances connect <name> --agent <agent> --transport native   # QR flow
+ravi instances status <name> --json                 # transport "native", state "connected"
+ravi channels status                                # per-channel health
+ravi channels restart                               # after updating Ravi
+```
+
+- `instances connect --transport native` mints the instance UUID (or keeps an
+  existing one), creates the `channels` row named after the instance with
+  provider `whatsapp`, waits for the runner to hot-add it, and prints QR codes.
+  `--json` returns on the first QR code.
+- A `channels` row with provider `whatsapp` and the instance's name is what
+  makes an instance native. The transport instance id stays
+  `instances.instance_id`.
+- Without `--transport`, native is chosen for instances that already have a
+  native channel, then by the `whatsapp.transport` setting
+  (`ravi settings set whatsapp.transport native`), then when Omni is not
+  configured.
+- `WHATSAPP_RUNNER_UNAVAILABLE` means no runner answered: run
+  `ravi channels start` (or `restart`) and repeat the command.
+- Health reasons: `pairing_required` / `logged_out` (pair again),
+  `connection_replaced` (another process holds the session),
+  `missing_dependency` (the bundle cannot load Baileys).
+
+Migrate an Omni instance (one at a time; the UUID, sessions and chats stay):
+
+```bash
+ravi instances show <name> --json                   # note instanceId
+ravi instances disconnect <name>                    # on Omni, while still Omni-owned
+# remove Omni's linked device on the phone (WhatsApp > Linked devices)
+ravi instances connect <name> --transport native    # scan the new QR code
+```
+
+Rollback: `ravi channels set <name> enabled false` (Omni owns it again at
+once), then `ravi instances connect <name> --transport omni`.
+
+Inbound native events live on the `CHANNEL_INBOUND` stream under
+`ravi.channel.inbound.<omni subject>` (durables `ravi-native-messages`,
+`ravi-native-instances`, `ravi-native-reactions`). Daemon, gateway and CLI
+reach the runner on `_RAVI.channels.whatsapp.rpc.<instanceId>`. Auth state is
+in the `whatsapp_auth_state` table of `~/.ravi/ravi.db`; inbound media in
+`~/.ravi/media/whatsapp/`.
 
 ## Ravi Pages Publishing
 
@@ -557,12 +610,12 @@ ravi daemon logs -t 100  # Show last 100 lines
 ravi daemon logs --clear --execute # Clear logs (dry-run without --execute)
 ravi daemon env        # Edit ~/.ravi/.env
 
-# WhatsApp
-ravi whatsapp connect                # Connect account (QR code)
-ravi whatsapp connect --account <id> --agent <id> --mode sentinel
-ravi whatsapp status                 # Show connection status
-ravi whatsapp set --account <id> --agent <id>
-ravi whatsapp disconnect             # Disconnect account
+# WhatsApp accounts (instances)
+ravi instances connect <name> --transport native   # Connect natively (QR code); --transport omni for the bridge
+ravi instances connect <name> --agent <id>         # Connect and route to an agent
+ravi instances status <name>         # Show connection status and transport
+ravi instances disconnect <name>     # Disconnect account
+ravi channels start|restart|status   # Native channel runner (holds native WhatsApp sockets)
 
 # Agents
 ravi agents list                    # List agents
