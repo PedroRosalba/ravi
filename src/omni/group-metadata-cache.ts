@@ -1,3 +1,5 @@
+import type { WhatsAppRpcGroupMetadata } from "../channels/whatsapp/contract.js";
+import type { NativeWhatsAppTransport } from "../channels/whatsapp/transport-client.js";
 import { dbUpsertChat, dbUpsertChatParticipant, getDb } from "../router/router-db.js";
 import { fetchWithTimeout } from "../utils/paths.js";
 import { logger } from "../utils/logger.js";
@@ -35,9 +37,21 @@ export interface OmniGroupMetadata {
   fetchedAt: number;
 }
 
+/**
+ * The part of the native WhatsApp transport (routing client `client.native`) that
+ * group metadata needs: ownership plus the `groups.metadata` RPC.
+ */
+export type NativeGroupMetadataTransport = Pick<NativeWhatsAppTransport, "isNativeInstance" | "request">;
+
 export interface ResolveOmniGroupMetadataInput {
-  omniApiUrl: string;
-  omniApiKey: string;
+  /** Omni REST API. Null/empty when Omni is not configured (cache and native transport only). */
+  omniApiUrl?: string | null;
+  omniApiKey?: string | null;
+  /**
+   * Native WhatsApp transport. When it owns `instanceId`, metadata is refreshed through the
+   * `groups.metadata` RPC instead of the Omni REST API, into the same cache tables.
+   */
+  nativeTransport?: NativeGroupMetadataTransport | null;
   accountId: string;
   instanceId: string;
   chatId: string;
@@ -405,7 +419,7 @@ function apiUrl(baseUrl: string, path: string, query?: Record<string, string | n
 }
 
 async function omniGet<T>(
-  input: Pick<ResolveOmniGroupMetadataInput, "omniApiUrl" | "omniApiKey" | "fetchTimeoutMs">,
+  input: { omniApiUrl: string; omniApiKey: string; fetchTimeoutMs?: number },
   path: string,
   query?: Record<string, string | number | undefined>,
 ): Promise<OmniListEnvelope<T>> {
@@ -484,7 +498,9 @@ function chooseChat(chats: OmniChatRecord[], chatId: string, fallbackName?: stri
   return null;
 }
 
-async function fetchOmniGroupMetadata(input: ResolveOmniGroupMetadataInput): Promise<OmniGroupMetadata | null> {
+type OmniFetchInput = ResolveOmniGroupMetadataInput & { omniApiUrl: string; omniApiKey: string };
+
+async function fetchOmniGroupMetadata(input: OmniFetchInput): Promise<OmniGroupMetadata | null> {
   const searches = Array.from(
     new Set(
       [input.chatId, normalizeChatId(input.chatId), input.fallbackName].map((value) => value?.trim()).filter(Boolean),
@@ -537,6 +553,68 @@ async function fetchOmniGroupMetadata(input: ResolveOmniGroupMetadataInput): Pro
   });
 }
 
+function nativeParticipantToOmni(
+  participant: WhatsAppRpcGroupMetadata["participants"][number],
+): OmniGroupParticipant | null {
+  const platformUserId = cleanString(participant.platformUserId);
+  if (!platformUserId) return null;
+  const phoneJid = cleanString(participant.phoneJid);
+  const phoneNumber = cleanString(participant.phoneNumber);
+  const displayName = cleanString(participant.displayName);
+  return {
+    platformUserId,
+    ...(phoneJid ? { phoneJid, mentionUserId: phoneJid } : {}),
+    ...(phoneNumber ? { phoneNumber, normalizedPlatformUserId: phoneNumber.replace(/\D+/g, "") || phoneNumber } : {}),
+    ...(displayName ? { displayName } : {}),
+    role: participant.role,
+  };
+}
+
+/** Map a `groups.metadata` RPC result into the cache shape the Omni path produces. */
+export function nativeGroupMetadataToOmni(
+  result: WhatsAppRpcGroupMetadata,
+  input: Pick<ResolveOmniGroupMetadataInput, "accountId" | "instanceId" | "chatId" | "channel" | "fallbackName">,
+): OmniGroupMetadata {
+  const participants = result.participants
+    .map(nativeParticipantToOmni)
+    .filter((participant): participant is OmniGroupParticipant => Boolean(participant));
+  const owner = cleanString(result.owner);
+  return enrichParticipantsFromChatModel({
+    accountId: input.accountId,
+    instanceId: input.instanceId,
+    chatId: input.chatId,
+    chatUuid: null,
+    externalId: cleanString(result.groupJid) ?? input.chatId,
+    channel: input.channel ?? "whatsapp-baileys",
+    name: cleanString(result.subject) ?? input.fallbackName ?? null,
+    description: cleanString(result.description) ?? null,
+    avatarUrl: null,
+    participantCount: participants.length,
+    participants,
+    settings: null,
+    platformMetadata: { transport: "native", ...(owner ? { owner } : {}) },
+    fetchedAt: Number.isFinite(result.fetchedAt) && result.fetchedAt > 0 ? result.fetchedAt : Date.now(),
+  });
+}
+
+function nativeGroupJid(chatId: string): string {
+  if (chatId.includes("@")) return chatId;
+  return `${chatId.replace(/^group:/, "")}@g.us`;
+}
+
+async function fetchNativeGroupMetadata(
+  transport: NativeGroupMetadataTransport,
+  input: ResolveOmniGroupMetadataInput,
+): Promise<OmniGroupMetadata | null> {
+  const result = await transport.request(
+    input.instanceId,
+    "groups.metadata",
+    { groupJid: nativeGroupJid(input.chatId) },
+    { timeoutMs: input.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS },
+  );
+  return nativeGroupMetadataToOmni(result, input);
+}
+
 export async function resolveOmniGroupMetadata(
   input: ResolveOmniGroupMetadataInput,
 ): Promise<OmniGroupMetadata | null> {
@@ -548,19 +626,29 @@ export async function resolveOmniGroupMetadata(
   });
   if (fresh) return fresh;
 
+  const nativeTransport = input.nativeTransport?.isNativeInstance(input.instanceId) ? input.nativeTransport : null;
+  const omniApiUrl = cleanString(input.omniApiUrl);
+  const omniApiKey = cleanString(input.omniApiKey);
   try {
-    const fetched = await fetchOmniGroupMetadata(input);
+    const fetched = nativeTransport
+      ? await fetchNativeGroupMetadata(nativeTransport, input)
+      : omniApiUrl && omniApiKey
+        ? await fetchOmniGroupMetadata({ ...input, omniApiUrl, omniApiKey })
+        : null;
     if (fetched) {
       upsertOmniGroupMetadata(fetched);
       return fetched;
     }
   } catch (error) {
-    log.warn("Failed to refresh Omni group metadata", {
-      accountId: input.accountId,
-      instanceId: input.instanceId,
-      chatId: input.chatId,
-      error,
-    });
+    log.warn(
+      nativeTransport ? "Failed to refresh native WhatsApp group metadata" : "Failed to refresh Omni group metadata",
+      {
+        accountId: input.accountId,
+        instanceId: input.instanceId,
+        chatId: input.chatId,
+        error,
+      },
+    );
   }
 
   return getCachedOmniGroupMetadata({

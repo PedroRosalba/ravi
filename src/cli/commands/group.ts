@@ -25,8 +25,8 @@ import { publishChannelSessionPrompt } from "../../channels/session-prompt.js";
 import { resolveOmniGroupMetadata } from "../../omni/group-metadata-cache.js";
 import { prepareOmniMentionMessage } from "../../omni/mentions.js";
 import { OmniSender } from "../../omni/sender.js";
-import { createOmniClient } from "../../omni/client.js";
-import { resolveOmniConnection } from "../../omni-config.js";
+import { resolveOmniConnection, type OmniConnection } from "../../omni-config.js";
+import { createChannelTransportClient, type ChannelTransportClient } from "../../channels/whatsapp/transport-client.js";
 import { buildSessionKey } from "../../router/session-key.js";
 import {
   attachChatToSession,
@@ -396,13 +396,42 @@ function resolveGroupInstance(account?: string): { accountId: string; instanceId
   return { accountId, instanceId };
 }
 
-function resolveGroupOmniContext(account?: string) {
-  const connection = resolveOmniConnection();
-  if (!connection) fail("Omni API is not configured. Set OMNI_API_URL/OMNI_API_KEY or ~/.omni/config.json.");
+const OMNI_NOT_CONFIGURED_MESSAGE =
+  "Omni API is not configured. Set OMNI_API_URL/OMNI_API_KEY or ~/.omni/config.json, or move the account to the native WhatsApp transport (ravi instances connect <account> --transport native).";
 
+interface GroupTransportContext {
+  accountId: string;
+  instanceId: string;
+  /** Routing client: native WhatsApp instances go to the channel runner RPC, the rest to Omni. */
+  client: ChannelTransportClient;
+  native: boolean;
+  /** Omni connection for the Omni path (group metadata REST); null for native instances. */
+  omniConnection: OmniConnection | null;
+}
+
+/**
+ * Bind an account/instance to its transport. Native WhatsApp instances never need
+ * Omni; any other instance still requires an Omni API connection, exactly as before.
+ */
+function resolveGroupTransport(accountId: string, instanceId: string): GroupTransportContext {
+  const client = createChannelTransportClient();
+  const native = client.native.isNativeInstance(instanceId);
+  const omniConnection = native ? null : resolveOmniConnection();
+  if (!native && !omniConnection) fail(OMNI_NOT_CONFIGURED_MESSAGE);
+  return { accountId, instanceId, client, native, omniConnection };
+}
+
+function resolveGroupOmniContext(account?: string): GroupTransportContext {
   const { accountId, instanceId } = resolveGroupInstance(account);
-  const client = createOmniClient({ baseUrl: connection.apiUrl, apiKey: connection.apiKey });
-  return { accountId, instanceId, client };
+  return resolveGroupTransport(accountId, instanceId);
+}
+
+/** `omni.rest<suffix>` for Omni, `native.rpc<suffix>` for the native WhatsApp runner. */
+function transportSource<S extends string>(
+  context: Pick<GroupTransportContext, "native">,
+  suffix: S,
+): `omni.rest${S}` | `native.rpc${S}` {
+  return context.native ? `native.rpc${suffix}` : `omni.rest${suffix}`;
 }
 
 function normalizeGroupInviteCode(value: string): string {
@@ -411,22 +440,21 @@ function normalizeGroupInviteCode(value: string): string {
   return match?.[1] ?? trimmed;
 }
 
-async function createGroupViaOmni(input: {
-  subject: string;
-  participants: string[];
-  account?: string;
-}): Promise<{ id: string; subject: string; participants: number; raw: Record<string, unknown> }> {
-  const connection = resolveOmniConnection();
-  if (!connection) fail("Omni API is not configured. Set OMNI_API_URL/OMNI_API_KEY or ~/.omni/config.json.");
-
-  const { instanceId } = resolveGroupInstance(input.account);
-  const client = createOmniClient({ baseUrl: connection.apiUrl, apiKey: connection.apiKey });
+async function createGroupViaOmni(
+  input: {
+    subject: string;
+    participants: string[];
+    account?: string;
+  },
+  transport?: GroupTransportContext,
+): Promise<{ id: string; subject: string; participants: number; raw: Record<string, unknown> }> {
+  const { instanceId, client, native } = transport ?? resolveGroupOmniContext(input.account);
   const raw = await client.instances.createGroup(instanceId, {
     subject: input.subject,
     participants: input.participants,
   });
   const id = asNonEmptyString(raw.id) ?? asNonEmptyString(raw.externalId);
-  if (!id) fail("Omni group create returned no group id.");
+  if (!id) fail(`${native ? "Native WhatsApp" : "Omni"} group create returned no group id.`);
 
   return {
     id,
@@ -455,10 +483,13 @@ function normalizeOmniGroupRecord(group: Record<string, unknown>): {
   };
 }
 
-async function listGroupsViaOmni(account?: string): Promise<{
+async function listGroupsViaOmni(
+  account?: string,
+  transport?: GroupTransportContext,
+): Promise<{
   accountId: string;
   instanceId: string;
-  source: "omni.rest" | "local.chat_model";
+  source: "omni.rest" | "native.rpc" | "local.chat_model";
   groups: Array<{
     id: string;
     subject: string;
@@ -468,17 +499,14 @@ async function listGroupsViaOmni(account?: string): Promise<{
   }>;
   meta?: Record<string, unknown>;
 }> {
-  const connection = resolveOmniConnection();
-  if (!connection) fail("Omni API is not configured. Set OMNI_API_URL/OMNI_API_KEY or ~/.omni/config.json.");
-
-  const { accountId, instanceId } = resolveGroupInstance(account);
-  const client = createOmniClient({ baseUrl: connection.apiUrl, apiKey: connection.apiKey });
+  const context = transport ?? resolveGroupOmniContext(account);
+  const { accountId, instanceId, client } = context;
   try {
     const response = await client.instances.listGroups(instanceId, { limit: 500 });
     return {
       accountId,
       instanceId,
-      source: "omni.rest",
+      source: transportSource(context, ""),
       groups: response.items
         .map((group) => normalizeOmniGroupRecord(group as Record<string, unknown>))
         .filter((group): group is NonNullable<typeof group> => Boolean(group)),
@@ -522,20 +550,19 @@ async function getGroupInfoViaOmni(
 ): Promise<
   Record<string, unknown> & { id: string; subject: string; participants?: Array<{ id: string; admin: string | null }> }
 > {
-  const connection = resolveOmniConnection();
-  if (!connection) fail("Omni API is not configured. Set OMNI_API_URL/OMNI_API_KEY or ~/.omni/config.json.");
-
-  const { accountId, instanceId } = resolveGroupInstance(account);
+  const context = resolveGroupOmniContext(account);
+  const { accountId, instanceId } = context;
   const groupJid = normalizeGroupJid(groupId);
   const lookup = normalizeGroupLookupKey(groupId);
-  const list = await listGroupsViaOmni(account);
+  const list = await listGroupsViaOmni(account, context);
   const group = list.groups.find((item) => {
     const id = normalizeGroupLookupKey(item.id);
     return id === lookup || item.id === groupId || item.subject === groupId;
   });
   const metadata = await resolveOmniGroupMetadata({
-    omniApiUrl: connection.apiUrl,
-    omniApiKey: connection.apiKey,
+    omniApiUrl: context.omniConnection?.apiUrl ?? null,
+    omniApiKey: context.omniConnection?.apiKey ?? null,
+    nativeTransport: context.native ? context.client.native : null,
     accountId,
     instanceId,
     chatId: groupJid,
@@ -548,7 +575,8 @@ async function getGroupInfoViaOmni(
     // GROUP_NOT_FOUND (Manual v2): suggestions reuse the group list ALREADY
     // fetched for resolution above (omni REST, or the local chat model when
     // the bridge is down) — no extra provider call is made for suggestions.
-    contractFail(contract.op, "GROUP_NOT_FOUND", `Group not found via Omni REST: ${groupId}`, {
+    const via = context.native ? "the native WhatsApp runner" : "Omni REST";
+    contractFail(contract.op, "GROUP_NOT_FOUND", `Group not found via ${via}: ${groupId}`, {
       asJson: contract.asJson,
       details: {
         suggestedAction: "Check the group id/JID (list with: ravi whatsapp group list --json)",
@@ -574,7 +602,7 @@ async function getGroupInfoViaOmni(
     ...(participants ? { participants } : {}),
     accountId,
     instanceId,
-    source: "omni.rest",
+    source: transportSource(context, ""),
   };
 }
 
@@ -645,14 +673,15 @@ async function addGroupParticipantsViaOmni(input: {
   participants: string[];
   account?: string;
 }): Promise<Record<string, unknown>> {
-  const { accountId, instanceId, client } = resolveGroupOmniContext(input.account);
+  const context = resolveGroupOmniContext(input.account);
+  const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
   const result = await client.instances.addGroupParticipants(instanceId, groupJid, {
     participants: input.participants,
   });
   return {
     status: "added",
-    source: "omni.rest.group_participants",
+    source: transportSource(context, ".group_participants"),
     accountId,
     instanceId,
     groupId: groupJid,
@@ -676,7 +705,8 @@ async function updateGroupParticipantsViaOmni(input: {
   account?: string;
   syncLocal?: boolean;
 }): Promise<Record<string, unknown>> {
-  const { accountId, instanceId, client } = resolveGroupOmniContext(input.account);
+  const context = resolveGroupOmniContext(input.account);
+  const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
   const result = await client.instances.updateGroupParticipants(instanceId, groupJid, {
     action: input.action,
@@ -684,7 +714,7 @@ async function updateGroupParticipantsViaOmni(input: {
   });
   return {
     status: input.status,
-    source: "omni.rest.group_participants",
+    source: transportSource(context, ".group_participants"),
     accountId,
     instanceId,
     groupId: groupJid,
@@ -706,14 +736,15 @@ async function updateGroupParticipantsViaOmni(input: {
 }
 
 async function getGroupInviteViaOmni(input: { groupId: string; account?: string }): Promise<Record<string, unknown>> {
-  const { accountId, instanceId, client } = resolveGroupOmniContext(input.account);
+  const context = resolveGroupOmniContext(input.account);
+  const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
   const result = await client.instances.getGroupInvite(instanceId, groupJid);
   const code = result.code;
   const link = result.inviteLink ?? result.link ?? (code ? `https://chat.whatsapp.com/${code}` : undefined);
   return {
     status: "invite_link",
-    source: "omni.rest.group_invite",
+    source: transportSource(context, ".group_invite"),
     accountId,
     instanceId,
     groupId: groupJid,
@@ -726,14 +757,15 @@ async function revokeGroupInviteViaOmni(input: {
   groupId: string;
   account?: string;
 }): Promise<Record<string, unknown>> {
-  const { accountId, instanceId, client } = resolveGroupOmniContext(input.account);
+  const context = resolveGroupOmniContext(input.account);
+  const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
   const result = await client.instances.revokeGroupInvite(instanceId, groupJid);
   const code = result.code;
   const link = result.inviteLink ?? result.link ?? (code ? `https://chat.whatsapp.com/${code}` : undefined);
   return {
     status: "invite_revoked",
-    source: "omni.rest.group_invite",
+    source: transportSource(context, ".group_invite"),
     accountId,
     instanceId,
     groupId: groupJid,
@@ -744,13 +776,14 @@ async function revokeGroupInviteViaOmni(input: {
 }
 
 async function joinGroupViaOmni(input: { code: string; account?: string }): Promise<Record<string, unknown>> {
-  const { accountId, instanceId, client } = resolveGroupOmniContext(input.account);
+  const context = resolveGroupOmniContext(input.account);
+  const { accountId, instanceId, client } = context;
   const code = normalizeGroupInviteCode(input.code);
   const result = await client.instances.joinGroup(instanceId, { code });
   const groupId = result.groupJid ?? result.groupId ?? "";
   return {
     status: "joined",
-    source: "omni.rest.group_join",
+    source: transportSource(context, ".group_join"),
     accountId,
     instanceId,
     code,
@@ -761,12 +794,13 @@ async function joinGroupViaOmni(input: { code: string; account?: string }): Prom
 }
 
 async function leaveGroupViaOmni(input: { groupId: string; account?: string }): Promise<Record<string, unknown>> {
-  const { accountId, instanceId, client } = resolveGroupOmniContext(input.account);
+  const context = resolveGroupOmniContext(input.account);
+  const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
   const result = await client.instances.leaveGroup(instanceId, groupJid);
   return {
     status: "left",
-    source: "omni.rest.group",
+    source: transportSource(context, ".group"),
     accountId,
     instanceId,
     groupId: groupJid,
@@ -780,12 +814,13 @@ async function renameGroupViaOmni(input: {
   subject: string;
   account?: string;
 }): Promise<Record<string, unknown>> {
-  const { accountId, instanceId, client } = resolveGroupOmniContext(input.account);
+  const context = resolveGroupOmniContext(input.account);
+  const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
   const result = await client.instances.renameGroup(instanceId, groupJid, { subject: input.subject });
   return {
     status: "renamed",
-    source: "omni.rest.group",
+    source: transportSource(context, ".group"),
     accountId,
     instanceId,
     groupId: groupJid,
@@ -800,12 +835,13 @@ async function setGroupDescriptionViaOmni(input: {
   description: string;
   account?: string;
 }): Promise<Record<string, unknown>> {
-  const { accountId, instanceId, client } = resolveGroupOmniContext(input.account);
+  const context = resolveGroupOmniContext(input.account);
+  const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
   const result = await client.instances.setGroupDescription(instanceId, groupJid, { description: input.description });
   return {
     status: "description_updated",
-    source: "omni.rest.group",
+    source: transportSource(context, ".group"),
     accountId,
     instanceId,
     groupId: groupJid,
@@ -820,12 +856,13 @@ async function setGroupSettingsViaOmni(input: {
   setting: string;
   account?: string;
 }): Promise<Record<string, unknown>> {
-  const { accountId, instanceId, client } = resolveGroupOmniContext(input.account);
+  const context = resolveGroupOmniContext(input.account);
+  const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
   const result = await client.instances.setGroupSettings(instanceId, groupJid, { setting: input.setting });
   return {
     status: "setting_applied",
-    source: "omni.rest.group",
+    source: transportSource(context, ".group"),
     accountId,
     instanceId,
     groupId: groupJid,
@@ -996,8 +1033,8 @@ export class GroupCommands {
     const instanceId = resolveGroupSendInstanceId(accountId);
     if (!instanceId) fail(`No omni instance mapped for account "${accountId}".`);
 
-    const connection = resolveOmniConnection();
-    if (!connection) fail("Omni API is not configured. Set OMNI_API_URL/OMNI_API_KEY or ~/.omni/config.json.");
+    const transport = resolveGroupTransport(accountId, instanceId);
+    const connection = transport.omniConnection;
 
     const rawGroupId = resolveGroupSendChatId(groupId);
     const groupJid = normalizeGroupJid(rawGroupId);
@@ -1027,8 +1064,9 @@ export class GroupCommands {
     const shouldResolveParticipants = mentionTargets.length > 0 || cleanMessage.includes("@");
     const metadata = shouldResolveParticipants
       ? await resolveOmniGroupMetadata({
-          omniApiUrl: connection.apiUrl,
-          omniApiKey: connection.apiKey,
+          omniApiUrl: connection?.apiUrl ?? null,
+          omniApiKey: connection?.apiKey ?? null,
+          nativeTransport: transport.native ? transport.client.native : null,
           accountId,
           instanceId,
           chatId: groupJid,
@@ -1044,11 +1082,13 @@ export class GroupCommands {
       placeholderMode: "native",
     });
 
-    const sender = new OmniSender(connection.apiUrl, connection.apiKey);
+    // Native instances send through the routing client (channel runner RPC); Omni keeps its REST sender.
+    const sender = connection ? new OmniSender(connection.apiUrl, connection.apiKey) : new OmniSender(transport.client);
     const result = await sender.send(instanceId, groupJid, prepared.text, { mentions: prepared.mentions });
     const payload = {
       status: "sent" as const,
       channel: "whatsapp" as const,
+      transport: transport.native ? ("native" as const) : ("omni" as const),
       accountId,
       instanceId,
       groupId: rawGroupId,
@@ -1169,7 +1209,8 @@ export class GroupCommands {
         })
       : null;
 
-    const result = await createGroupViaOmni({ subject: name, participants, account });
+    const groupTransport = resolveGroupOmniContext(account);
+    const result = await createGroupViaOmni({ subject: name, participants, account }, groupTransport);
     const jsonPayload: Record<string, unknown> = {
       status: "created",
       accountId: resolveGroupAccount(account),
@@ -1233,8 +1274,8 @@ export class GroupCommands {
         const msg = errorMessage(err);
         jsonPayload.adminPromotion = {
           status: "failed",
-          source: "omni.rest.group_participants",
-          reason: "omni_group_admin_promotion_failed",
+          source: transportSource(groupTransport, ".group_participants"),
+          reason: groupTransport.native ? "native_group_admin_promotion_failed" : "omni_group_admin_promotion_failed",
           error: msg,
           participants: adminPhones,
           actorAdmins,

@@ -1,13 +1,26 @@
 /**
  * Omni Consumer
  *
- * Subscribes to JetStream streams published by omni-v2 and translates
- * incoming message events into ravi session prompts.
+ * Subscribes to transport event streams and translates incoming message events
+ * into ravi session prompts. Two sources share one pipeline:
+ *
+ * - `omni`: JetStream streams published by omni-v2 (MESSAGE / INSTANCE / REACTION).
+ * - `native`: Ravi's CHANNEL_INBOUND stream, where native transports in the
+ *   `ravi channels` runner (WhatsApp) publish Omni-identical envelopes under
+ *   `ravi.channel.inbound.<omni subject>`. The prefix is stripped before the
+ *   handlers run, so both sources behave identically.
  *
  * Replaces the channel plugin inbound subscriptions in gateway.ts.
  */
 
-import { AckPolicy, DeliverPolicy, StringCodec, type JetStreamClient, type JetStreamManager } from "nats";
+import {
+  AckPolicy,
+  DeliverPolicy,
+  StringCodec,
+  type JetStreamClient,
+  type JetStreamManager,
+  type NatsConnection,
+} from "nats";
 import { execFile } from "node:child_process";
 import { getNats, publish, nats } from "../nats.js";
 import { publishSessionPrompt } from "./session-stream.js";
@@ -84,7 +97,19 @@ import {
 } from "../runtime/session-rebase.js";
 import type { AgentConfig } from "../router/types.js";
 import type { OmniSender } from "./sender.js";
-import { formatOmniGroupMembersForPrompt, resolveOmniGroupMetadata } from "./group-metadata-cache.js";
+import {
+  formatOmniGroupMembersForPrompt,
+  resolveOmniGroupMetadata,
+  type NativeGroupMetadataTransport,
+} from "./group-metadata-cache.js";
+import { readLocalMediaFile, resolveLocalMediaPath } from "./local-media.js";
+import {
+  CHANNEL_INBOUND_STREAM,
+  isNativeWhatsAppInstance,
+  transportSubjectFromChannelInbound,
+  WhatsAppTransportEventSchema,
+} from "../channels/whatsapp/contract.js";
+import { ensureChannelInboundStream } from "../channels/whatsapp/inbound-stream.js";
 import { extractInboundMentionTargets, normalizeInboundMentionText } from "./mentions.js";
 import { TypingPresenceHeartbeat, type TypingPresenceEvent } from "./typing-presence.js";
 import { runTagRulesForContact } from "../tag-rules/index.js";
@@ -137,15 +162,93 @@ function emitPendingReviewEvent(input: {
   }
 }
 
-/** Durable consumer names */
-const MSG_CONSUMER = "ravi-messages";
-const INSTANCE_CONSUMER = "ravi-instances";
-const REACTION_CONSUMER = "ravi-reactions";
+/**
+ * Where transport events come from.
+ *
+ * - `omni`: the Omni bridge's own JetStream streams (MESSAGE / INSTANCE / REACTION).
+ * - `native`: Ravi's CHANNEL_INBOUND stream, fed by native transports in the
+ *   `ravi channels` runner (WhatsApp). Subjects carry the `ravi.channel.inbound.`
+ *   prefix, which is stripped so the same handlers see Omni-identical subjects.
+ */
+export type OmniConsumerSource = "omni" | "native";
 
-/** Stream names (must match omni's stream config) */
-const MESSAGE_STREAM = "MESSAGE";
-const INSTANCE_STREAM = "INSTANCE";
-const REACTION_STREAM = "REACTION";
+export type OmniConsumerEventKind = "message" | "instance" | "reaction";
+
+export interface OmniConsumerSubscription {
+  readonly source: OmniConsumerSource;
+  readonly kind: OmniConsumerEventKind;
+  readonly stream: string;
+  readonly durable: string;
+  readonly filterSubject: string;
+}
+
+/** Omni bridge streams (must match omni's stream config) and Ravi's durable consumers on them. */
+export const OMNI_SOURCE_SUBSCRIPTIONS: readonly OmniConsumerSubscription[] = [
+  { source: "omni", kind: "message", stream: "MESSAGE", durable: "ravi-messages", filterSubject: "message.received.>" },
+  { source: "omni", kind: "instance", stream: "INSTANCE", durable: "ravi-instances", filterSubject: "instance.>" },
+  {
+    source: "omni",
+    kind: "reaction",
+    stream: "REACTION",
+    durable: "ravi-reactions",
+    filterSubject: "reaction.received.>",
+  },
+];
+
+/** Native transport events on Ravi's CHANNEL_INBOUND stream. */
+export const NATIVE_SOURCE_SUBSCRIPTIONS: readonly OmniConsumerSubscription[] = [
+  {
+    source: "native",
+    kind: "message",
+    stream: CHANNEL_INBOUND_STREAM,
+    durable: "ravi-native-messages",
+    filterSubject: "ravi.channel.inbound.message.received.>",
+  },
+  {
+    source: "native",
+    kind: "instance",
+    stream: CHANNEL_INBOUND_STREAM,
+    durable: "ravi-native-instances",
+    filterSubject: "ravi.channel.inbound.instance.>",
+  },
+  {
+    source: "native",
+    kind: "reaction",
+    stream: CHANNEL_INBOUND_STREAM,
+    durable: "ravi-native-reactions",
+    filterSubject: "ravi.channel.inbound.reaction.received.>",
+  },
+];
+
+export function consumerSubscriptionsFor(sources: readonly OmniConsumerSource[]): OmniConsumerSubscription[] {
+  const unique = Array.from(new Set(sources));
+  return unique.flatMap((source) => (source === "native" ? NATIVE_SOURCE_SUBSCRIPTIONS : OMNI_SOURCE_SUBSCRIPTIONS));
+}
+
+export interface OmniConsumerOptions {
+  resolveGroupMetadata?: typeof resolveOmniGroupMetadata;
+  formatGroupMembers?: typeof formatOmniGroupMembersForPrompt;
+  isRuntimeSessionActive?: (sessionName: string) => boolean;
+  abortRuntimeSession?: (sessionName: string, provenance: RuntimeAbortProvenance) => boolean;
+  /** Event sources to consume. Default: `["omni"]`. */
+  sources?: readonly OmniConsumerSource[];
+  /**
+   * Native WhatsApp transport (`ChannelTransportClient.native`). Used for native
+   * ownership checks and for group metadata of natively-owned instances.
+   */
+  nativeWhatsApp?: NativeGroupMetadataTransport | null;
+  /**
+   * Whether an instance (UUID) is owned by a native channel. Defaults to
+   * `nativeWhatsApp.isNativeInstance`, else the live router config.
+   */
+  isNativeInstance?: (instanceId: string) => boolean;
+  /** Directories local (`file://`) media may be read from. Defaults to `<RAVI_STATE_DIR>/media`. */
+  localMediaRoots?: readonly string[];
+  /** Creates the CHANNEL_INBOUND stream when missing. Defaults to `ensureChannelInboundStream`. */
+  ensureNativeStream?: (jsm: JetStreamManager) => Promise<void>;
+  /** NATS connection (test seam). Defaults to the shared daemon connection. */
+  natsConnection?: Pick<NatsConnection, "jetstream" | "jetstreamManager">;
+}
 
 /**
  * Omni event envelope (wraps all events published to JetStream).
@@ -380,16 +483,15 @@ export class OmniConsumer {
   private readonly processedEvents = new Set<string>();
   private readonly DEDUP_MAX = 500;
 
+  /**
+   * @param omniApiUrl Omni REST API (media + group metadata for Omni instances). Null when Omni is not configured.
+   * @param omniApiKey Omni API key. Null when Omni is not configured.
+   */
   constructor(
     private sender: OmniSender,
-    private omniApiUrl: string,
-    private omniApiKey: string,
-    private readonly options: {
-      resolveGroupMetadata?: typeof resolveOmniGroupMetadata;
-      formatGroupMembers?: typeof formatOmniGroupMembersForPrompt;
-      isRuntimeSessionActive?: (sessionName: string) => boolean;
-      abortRuntimeSession?: (sessionName: string, provenance: RuntimeAbortProvenance) => boolean;
-    } = {},
+    private omniApiUrl: string | null,
+    private omniApiKey: string | null,
+    private readonly options: OmniConsumerOptions = {},
   ) {
     this.typingPresence = new TypingPresenceHeartbeat(
       (target, active) => this.sender.sendTyping(target.instanceId, target.to, active),
@@ -413,24 +515,91 @@ export class OmniConsumer {
     log.info("Starting omni consumer...");
     this.running = true;
 
-    const nc = getNats();
+    const nc = this.options.natsConnection ?? getNats();
     const js = nc.jetstream();
     this.jsm = await nc.jetstreamManager();
 
-    // Start consume loops and wait until all consumers are ready
-    await Promise.all([
-      this.consumeLoop(js, MESSAGE_STREAM, MSG_CONSUMER, "message.received.>", (subject, event) =>
-        this.handleMessageEvent(subject, event),
-      ),
-      this.consumeLoop(js, INSTANCE_STREAM, INSTANCE_CONSUMER, "instance.>", (subject, event) =>
-        this.handleInstanceEvent(subject, event),
-      ),
-      this.consumeLoop(js, REACTION_STREAM, REACTION_CONSUMER, "reaction.received.>", (subject, event) =>
-        this.handleReactionEvent(subject, event),
-      ),
-    ]);
+    const sources = this.options.sources ?? ["omni"];
+    const ensureNativeStream = this.options.ensureNativeStream ?? ensureChannelInboundStream;
+    const subscriptions = consumerSubscriptionsFor(sources);
 
-    log.info("Omni consumer started");
+    // Start consume loops and wait until all consumers are ready
+    await Promise.all(
+      subscriptions.map((subscription) =>
+        this.consumeLoop(
+          js,
+          subscription.stream,
+          subscription.durable,
+          subscription.filterSubject,
+          (subject, event) => this.dispatchSourceEvent(subscription, subject, event),
+          subscription.source === "native" ? ensureNativeStream : undefined,
+        ),
+      ),
+    );
+
+    log.info("Omni consumer started", { sources });
+  }
+
+  /**
+   * Route one decoded event from a source to the shared handlers.
+   *
+   * Native events have the `ravi.channel.inbound.` prefix stripped (and the envelope
+   * validated), so the handlers see exactly the subject Omni would publish. Omni
+   * events for an instance a native channel owns are dropped: the native runtime is
+   * the only transport for it, even if Omni still has the same instance connected.
+   */
+  private async dispatchSourceEvent(
+    subscription: Pick<OmniConsumerSubscription, "source" | "kind">,
+    subject: string,
+    event: OmniEvent,
+  ): Promise<void> {
+    let transportSubject = subject;
+    let transportEvent = event;
+
+    if (subscription.source === "native") {
+      const stripped = transportSubjectFromChannelInbound(subject);
+      if (!stripped) {
+        log.warn("Ignoring native transport event outside the channel inbound prefix", { subject });
+        return;
+      }
+      const parsed = WhatsAppTransportEventSchema.safeParse(event);
+      if (!parsed.success) {
+        log.warn("Ignoring invalid native transport event", {
+          subject,
+          eventId: typeof event?.id === "string" ? event.id : undefined,
+          issues: parsed.error.issues.slice(0, 5).map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+        });
+        return;
+      }
+      transportSubject = stripped;
+      transportEvent = parsed.data;
+    } else {
+      const instanceId = parseSubject(subject)?.instanceId;
+      if (instanceId && this.isNativeInstance(instanceId)) {
+        log.debug("Ignoring Omni event for a natively owned instance", { subject, instanceId, eventId: event.id });
+        return;
+      }
+    }
+
+    switch (subscription.kind) {
+      case "message":
+        return this.handleMessageEvent(transportSubject, transportEvent);
+      case "instance":
+        return this.handleInstanceEvent(transportSubject, transportEvent);
+      case "reaction":
+        return this.handleReactionEvent(transportSubject, transportEvent);
+    }
+  }
+
+  private isNativeInstance(instanceId: string): boolean {
+    try {
+      if (this.options.isNativeInstance) return this.options.isNativeInstance(instanceId);
+      if (this.options.nativeWhatsApp) return this.options.nativeWhatsApp.isNativeInstance(instanceId);
+      return isNativeWhatsAppInstance(configStore.getConfig(), instanceId);
+    } catch (error) {
+      log.warn("Native ownership check failed; treating instance as Omni-owned", { instanceId, error });
+      return false;
+    }
   }
 
   async stop(): Promise<void> {
@@ -451,6 +620,7 @@ export class OmniConsumer {
     name: string,
     filterSubject: string,
     timeoutMs = CONSUMER_READY_TIMEOUT,
+    ensureStream?: (jsm: JetStreamManager) => Promise<void>,
   ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
 
@@ -459,7 +629,17 @@ export class OmniConsumer {
         await jsm.streams.info(stream);
       } catch (err) {
         if (!this.running) return false;
-        log.debug("JetStream stream not ready yet, retrying in 2s", { stream, name, error: err });
+        if (ensureStream) {
+          // Ravi-owned stream (CHANNEL_INBOUND): create it instead of waiting for a publisher.
+          try {
+            await ensureStream(jsm);
+            continue;
+          } catch (ensureErr) {
+            log.warn("Failed to create JetStream stream, retrying in 2s", { stream, name, error: ensureErr });
+          }
+        } else {
+          log.debug("JetStream stream not ready yet, retrying in 2s", { stream, name, error: err });
+        }
         await this.delay(CONSUMER_RETRY_DELAY_MS);
         continue;
       }
@@ -512,6 +692,7 @@ export class OmniConsumer {
     consumerName: string,
     filterSubject: string,
     handler: (subject: string, event: OmniEvent) => Promise<void>,
+    ensureStream?: (jsm: JetStreamManager) => Promise<void>,
   ): Promise<void> {
     return new Promise<void>((resolveReady) => {
       let notifiedReady = false;
@@ -537,7 +718,14 @@ export class OmniConsumer {
           try {
             // Ensure consumer exists (retries until stream is available)
             if (this.jsm) {
-              const ready = await this.ensureConsumer(this.jsm, stream, consumerName, filterSubject);
+              const ready = await this.ensureConsumer(
+                this.jsm,
+                stream,
+                consumerName,
+                filterSubject,
+                CONSUMER_READY_TIMEOUT,
+                ensureStream,
+              );
               if (!ready) {
                 if (!this.running) break;
                 continue;
@@ -1465,6 +1653,7 @@ export class OmniConsumer {
       ? await resolveGroupMetadata({
           omniApiUrl: this.omniApiUrl,
           omniApiKey: this.omniApiKey,
+          nativeTransport: this.options.nativeWhatsApp ?? null,
           accountId: effectiveAccountId,
           instanceId,
           chatId: chatJid,
@@ -2475,7 +2664,8 @@ export class OmniConsumer {
   }
 
   /**
-   * Process media: fetch from omni HTTP API, save to agent attachments, transcribe audio.
+   * Process media: read it from local disk (native transports, `file://`) or fetch it
+   * from the omni HTTP API, save to agent attachments, transcribe audio.
    */
   private async processMedia(
     payload: MessageReceivedPayload,
@@ -2483,21 +2673,17 @@ export class OmniConsumer {
     instanceId: string,
   ): Promise<{ localPath?: string; transcript?: string } | null> {
     const { content } = payload;
-    if (!content.mediaUrl || content.type === "text" || !content.type) return null;
+    if (content.type === "text" || !content.type) return null;
+    const localMediaPath = resolveLocalMediaPath(content);
+    if (!content.mediaUrl && !localMediaPath) return null;
 
     const mimeType = content.mimeType ?? "application/octet-stream";
     const isAudio = content.type === "audio" || content.type === "voice";
     const maxBytes = isAudio ? MAX_AUDIO_BYTES : undefined;
 
-    const buffer = content.mediaUrl.startsWith("http")
-      ? ((await fetchCachedOmniMedia(
-          { instanceId, chatExternalId: payload.chatId, externalId: payload.externalId },
-          this.omniApiUrl,
-          this.omniApiKey,
-          maxBytes,
-          mimeType,
-        )) ?? (await fetchOmniMedia(content.mediaUrl, this.omniApiUrl, this.omniApiKey, maxBytes, mimeType)))
-      : await fetchOmniMedia(content.mediaUrl, this.omniApiUrl, this.omniApiKey, maxBytes, mimeType);
+    const buffer = localMediaPath
+      ? await readLocalMediaFile(localMediaPath, { maxBytes, roots: this.options.localMediaRoots })
+      : await this.fetchRemoteMedia(payload, instanceId, maxBytes, mimeType);
     if (!buffer) return null;
 
     // Audio needs both: transcript for the prompt and durable file path for later editing/rendering work.
@@ -2526,6 +2712,32 @@ export class OmniConsumer {
       log.warn("Failed to save media to agent attachments", { error: err });
       return null;
     }
+  }
+
+  private async fetchRemoteMedia(
+    payload: MessageReceivedPayload,
+    instanceId: string,
+    maxBytes: number | undefined,
+    mimeType: string,
+  ): Promise<Buffer | null> {
+    const mediaUrl = payload.content.mediaUrl;
+    if (!mediaUrl) return null;
+    const omniApiUrl = this.omniApiUrl;
+    const omniApiKey = this.omniApiKey;
+    if (!omniApiUrl || !omniApiKey) {
+      log.warn("Skipping remote media: Omni is not configured", { instanceId, externalId: payload.externalId });
+      return null;
+    }
+
+    return mediaUrl.startsWith("http")
+      ? ((await fetchCachedOmniMedia(
+          { instanceId, chatExternalId: payload.chatId, externalId: payload.externalId },
+          omniApiUrl,
+          omniApiKey,
+          maxBytes,
+          mimeType,
+        )) ?? (await fetchOmniMedia(mediaUrl, omniApiUrl, omniApiKey, maxBytes, mimeType)))
+      : await fetchOmniMedia(mediaUrl, omniApiUrl, omniApiKey, maxBytes, mimeType);
   }
 
   /**

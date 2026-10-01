@@ -1,11 +1,15 @@
 /**
  * Omni Sender
  *
- * HTTP client for the omni REST API. Sends messages,
- * typing indicators, reactions, and media via omni-managed channel instances.
+ * Sends messages, typing indicators, reactions, and media through an Omni-shaped
+ * client: the Omni REST API directly (`new OmniSender(apiUrl, apiKey)`), or the
+ * routing transport client that also reaches native WhatsApp instances
+ * (`new OmniSender(createChannelTransportClient(...))`).
  */
 
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import type { ChannelTransportClient, NativeWhatsAppTransport } from "../channels/whatsapp/transport-client.js";
 import { createOmniClient, type OmniClient } from "./client.js";
 import { logger } from "../utils/logger.js";
 import type { OmniUserMention } from "./mentions.js";
@@ -15,10 +19,18 @@ const log = logger.child("omni:sender");
 const MAX_RETRIES = 3;
 
 /**
+ * 5xx codes that retrying cannot fix. `OMNI_NOT_CONFIGURED` (503, from the routing
+ * client, `OMNI_NOT_CONFIGURED_CODE` in channels/whatsapp/transport-client.ts) means the
+ * instance is neither native nor reachable through a configured Omni.
+ */
+const NON_RETRYABLE_CODES = new Set(["OMNI_NOT_CONFIGURED"]);
+
+/**
  * Determine if an error is retryable (network/server errors, not client errors).
  */
 function isRetryable(err: unknown): boolean {
   if (err instanceof TypeError) return true; // fetch network error (ECONNREFUSED etc.)
+  if (err && typeof err === "object" && "code" in err && NON_RETRYABLE_CODES.has(String(err.code))) return false;
   if (err && typeof err === "object" && "status" in err) {
     const status = (err as { status: number }).status;
     return status >= 500; // Only retry 5xx, not 4xx
@@ -26,11 +38,46 @@ function isRetryable(err: unknown): boolean {
   return false; // Don't retry unknown errors (could be application bugs)
 }
 
-export class OmniSender {
-  private client: OmniClient;
+function isChannelTransportClient(client: OmniClient | ChannelTransportClient): client is ChannelTransportClient {
+  return "native" in client && typeof client.native?.isNativeInstance === "function";
+}
 
-  constructor(apiUrl: string, apiKey: string) {
-    this.client = createOmniClient({ baseUrl: apiUrl, apiKey });
+export class OmniSender {
+  private client: OmniClient | ChannelTransportClient;
+
+  /** Omni REST sender (legacy form). */
+  constructor(apiUrl: string, apiKey: string);
+  /** Sender over an existing Omni-shaped client (e.g. the routing transport client). */
+  constructor(client: OmniClient | ChannelTransportClient);
+  constructor(apiUrlOrClient: string | OmniClient | ChannelTransportClient, apiKey?: string) {
+    if (typeof apiUrlOrClient === "string") {
+      if (apiKey === undefined) throw new TypeError("OmniSender(apiUrl, apiKey) requires an apiKey");
+      this.client = createOmniClient({ baseUrl: apiUrlOrClient, apiKey });
+    } else {
+      this.client = apiUrlOrClient;
+    }
+  }
+
+  /**
+   * Native WhatsApp transport of the routing client, or null for a plain Omni client.
+   * Callers use it for calls with no Omni equivalent (e.g. `groups.metadata`).
+   */
+  getNativeWhatsApp(): NativeWhatsAppTransport | null {
+    return isChannelTransportClient(this.client) ? this.client.native : null;
+  }
+
+  /**
+   * Native WhatsApp runners read media straight from `filePath` (same host), so the
+   * file is only base64-encoded for Omni targets.
+   */
+  private needsBase64(instanceId: string): boolean {
+    return !(isChannelTransportClient(this.client) && this.client.native.isNativeInstance(instanceId));
+  }
+
+  private mediaSource(instanceId: string, localPath: string): { filePath: string; base64?: string } {
+    const filePath = resolve(localPath);
+    if (!this.needsBase64(instanceId)) return { filePath };
+    return { filePath, base64: readFileSync(filePath).toString("base64") };
   }
 
   /**
@@ -150,7 +197,8 @@ export class OmniSender {
 
   /**
    * Send a media file (image, video, document, audio).
-   * Reads the file as base64 and sends via omni.
+   * Always passes the absolute `filePath` (Omni ignores it); adds base64 unless the
+   * target is a native WhatsApp instance.
    */
   async sendMedia(
     instanceId: string,
@@ -162,13 +210,11 @@ export class OmniSender {
     voiceNote?: boolean,
   ): Promise<{ messageId?: string }> {
     try {
-      const data = readFileSync(localPath);
-      const base64 = data.toString("base64");
       const result = await this.client.messages.sendMedia({
         instanceId,
         to,
         type,
-        base64,
+        ...this.mediaSource(instanceId, localPath),
         filename,
         caption,
         ...(voiceNote ? { voiceNote: true } : {}),
@@ -188,12 +234,10 @@ export class OmniSender {
    */
   async sendSticker(instanceId: string, to: string, localPath: string): Promise<{ messageId?: string }> {
     try {
-      const data = readFileSync(localPath);
-      const base64 = data.toString("base64");
       const result = await this.client.messages.sendSticker({
         instanceId,
         to,
-        base64,
+        ...this.mediaSource(instanceId, localPath),
       });
       return { messageId: result.messageId };
     } catch (err) {

@@ -5,6 +5,7 @@ const actualContactsModule = await import("../contacts.js");
 const actualSessionStreamModule = await import("./session-stream.js");
 // Cópia: o namespace é mutado in-place por mock.module.
 const actualNatsModule = { ...(await import("../nats.js")) };
+const actualMediaModule = { ...(await import("../utils/media.js")) };
 const { logger } = await import("../utils/logger.js");
 
 const publishCalls: Array<[string, Record<string, unknown>]> = [];
@@ -88,6 +89,7 @@ const capturedLogger = {
 const loggerChildSpy = spyOn(logger, "child").mockImplementation(() => capturedLogger as never);
 
 mock.module("../utils/media.js", () => ({
+  ...actualMediaModule,
   fetchCachedOmniMedia: mock(async () => null),
   fetchOmniMedia: mock(async () => null),
   saveToAgentAttachments: mock(async () => null),

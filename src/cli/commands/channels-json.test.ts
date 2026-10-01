@@ -180,6 +180,23 @@ mock.module("../../omni/client.js", () => ({
   }),
 }));
 
+// group.ts talks to providers through the routing transport client; here every
+// instance is Omni-owned, so the fake simply exposes the mocked Omni client above.
+const mockedOmniClientModule = await import("../../omni/client.js");
+mock.module("../../channels/whatsapp/transport-client.js", () => ({
+  createChannelTransportClient: () => ({
+    ...mockedOmniClientModule.createOmniClient({ baseUrl: "http://omni.local", apiKey: "test-key" }),
+    native: {
+      isNativeInstance: () => false,
+      resolveBinding: () => null,
+      request: async () => {
+        throw new Error("unexpected native WhatsApp RPC");
+      },
+    },
+    hasOmni: () => true,
+  }),
+}));
+
 mock.module("../../contacts.js", () => ({
   getContact: (ref: string) => {
     if (ref === "pi_luis" || ref === "lid:178035101794451" || ref === "178035101794451" || ref === "5511888888888") {

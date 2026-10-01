@@ -12,7 +12,7 @@
   "info": {
     "description": "OpenAPI 3.1 spec auto-generated from the Ravi CLI registry. Each operation maps 1:1 to a `ravi <group> <command>` invocation.",
     "title": "Ravi API",
-    "version": "9c141fc0be724c12"
+    "version": "313a9c556e70ae12"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -47300,7 +47300,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Disconnect an instance from omni",
+        "summary": "Disconnect an instance (native channel runner or omni)",
         "tags": [
           "instances"
         ]

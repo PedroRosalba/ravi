@@ -22,7 +22,8 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { RaviBot } from "./bot.js";
 import { createGateway } from "./gateway.js";
-import { OmniSender, OmniConsumer, createStubOmniConsumer } from "./omni/index.js";
+import type { OmniConsumer } from "./omni/index.js";
+import { createDaemonChannelWiring } from "./omni/channel-wiring.js";
 
 import { loadConfig } from "./utils/config.js";
 import { connectNats, closeNats } from "./nats.js";
@@ -334,17 +335,12 @@ export async function startDaemon() {
   // Step 2: Start config store (NATS sub + periodic refresh)
   await configStore.startRefresh();
 
-  // Step 3: Resolve omni connection
-  let omniApiUrl: string | undefined;
-  let omniApiKey: string | undefined;
-
+  // Step 3: Resolve omni connection (optional: native channels work without it)
   const omniConn = resolveOmniConnection();
   if (omniConn) {
-    omniApiUrl = omniConn.apiUrl;
-    omniApiKey = omniConn.apiKey;
-    log.info("Omni connection resolved", { apiUrl: omniApiUrl, source: omniConn.source });
+    log.info("Omni connection resolved", { apiUrl: omniConn.apiUrl, source: omniConn.source });
   } else {
-    log.warn("Omni not configured — no channel support (install omni: bun add -g @automagik/omni)");
+    log.info("Omni not configured — only native channel transports are available");
   }
 
   // Step 4: Ensure SESSION_PROMPTS JetStream stream exists
@@ -362,37 +358,29 @@ export async function startDaemon() {
   await bot.start();
   log.info("Bot started");
 
-  // Step 6: Set up omni sender + consumer + gateway
-  if (omniApiUrl && omniApiKey) {
-    const sender = new OmniSender(omniApiUrl, omniApiKey);
-    omniConsumer = new OmniConsumer(sender, omniApiUrl, omniApiKey, {
+  // Step 6: Set up the channel transport client + sender + consumer + gateway.
+  // The consumer always reads native transports (CHANNEL_INBOUND); Omni streams only when configured.
+  const channelWiring = createDaemonChannelWiring({
+    omni: omniConn,
+    consumer: {
       isRuntimeSessionActive: (sessionName) => bot?.isRuntimeSessionActive(sessionName) ?? false,
       abortRuntimeSession: (sessionName, provenance) => bot?.abortSession(sessionName, provenance) ?? false,
-    });
+    },
+  });
+  omniConsumer = channelWiring.consumer;
 
-    try {
-      await omniConsumer.start();
-      log.info("Omni consumer started");
-    } catch (err) {
-      log.error("Failed to start omni consumer", err);
-    }
-
-    gateway = createGateway({
-      logLevel: config.logLevel,
-      omniSender: sender,
-      omniConsumer,
-    });
-  } else {
-    // No omni — create a stub gateway that handles internal routing only
-    log.warn("Creating gateway without omni — channel delivery will fail");
-    const stubSender = createStubSender();
-    const stubConsumer = createStubOmniConsumer();
-    gateway = createGateway({
-      logLevel: config.logLevel,
-      omniSender: stubSender,
-      omniConsumer: stubConsumer,
-    });
+  try {
+    await omniConsumer.start();
+    log.info("Channel consumer started", { sources: channelWiring.sources });
+  } catch (err) {
+    log.error("Failed to start channel consumer", err);
   }
+
+  gateway = createGateway({
+    logLevel: config.logLevel,
+    omniSender: channelWiring.sender,
+    omniConsumer,
+  });
 
   await gateway.start();
   log.info("Gateway started");
@@ -488,32 +476,6 @@ export async function startDaemon() {
     .catch((err) => {
       log.error("Failed to notify restart reason", err);
     });
-}
-
-/**
- * Stub OmniSender for when omni is not configured.
- * Logs warnings but doesn't throw.
- */
-function createStubSender(): OmniSender {
-  return {
-    send: async (instanceId: string, to: string, _text: string) => {
-      log.warn("OmniSender stub: send called but omni not configured", { instanceId, to });
-      return {};
-    },
-    sendTyping: async () => {},
-    sendReaction: async () => {},
-    deleteMessage: async () => {},
-    editMessage: async () => {},
-    sendMedia: async () => {
-      return {};
-    },
-    sendSticker: async () => {
-      return {};
-    },
-    getClient: () => {
-      throw new Error("Omni not configured");
-    },
-  } as unknown as OmniSender;
 }
 
 /**

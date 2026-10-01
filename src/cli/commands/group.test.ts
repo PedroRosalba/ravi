@@ -42,6 +42,13 @@ const publishPromptCalls: Array<Record<string, unknown>> = [];
 let mockAgent: { id: string; cwd: string } | undefined;
 
 let listGroupsResult: Array<Record<string, unknown>> = [];
+// Transport fixtures: which instance ids are owned by a native WhatsApp channel, and
+// whether an Omni API connection is configured.
+let mockInstanceId = "inst-1";
+let nativeInstanceIds = new Set<string>();
+let omniConfigured = true;
+const senderConstructions: unknown[][] = [];
+const listGroupsCalls: Array<{ instanceId: string }> = [];
 let metadataResult: Record<string, unknown> | null = null;
 let historyMock: Array<{ role: string; content: string; created_at: string }> = [];
 
@@ -138,7 +145,7 @@ mock.module("../../contacts.js", () => ({
 }));
 
 mock.module("../../router/router-db.js", () => ({
-  dbGetInstance: () => ({ instanceId: "inst-1" }),
+  dbGetInstance: () => ({ instanceId: mockInstanceId }),
   getFirstAccountName: () => "main",
   dbListChats: () => ({ items: [], total: 0 }),
   dbFindChat: () => null,
@@ -175,6 +182,9 @@ mock.module("../../omni/mentions.js", () => ({
 
 mock.module("../../omni/sender.js", () => ({
   OmniSender: class OmniSender {
+    constructor(...args: unknown[]) {
+      senderConstructions.push(args);
+    }
     async send(instanceId: string, to: string, text: string, extra?: Record<string, unknown>) {
       senderSendCalls.push({ instanceId, to, text, ...(extra ?? {}) });
       return { messageId: "wamid-1" };
@@ -182,14 +192,29 @@ mock.module("../../omni/sender.js", () => ({
   },
 }));
 
-mock.module("../../omni/client.js", () => ({
-  createOmniClient: () => ({
+// The routing client: same instance API for Omni and native instances (the real one
+// dispatches per instance), plus the native ownership probe group.ts branches on.
+const fakeNativeTransport = {
+  isNativeInstance: (ref: string | undefined | null) => Boolean(ref && nativeInstanceIds.has(ref)),
+  resolveBinding: () => null,
+  request: async () => {
+    throw new Error("unexpected native RPC");
+  },
+};
+
+mock.module("../../channels/whatsapp/transport-client.js", () => ({
+  createChannelTransportClient: () => ({
+    native: fakeNativeTransport,
+    hasOmni: () => omniConfigured,
     instances: {
       createGroup: async (instanceId: string, input: Record<string, unknown>) => {
         createGroupCalls.push({ instanceId, ...input });
         return { id: "999@g.us", subject: input.subject, participants: input.participants };
       },
-      listGroups: async () => ({ items: listGroupsResult, meta: {} }),
+      listGroups: async (instanceId: string) => {
+        listGroupsCalls.push({ instanceId });
+        return { items: listGroupsResult, meta: {} };
+      },
       addGroupParticipants: async (instanceId: string, groupJid: string, input: Record<string, unknown>) => {
         addParticipantCalls.push({ instanceId, groupJid, ...input });
         return { ok: true };
@@ -228,7 +253,7 @@ mock.module("../../omni/client.js", () => ({
 }));
 
 mock.module("../../omni-config.js", () => ({
-  resolveOmniConnection: () => ({ apiUrl: "http://omni.test", apiKey: "key" }),
+  resolveOmniConnection: () => (omniConfigured ? { apiUrl: "http://omni.test", apiKey: "key" } : null),
 }));
 
 mock.module("../../router/session-key.js", () => ({
@@ -352,6 +377,11 @@ beforeEach(() => {
   upsertChatParticipantCalls.length = 0;
   publishPromptCalls.length = 0;
   mockAgent = undefined;
+  mockInstanceId = "inst-1";
+  nativeInstanceIds = new Set();
+  omniConfigured = true;
+  senderConstructions.length = 0;
+  listGroupsCalls.length = 0;
   listGroupsResult = [];
   metadataResult = null;
   historyMock = [];
@@ -805,6 +835,99 @@ describe("whatsapp group envelopes and compact mode", () => {
     for (const item of payload.items as Array<Record<string, unknown>>) {
       expect(Object.keys(item).sort()).toEqual(["id", "subject"]);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// whatsapp.group — native WhatsApp transport
+// ---------------------------------------------------------------------------
+
+describe("whatsapp group on a native WhatsApp instance", () => {
+  beforeEach(() => {
+    mockInstanceId = "native-1";
+    nativeInstanceIds = new Set(["native-1"]);
+    omniConfigured = false;
+  });
+
+  it("list goes through the routing client without Omni and reports the native source", async () => {
+    listGroupsResult = [{ id: "111@g.us", subject: "Equipe", memberCount: 3, participants: [] }];
+
+    const commands = new GroupCommands();
+    const payload = await silenced(() => commands.list(undefined, true));
+
+    expect(listGroupsCalls).toEqual([{ instanceId: "native-1" }]);
+    expect(payload).toMatchObject({ instanceId: "native-1", source: "native.rpc", total: 1 });
+  });
+
+  it("info resolves group metadata through the native transport", async () => {
+    listGroupsResult = [{ id: "111@g.us", subject: "Equipe", memberCount: 1 }];
+    metadataResult = {
+      externalId: "111@g.us",
+      name: "Equipe",
+      participantCount: 1,
+      participants: [{ platformUserId: "5511999999999@s.whatsapp.net", role: "admin" }],
+    };
+
+    const commands = new GroupCommands();
+    const result = await silenced(() => commands.info("111", undefined, true));
+
+    expect(metadataCalls).toHaveLength(1);
+    expect(metadataCalls[0]).toMatchObject({
+      instanceId: "native-1",
+      chatId: "111@g.us",
+      omniApiUrl: null,
+      omniApiKey: null,
+      nativeTransport: fakeNativeTransport,
+    });
+    expect(result).toMatchObject({
+      source: "native.rpc",
+      participants: [{ id: "5511999999999@s.whatsapp.net", admin: "admin" }],
+    });
+  });
+
+  it("send --execute uses OmniSender over the routing client and native group metadata", async () => {
+    metadataResult = { participants: [] };
+
+    const commands = new GroupCommands();
+    const payload = await silenced(() =>
+      commands.send("120363000000000001", "oi @Joao", undefined, undefined, true, true),
+    );
+
+    expect(metadataCalls[0]).toMatchObject({ nativeTransport: fakeNativeTransport, omniApiUrl: null });
+    expect(senderConstructions).toHaveLength(1);
+    expect(senderConstructions[0]?.[0]).toMatchObject({ native: fakeNativeTransport });
+    expect(senderSendCalls[0]).toMatchObject({ instanceId: "native-1", to: "120363000000000001@g.us" });
+    expect(payload).toMatchObject({ status: "sent", transport: "native", instanceId: "native-1" });
+  });
+
+  it("participant changes report the native RPC source", async () => {
+    const commands = new GroupCommands();
+    const payload = await silenced(() => commands.add("120363000000000001", "5511999999999", undefined, true, true));
+
+    expect(addParticipantCalls[0]).toMatchObject({ instanceId: "native-1", groupJid: "120363000000000001@g.us" });
+    expect(payload).toMatchObject({ source: "native.rpc.group_participants" });
+  });
+
+  it("a non-native instance still requires Omni", async () => {
+    nativeInstanceIds = new Set();
+
+    const commands = new GroupCommands();
+    await expect(silenced(() => commands.list(undefined, true))).rejects.toThrow("Omni API is not configured");
+    expect(listGroupsCalls).toHaveLength(0);
+  });
+
+  it("omni instances keep the REST sender and source", async () => {
+    mockInstanceId = "inst-1";
+    nativeInstanceIds = new Set();
+    omniConfigured = true;
+
+    const commands = new GroupCommands();
+    const sent = await silenced(() => commands.send("120363000000000001", "oi", undefined, undefined, true, true));
+    const listed = await silenced(() => commands.list(undefined, true));
+
+    expect(senderConstructions[0]).toEqual(["http://omni.test", "key"]);
+    expect(sent).toMatchObject({ transport: "omni" });
+    expect(listed).toMatchObject({ source: "omni.rest" });
   });
 });
 

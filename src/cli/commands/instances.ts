@@ -29,7 +29,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import qrcode from "qrcode-terminal";
 import { Group, Command, CommandAccess, CliOnly, Arg, Option } from "../decorators.js";
-import { contractDryRun, contractFail, pickFields, suggestSimilar } from "../agent-contract.js";
+import { CONTRACT_EXIT_USAGE, contractDryRun, contractFail, pickFields, suggestSimilar } from "../agent-contract.js";
 import { fail } from "../context.js";
 import { buildCliOffsetPagination, paginateCliItems } from "../pagination.js";
 import {
@@ -39,8 +39,16 @@ import {
   routeShowReturnSchema,
   routesListReturnSchema,
 } from "./operational-return-schemas.js";
-import { nats } from "../../nats.js";
-import { createOmniClient } from "../../omni/client.js";
+import { ensureConnected, nats } from "../../nats.js";
+import { createOmniClient, OmniApiError } from "../../omni/client.js";
+import {
+  createChannelTransportClient,
+  createNativeWhatsAppInstance,
+  type ChannelTransportClient,
+} from "../../channels/whatsapp/transport-client.js";
+import { WHATSAPP_RPC_ERROR_CODES } from "../../channels/whatsapp/contract.js";
+import { WHATSAPP_RUNNER_UNAVAILABLE_MESSAGE } from "../../channels/whatsapp/rpc-client.js";
+import { canonicalChannelId } from "../../channels/capabilities.js";
 import {
   dbGetInstance,
   dbGetInstanceByInstanceId,
@@ -99,8 +107,9 @@ import { formatInspectionSection, printInspectionField } from "../inspection-out
 
 const CONFIG_DB_META = { source: "config-db", freshness: "persisted" } as const;
 const LIVE_OMNI_META = { source: "live-omni", freshness: "live" } as const;
+const LIVE_NATIVE_META = { source: "runtime-snapshot", freshness: "live", via: "whatsapp-runner-rpc" } as const;
 type ListedRoute = ReturnType<typeof dbListRoutes>[number];
-type OmniInstanceStatus = { isConnected?: boolean; profileName?: string; state?: string };
+type OmniInstanceStatus = { isConnected?: boolean; profileName?: string | null; state?: string };
 
 function printJson(payload: unknown): void {
   console.log(JSON.stringify(payload, null, 2));
@@ -726,6 +735,240 @@ function getOmniClient() {
   return createOmniClient({ baseUrl: conn.apiUrl, apiKey: conn.apiKey });
 }
 
+// ============================================================================
+// Transport (native WhatsApp runner or Omni)
+// ============================================================================
+
+export type InstanceConnectTransport = "native" | "omni";
+const WHATSAPP_TRANSPORT_SETTING = "whatsapp.transport";
+const CONNECT_TRANSPORTS: readonly InstanceConnectTransport[] = ["native", "omni"];
+
+type PairingEvent = { topic: string; data: Record<string, unknown> };
+
+export interface InstancesTransportDependencies {
+  /** Routing client: native WhatsApp instances go to the runner RPC, others to Omni. */
+  createClient(): ChannelTransportClient;
+  /** Whether an Omni API connection is configured (env or ~/.omni/config.json). */
+  isOmniConfigured(): boolean;
+  subscribe(...topics: string[]): AsyncIterable<PairingEvent>;
+  /** Opens the NATS connection before the pairing subscription starts. */
+  ensureNats(): Promise<unknown>;
+  emitConfigChanged(): void;
+  sleep(ms: number): Promise<void>;
+  printQr(qr: string): void;
+  exit(code: number): void;
+  /** How long `connect --transport native` keeps retrying while the runner hot-adds the channel. */
+  runnerWaitMs: number;
+  runnerRetryIntervalMs: number;
+  pairingTimeoutMs: number;
+}
+
+function defaultInstancesTransportDependencies(): InstancesTransportDependencies {
+  return {
+    createClient: () => createChannelTransportClient(),
+    isOmniConfigured: () => resolveOmniConnection() !== null,
+    subscribe: (...topics) => nats.subscribe(...topics),
+    ensureNats: () => ensureConnected(),
+    emitConfigChanged,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    printQr: (qr) => qrcode.generate(qr, { small: true }),
+    exit: (code) => process.exit(code),
+    runnerWaitMs: 15_000,
+    runnerRetryIntervalMs: 1_000,
+    pairingTimeoutMs: 120_000,
+  };
+}
+
+let transportDependencyOverrides: Partial<InstancesTransportDependencies> = {};
+
+export function setInstancesTransportDependenciesForTests(overrides?: Partial<InstancesTransportDependencies>): void {
+  transportDependencyOverrides = overrides ?? {};
+}
+
+function transportDeps(): InstancesTransportDependencies {
+  return { ...defaultInstancesTransportDependencies(), ...transportDependencyOverrides };
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isRunnerUnavailable(err: unknown): boolean {
+  return err instanceof OmniApiError && err.code === WHATSAPP_RPC_ERROR_CODES.runnerUnavailable;
+}
+
+function liveTransport(
+  client: ChannelTransportClient,
+  instanceId: string | undefined,
+): InstanceConnectTransport | null {
+  if (!instanceId) return null;
+  return client.native.isNativeInstance(instanceId) ? "native" : "omni";
+}
+
+function liveMeta(transport: InstanceConnectTransport | null) {
+  return transport === "native" ? LIVE_NATIVE_META : LIVE_OMNI_META;
+}
+
+/**
+ * Pick the transport for `instances connect`.
+ *
+ * Explicit `--transport` wins (and is validated). Otherwise: non-WhatsApp channels
+ * stay on Omni; an instance already bound to a native WhatsApp channel stays native;
+ * then the `whatsapp.transport` setting; then Omni when it is configured, else native.
+ */
+export function resolveInstanceConnectTransport(input: {
+  requested?: string;
+  channel: string;
+  nativeBound: boolean;
+  setting?: string | null;
+  omniConfigured: boolean;
+}): { transport: InstanceConnectTransport; reason: string } | { error: string } {
+  const isWhatsApp = canonicalChannelId(input.channel) === "whatsapp";
+  const requested = input.requested?.trim().toLowerCase();
+  if (requested) {
+    if (!CONNECT_TRANSPORTS.includes(requested as InstanceConnectTransport)) {
+      return { error: `Invalid --transport: ${input.requested}. Valid: ${CONNECT_TRANSPORTS.join(", ")}` };
+    }
+    if (requested === "native" && !isWhatsApp) {
+      return { error: `--transport native only supports WhatsApp (channel "${input.channel}")` };
+    }
+    return { transport: requested as InstanceConnectTransport, reason: "flag" };
+  }
+  if (!isWhatsApp) return { transport: "omni", reason: "channel" };
+  if (input.nativeBound) return { transport: "native", reason: "native_channel" };
+  const setting = input.setting?.trim().toLowerCase();
+  if (setting && CONNECT_TRANSPORTS.includes(setting as InstanceConnectTransport)) {
+    return { transport: setting as InstanceConnectTransport, reason: "setting" };
+  }
+  return input.omniConfigured
+    ? { transport: "omni", reason: "omni_configured" }
+    : { transport: "native", reason: "default" };
+}
+
+interface PairingWaitOptions {
+  name: string;
+  instanceId: string;
+  asJson?: boolean;
+  deps: InstancesTransportDependencies;
+  qrPayload(qr: unknown): Record<string, unknown>;
+  connectedPayload(live: Record<string, unknown>): Record<string, unknown>;
+  timeoutSuggestion: string;
+}
+
+interface PairingWait {
+  done: Promise<void>;
+  cancel(): void;
+}
+
+/**
+ * Wait for `ravi.whatsapp.qr.<uuid>` / `ravi.whatsapp.connected.<uuid>`, relayed by the
+ * daemon's channel consumer for both Omni and native instance events. With `--json`
+ * it resolves on the first QR code; otherwise it prints each QR and exits on connect.
+ */
+function waitForPairing(options: PairingWaitOptions): PairingWait {
+  const { asJson, deps, instanceId } = options;
+  const qrTopic = `ravi.whatsapp.qr.${instanceId}`;
+  const connectedTopic = `ravi.whatsapp.connected.${instanceId}`;
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const done = new Promise<void>((resolve, reject) => {
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        contractFail("instances connect", "INSTANCE_CONNECT_TIMEOUT", "Timed out waiting for instance connection.", {
+          asJson,
+          details: {
+            retryable: true,
+            timeoutSeconds: deps.pairingTimeoutMs / 1_000,
+            suggestedAction: options.timeoutSuggestion,
+          },
+        });
+      } catch (error) {
+        reject(error);
+      }
+    }, deps.pairingTimeoutMs);
+
+    (async () => {
+      try {
+        for await (const event of deps.subscribe(qrTopic, connectedTopic)) {
+          if (settled) break;
+          const data = event.data;
+          if (event.topic === qrTopic && data.type === "qr") {
+            if (asJson) {
+              if (timer) clearTimeout(timer);
+              settled = true;
+              printJson(options.qrPayload(data.qr ?? null));
+              resolve();
+              return;
+            }
+            console.log("Scan this QR code:\n");
+            deps.printQr(String(data.qr ?? ""));
+          } else if (event.topic === connectedTopic && data.type === "connected") {
+            if (timer) clearTimeout(timer);
+            settled = true;
+            if (asJson) {
+              printJson(options.connectedPayload(data));
+              resolve();
+              return;
+            }
+            const profile = data.profileName ? ` as ${data.profileName}` : "";
+            console.log(`\n✓ Connected${profile}`);
+            resolve();
+            deps.exit(0);
+            return;
+          }
+        }
+      } catch (err) {
+        if (!settled) {
+          if (timer) clearTimeout(timer);
+          settled = true;
+          reject(err);
+        }
+      }
+    })();
+  });
+
+  // Callers may await `done` only after the connect request; mark it handled meanwhile.
+  done.catch(() => {});
+  return {
+    done,
+    cancel() {
+      settled = true;
+      if (timer) clearTimeout(timer);
+    },
+  };
+}
+
+function failRunnerUnavailable(name: string, err: unknown, asJson?: boolean): never {
+  contractFail("instances connect", WHATSAPP_RPC_ERROR_CODES.runnerUnavailable, WHATSAPP_RUNNER_UNAVAILABLE_MESSAGE, {
+    asJson,
+    details: {
+      retryable: true,
+      cause: errorText(err),
+      suggestedAction: `Start the channel runner with \`ravi channels start\` (or \`ravi channels restart\` if it is already running), make sure the ravi daemon is up, then retry: ravi instances connect ${name} --transport native`,
+    },
+  });
+}
+
+/**
+ * Call a native RPC, retrying while the runner is unavailable: right after
+ * `createNativeWhatsAppInstance` the runner needs a moment to hot-add the channel
+ * (it reconciles on `ravi.config.changed`) before it answers for the new instance.
+ */
+async function withRunnerRetry<T>(deps: InstancesTransportDependencies, call: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + deps.runnerWaitMs;
+  for (;;) {
+    try {
+      return await call();
+    } catch (err) {
+      if (!isRunnerUnavailable(err) || Date.now() + deps.runnerRetryIntervalMs > deadline) throw err;
+      await deps.sleep(deps.runnerRetryIntervalMs);
+    }
+  }
+}
+
 const SETTABLE_KEYS = [
   "agent",
   "dmPolicy",
@@ -761,6 +1004,259 @@ function parseDefaultContactTagsInput(value: string): string[] {
     .split(",")
     .map((tag) => tag.trim())
     .filter((tag) => tag.length > 0);
+}
+
+function ensureConnectAgent(agentId: string | undefined, asJson?: boolean): { id: string; cwd: string } | null {
+  if (!agentId || dbGetAgent(agentId)) return null;
+  const cwd = `${homedir()}/ravi/${agentId}`;
+  mkdirSync(cwd, { recursive: true });
+  dbCreateAgent({ id: agentId, cwd });
+  if (!asJson) console.log(`✓ Created agent "${agentId}" at ${cwd}`);
+  return { id: agentId, cwd };
+}
+
+async function connectViaOmni(
+  name: string,
+  channel: string,
+  agent: string | undefined,
+  asJson: boolean | undefined,
+  deps: InstancesTransportDependencies,
+): Promise<void> {
+  const omni = getOmniClient();
+  let createdOmniInstance = false;
+  let createdAgent: { id: string; cwd: string } | null = null;
+
+  let inst = dbGetInstance(name);
+  const omniChannel = channel === "whatsapp" ? "whatsapp-baileys" : channel;
+
+  // Resolve or create omni instance
+  let instanceId = inst?.instanceId ?? "";
+  if (!instanceId) {
+    // Try to find existing in omni by name
+    try {
+      const result = await omni.instances.list({ channel: omniChannel });
+      const existing = (result.items as Array<{ id?: string; name?: string }>).find((i) => i.name === name);
+      if (existing?.id) instanceId = existing.id;
+    } catch {
+      /* omni offline */
+    }
+  }
+
+  if (!instanceId) {
+    if (!asJson) console.log(`Creating ${channel} instance "${name}" in omni...`);
+    try {
+      const created = (await omni.instances.create({ name, channel: omniChannel })) as { id?: string };
+      instanceId = created.id ?? "";
+      createdOmniInstance = true;
+      if (!asJson) console.log(`✓ Instance created in omni: ${instanceId}`);
+    } catch (err) {
+      fail(`Failed to create instance in omni: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+  }
+
+  // Upsert local instance record
+  const agentId = agent ?? inst?.agent ?? (dbGetAgent(name) ? name : undefined);
+  dbUpsertInstance({ name, instanceId, channel, agent: agentId ?? undefined, enabled: inst?.enabled !== false });
+  createdAgent = ensureConnectAgent(agentId, asJson);
+
+  deps.emitConfigChanged();
+  inst = dbGetInstance(name)!;
+  if (!asJson) console.log(`Connecting: ${name} → agent ${inst.agent ?? "(default)"}  [${channel}]`);
+
+  // Check if already connected
+  try {
+    const status = (await omni.instances.status(instanceId)) as { isConnected?: boolean; profileName?: string };
+    if (status.isConnected) {
+      if (asJson) {
+        printJson({
+          status: "connected",
+          instance: inst,
+          live: status,
+          createdOmniInstance,
+          createdAgent,
+          changedCount: 1,
+        });
+        return;
+      }
+      const profile = status.profileName ? ` as ${status.profileName}` : "";
+      console.log(`\n✓ Already connected${profile}`);
+      return;
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // Initiate connection
+  if (!asJson) console.log("Waiting for QR code...\n");
+  try {
+    await omni.instances.connect(instanceId, { whatsapp: { syncFullHistory: false } });
+  } catch (err) {
+    fail(`Failed to initiate connection: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  const connectedInstance = inst;
+  await waitForPairing({
+    name,
+    instanceId,
+    asJson,
+    deps,
+    timeoutSuggestion: `Check the provider connection, then retry: ravi instances connect ${name}`,
+    qrPayload: (qr) => ({
+      status: "qr_required",
+      instance: connectedInstance,
+      instanceId,
+      channel,
+      qr,
+      createdOmniInstance,
+      createdAgent,
+      changedCount: 1,
+    }),
+    connectedPayload: (live) => ({
+      status: "connected",
+      instance: connectedInstance,
+      live,
+      createdOmniInstance,
+      createdAgent,
+      changedCount: 1,
+    }),
+  }).done;
+}
+
+/**
+ * Native WhatsApp: make the instance natively owned (instance UUID + `whatsapp`
+ * channel row), then ask the channel runner over NATS RPC to connect it. QR codes
+ * and the connected event come back through the daemon's channel consumer on the
+ * same `ravi.whatsapp.qr.<uuid>` / `ravi.whatsapp.connected.<uuid>` topics as Omni.
+ */
+async function connectViaNative(
+  name: string,
+  agent: string | undefined,
+  asJson: boolean | undefined,
+  deps: InstancesTransportDependencies,
+  client: ChannelTransportClient,
+): Promise<void> {
+  const before = dbGetInstance(name);
+  const agentId = agent ?? before?.agent ?? (dbGetAgent(name) ? name : undefined);
+
+  let provisioned: ReturnType<typeof createNativeWhatsAppInstance>;
+  try {
+    provisioned = createNativeWhatsAppInstance(name, {
+      ...(agentId ? { agent: agentId } : {}),
+      emitConfigChanged: deps.emitConfigChanged,
+    });
+  } catch (err) {
+    contractFail("instances connect", "NATIVE_INSTANCE_CONFLICT", errorText(err), {
+      asJson,
+      details: { suggestedAction: `Inspect the instance and channel: ravi instances show ${name}; ravi channels list` },
+    });
+  }
+  // `--agent` on an existing instance re-points it, like the omni path's upsert.
+  if (agent && provisioned.instance.agent !== agent) {
+    dbUpdateInstance(name, { agent });
+    deps.emitConfigChanged();
+  }
+  const createdAgent = ensureConnectAgent(agentId, asJson);
+  const { instanceId } = provisioned;
+  const inst = dbGetInstance(name) ?? provisioned.instance;
+  const provisioning = {
+    transport: "native" as const,
+    channelName: provisioned.channel.name,
+    createdInstance: provisioned.createdInstance,
+    createdChannel: provisioned.createdChannel,
+    mintedInstanceId: provisioned.mintedInstanceId,
+    createdOmniInstance: false,
+    createdAgent,
+  };
+
+  if (!asJson) {
+    if (provisioned.createdInstance) console.log(`✓ Instance created: ${name} (${instanceId})`);
+    else if (provisioned.mintedInstanceId) console.log(`✓ Instance id minted: ${instanceId}`);
+    if (provisioned.createdChannel) console.log(`✓ Native WhatsApp channel created: ${provisioned.channel.name}`);
+    console.log(`Connecting: ${name} → agent ${inst.agent ?? "(default)"}  [whatsapp, native]`);
+  }
+
+  // The runner hot-adds the channel on ravi.config.changed; retry while it has no responder.
+  let status: Awaited<ReturnType<ChannelTransportClient["instances"]["status"]>>;
+  try {
+    status = await withRunnerRetry(deps, () => client.instances.status(instanceId));
+  } catch (err) {
+    if (isRunnerUnavailable(err)) failRunnerUnavailable(name, err, asJson);
+    fail(`Failed to read native WhatsApp status: ${errorText(err)}`);
+    return;
+  }
+
+  if (status.isConnected) {
+    if (asJson) {
+      printJson({ status: "connected", instance: inst, instanceId, live: status, ...provisioning, changedCount: 1 });
+      return;
+    }
+    const profile = status.profileName ? ` as ${status.profileName}` : "";
+    console.log(`\n✓ Already connected${profile}`);
+    return;
+  }
+
+  // Subscribe before asking for a socket so the first QR code is not missed.
+  await deps.ensureNats();
+  const pairing = waitForPairing({
+    name,
+    instanceId,
+    asJson,
+    deps,
+    timeoutSuggestion: `Make sure the ravi daemon and the channel runner are running (ravi daemon status; ravi channels status), then retry: ravi instances connect ${name} --transport native`,
+    qrPayload: (qr) => ({
+      status: "qr_required",
+      instance: inst,
+      instanceId,
+      channel: "whatsapp",
+      qr,
+      ...provisioning,
+      changedCount: 1,
+    }),
+    connectedPayload: (live) => ({
+      status: "connected",
+      instance: inst,
+      instanceId,
+      live,
+      ...provisioning,
+      changedCount: 1,
+    }),
+  });
+
+  if (!asJson) console.log("Waiting for QR code...\n");
+  let connectResult: Awaited<ReturnType<ChannelTransportClient["instances"]["connect"]>>;
+  try {
+    connectResult = await withRunnerRetry(deps, () =>
+      client.instances.connect(instanceId, { whatsapp: { syncFullHistory: false } }),
+    );
+  } catch (err) {
+    pairing.cancel();
+    if (isRunnerUnavailable(err)) failRunnerUnavailable(name, err, asJson);
+    fail(`Failed to initiate connection: ${errorText(err)}`);
+    return;
+  }
+
+  if (connectResult.status === "connected") {
+    pairing.cancel();
+    const live = await client.instances.status(instanceId).catch(() => null);
+    if (asJson) {
+      printJson({
+        status: "connected",
+        instance: inst,
+        instanceId,
+        live: live ?? connectResult,
+        ...provisioning,
+        changedCount: 1,
+      });
+      return;
+    }
+    const profile = live?.profileName ? ` as ${live.profileName}` : "";
+    console.log(`\n✓ Connected${profile}`);
+    return;
+  }
+
+  await pairing.done;
 }
 
 const ROUTE_SETTABLE_KEYS = ["agent", "priority", "dmScope", "session", "policy", "channel"] as const;
@@ -803,13 +1299,23 @@ export class InstancesCommands {
     });
     const ignoredOmniInstanceIds = getIgnoredOmniInstanceIds();
 
-    // Try to enrich with omni status
+    // Enrich with live status: native WhatsApp instances ask the channel runner,
+    // everything else asks Omni (when configured).
     const omniStatus: Record<string, OmniInstanceStatus> = {};
+    const client = transportDeps().createClient();
     try {
-      const omni = getOmniClient();
-      const result = await omni.instances.list({});
-      for (const item of result.items as Array<{ id?: string; isActive?: boolean; profileName?: string }>) {
-        if (item.id) omniStatus[item.id] = { isConnected: item.isActive, profileName: item.profileName };
+      const result = await client.instances.list({});
+      const nativeIds = new Set(
+        Array.isArray(result.meta?.nativeInstanceIds) ? (result.meta.nativeInstanceIds as unknown[]) : [],
+      );
+      for (const item of result.items) {
+        if (!item.id) continue;
+        omniStatus[item.id] = {
+          isConnected: item.isActive,
+          profileName: item.profileName ?? undefined,
+          // Native records carry the runner's socket state; Omni rows keep their old shape.
+          ...(nativeIds.has(item.id) && item.state ? { state: item.state } : {}),
+        };
       }
     } catch {
       /* omni offline */
@@ -820,6 +1326,7 @@ export class InstancesCommands {
         ...inst,
         tags: listInstanceTags(inst.name),
         raviStatus: inst.enabled === false ? "disabled" : "enabled",
+        transport: liveTransport(client, inst.instanceId),
         live: inst.instanceId ? (omniStatus[inst.instanceId] ?? null) : null,
       })),
       fields,
@@ -861,7 +1368,8 @@ export class InstancesCommands {
             : "disconnected"
           : "no-omni-id";
         const profile = inst.instanceId ? (omniStatus[inst.instanceId]?.profileName ?? "") : "";
-        const label = profile ? `${status} (${profile})` : status;
+        const transportTag = liveTransport(client, inst.instanceId) === "native" ? " [native]" : "";
+        const label = `${profile ? `${status} (${profile})` : status}${transportTag}`;
         console.log(
           `  ${inst.name.padEnd(20)} ${inst.channel.padEnd(13)} ${(inst.agent ?? "-").padEnd(15)} ${(inst.enabled === false ? "disabled" : "enabled").padEnd(9)} ${inst.dmPolicy.padEnd(12)} ${inst.groupPolicy.padEnd(12)} ${inst.contactIntakeMode.padEnd(12)} ${label}`,
         );
@@ -898,12 +1406,13 @@ export class InstancesCommands {
     const routes = dbListRoutes(name);
 
     let omniInfo: OmniInstanceStatus = {};
+    const client = transportDeps().createClient();
+    const transport = liveTransport(client, inst.instanceId);
     if (inst.instanceId) {
       try {
-        const omni = getOmniClient();
-        omniInfo = (await omni.instances.status(inst.instanceId)) as typeof omniInfo;
+        omniInfo = await client.instances.status(inst.instanceId);
       } catch {
-        /* omni offline */
+        /* omni or the channel runner offline */
       }
     }
 
@@ -914,6 +1423,7 @@ export class InstancesCommands {
         raviStatus: inst.enabled === false ? "disabled" : "enabled",
       },
       routes,
+      transport,
       live: inst.instanceId ? omniInfo : null,
     };
 
@@ -942,8 +1452,10 @@ export class InstancesCommands {
         printInspectionField("Defaults", JSON.stringify(inst.defaults), CONFIG_DB_META);
       }
       if (inst.instanceId) {
-        printInspectionField("Connected", omniInfo.isConnected ?? "unknown", LIVE_OMNI_META);
-        if (omniInfo.profileName) printInspectionField("Profile", omniInfo.profileName, LIVE_OMNI_META);
+        const meta = liveMeta(transport);
+        if (transport === "native") printInspectionField("Transport", "native WhatsApp (channel runner)", meta);
+        printInspectionField("Connected", omniInfo.isConnected ?? "unknown", meta);
+        if (omniInfo.profileName) printInspectionField("Profile", omniInfo.profileName, meta);
       }
       console.log(`\n${formatInspectionSection(`  Routes (${routes.length}):`, CONFIG_DB_META)}`);
       if (routes.length === 0) {
@@ -1368,7 +1880,10 @@ export class InstancesCommands {
   // --------------------------------------------------------------------------
   // connect
   // --------------------------------------------------------------------------
-  @Command({ name: "connect", description: "Connect an instance to omni (QR code for WhatsApp)" })
+  @Command({
+    name: "connect",
+    description: "Connect an instance (QR code for WhatsApp) through the native channel runner or omni",
+  })
   @CommandAccess({ kind: "mutate", resource: "instances", action: "connect", risk: "high", input: ["name"] })
   @CliOnly()
   async connect(
@@ -1376,171 +1891,58 @@ export class InstancesCommands {
     @Option({ flags: "--channel <channel>", description: "Channel type (default: whatsapp)" }) channelOpt?: string,
     @Option({ flags: "--agent <id>", description: "Agent to route messages to" }) agent?: string,
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
+    @Option({
+      flags: "--transport <transport>",
+      description:
+        "WhatsApp transport: native (ravi channels runner) or omni. Default: native when the instance already has a native WhatsApp channel, else the whatsapp.transport setting, else omni when configured, else native",
+    })
+    transportOpt?: string,
   ) {
-    const TIMEOUT_MS = 120_000;
-    const omni = getOmniClient();
-    let createdOmniInstance = false;
-    let createdAgent: { id: string; cwd: string } | null = null;
-
-    let inst = dbGetInstance(name);
-    const channel = channelOpt ?? inst?.channel ?? "whatsapp";
-    const omniChannel = channel === "whatsapp" ? "whatsapp-baileys" : channel;
-
-    // Resolve or create omni instance
-    let instanceId = inst?.instanceId ?? "";
-    if (!instanceId) {
-      // Try to find existing in omni by name
-      try {
-        const result = await omni.instances.list({ channel: omniChannel });
-        const existing = (result.items as Array<{ id?: string; name?: string }>).find((i) => i.name === name);
-        if (existing?.id) instanceId = existing.id;
-      } catch {
-        /* omni offline */
-      }
-    }
-
-    if (!instanceId) {
-      if (!asJson) console.log(`Creating ${channel} instance "${name}" in omni...`);
-      try {
-        const created = (await omni.instances.create({ name, channel: omniChannel })) as { id?: string };
-        instanceId = created.id ?? "";
-        createdOmniInstance = true;
-        if (!asJson) console.log(`✓ Instance created in omni: ${instanceId}`);
-      } catch (err) {
-        fail(`Failed to create instance in omni: ${err instanceof Error ? err.message : String(err)}`);
-        return;
-      }
-    }
-
-    // Upsert local instance record
-    const agentId = agent ?? inst?.agent ?? (dbGetAgent(name) ? name : undefined);
-    dbUpsertInstance({ name, instanceId, channel, agent: agentId ?? undefined, enabled: inst?.enabled !== false });
-    if (agentId && !dbGetAgent(agentId)) {
-      const cwd = `${homedir()}/ravi/${agentId}`;
-      mkdirSync(cwd, { recursive: true });
-      dbCreateAgent({ id: agentId, cwd });
-      createdAgent = { id: agentId, cwd };
-      if (!asJson) console.log(`✓ Created agent "${agentId}" at ${cwd}`);
-    }
-
-    emitConfigChanged();
-    inst = dbGetInstance(name)!;
-    if (!asJson) console.log(`Connecting: ${name} → agent ${inst.agent ?? "(default)"}  [${channel}]`);
-
-    // Check if already connected
-    try {
-      const status = (await omni.instances.status(instanceId)) as { isConnected?: boolean; profileName?: string };
-      if (status.isConnected) {
-        if (asJson) {
-          printJson({
-            status: "connected",
-            instance: inst,
-            live: status,
-            createdOmniInstance,
-            createdAgent,
-            changedCount: 1,
-          });
-          return;
-        }
-        const profile = status.profileName ? ` as ${status.profileName}` : "";
-        console.log(`\n✓ Already connected${profile}`);
-        return;
-      }
-    } catch {
-      /* ignore */
-    }
-
-    // Initiate connection
-    if (!asJson) console.log("Waiting for QR code...\n");
-    try {
-      await omni.instances.connect(instanceId, { whatsapp: { syncFullHistory: false } });
-    } catch (err) {
-      fail(`Failed to initiate connection: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-
-    const qrTopic = `ravi.whatsapp.qr.${instanceId}`;
-    const connectedTopic = `ravi.whatsapp.connected.${instanceId}`;
-
-    return new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        try {
-          contractFail("instances connect", "INSTANCE_CONNECT_TIMEOUT", "Timed out waiting for instance connection.", {
-            asJson,
-            details: {
-              retryable: true,
-              timeoutSeconds: TIMEOUT_MS / 1_000,
-              suggestedAction: `Check the provider connection, then retry: ravi instances connect ${name}`,
-            },
-          });
-        } catch (error) {
-          reject(error);
-        }
-      }, TIMEOUT_MS);
-
-      (async () => {
-        try {
-          for await (const event of nats.subscribe(qrTopic, connectedTopic)) {
-            if (settled) break;
-            const data = event.data as Record<string, unknown>;
-            if (event.topic === qrTopic && data.type === "qr") {
-              if (asJson) {
-                clearTimeout(timer);
-                settled = true;
-                printJson({
-                  status: "qr_required",
-                  instance: inst,
-                  instanceId,
-                  channel,
-                  qr: data.qr ?? null,
-                  createdOmniInstance,
-                  createdAgent,
-                  changedCount: 1,
-                });
-                resolve();
-                return;
-              }
-              console.log("Scan this QR code:\n");
-              qrcode.generate(data.qr as string, { small: true });
-            } else if (event.topic === connectedTopic && data.type === "connected") {
-              clearTimeout(timer);
-              settled = true;
-              if (asJson) {
-                printJson({
-                  status: "connected",
-                  instance: inst,
-                  live: data,
-                  createdOmniInstance,
-                  createdAgent,
-                  changedCount: 1,
-                });
-                resolve();
-                return;
-              }
-              const profile = data.profileName ? ` as ${data.profileName}` : "";
-              console.log(`\n✓ Connected${profile}`);
-              resolve();
-              process.exit(0);
-            }
-          }
-        } catch (err) {
-          if (!settled) {
-            clearTimeout(timer);
-            settled = true;
-            reject(err);
-          }
-        }
-      })();
+    const deps = transportDeps();
+    const existing = dbGetInstance(name);
+    const channel = channelOpt ?? existing?.channel ?? "whatsapp";
+    const client = deps.createClient();
+    const nativeBound = client.native.isNativeInstance(name);
+    const resolved = resolveInstanceConnectTransport({
+      requested: transportOpt,
+      channel,
+      nativeBound,
+      setting: dbGetSetting(WHATSAPP_TRANSPORT_SETTING),
+      omniConfigured: deps.isOmniConfigured(),
     });
+    if ("error" in resolved) {
+      contractFail("instances connect", "USAGE_ERROR", resolved.error, {
+        asJson,
+        exitCode: CONTRACT_EXIT_USAGE,
+        details: {
+          suggestedAction: `Retry with --transport native or --transport omni: ravi instances connect ${name}`,
+        },
+      });
+    }
+    if (resolved.transport === "omni" && nativeBound) {
+      contractFail(
+        "instances connect",
+        "INSTANCE_NATIVE_OWNED",
+        `Instance "${name}" is owned by a native WhatsApp channel; Omni events for it are ignored.`,
+        {
+          asJson,
+          details: {
+            suggestedAction: `Use --transport native, or disable the native channel first: ravi channels set ${name} enabled false`,
+          },
+        },
+      );
+    }
+
+    if (resolved.transport === "native") {
+      return connectViaNative(name, agent, asJson, deps, client);
+    }
+    return connectViaOmni(name, channel, agent, asJson, deps);
   }
 
   // --------------------------------------------------------------------------
   // disconnect
   // --------------------------------------------------------------------------
-  @Command({ name: "disconnect", description: "Disconnect an instance from omni" })
+  @Command({ name: "disconnect", description: "Disconnect an instance (native channel runner or omni)" })
   @CommandAccess({ kind: "mutate", resource: "instances", action: "disconnect", risk: "medium" })
   async disconnect(
     @Arg("name", { description: "Instance name" }) name: string,
@@ -1550,11 +1952,13 @@ export class InstancesCommands {
     if (!inst) failInstanceNotFound("instances disconnect", name, asJson);
     if (!inst.instanceId) fail(`Instance "${name}" has no omni instanceId set`);
     try {
-      const omni = getOmniClient();
-      await omni.instances.disconnect(inst.instanceId!);
+      const client = transportDeps().createClient();
+      const transport = liveTransport(client, inst.instanceId);
+      await client.instances.disconnect(inst.instanceId!);
       const payload = {
         status: "disconnected" as const,
         instance: inst,
+        transport,
         changedCount: 1,
       };
       if (asJson) {
@@ -1593,17 +1997,16 @@ export class InstancesCommands {
       return payload;
     }
     try {
-      const omni = getOmniClient();
-      const s = (await omni.instances.status(inst.instanceId!)) as {
-        isConnected?: boolean;
-        profileName?: string;
-        state?: string;
-      };
+      const client = transportDeps().createClient();
+      const transport = liveTransport(client, inst.instanceId);
+      const s: OmniInstanceStatus = await client.instances.status(inst.instanceId!);
+      const meta = liveMeta(transport);
       const payload = {
         instance: {
           ...inst,
           raviStatus: inst.enabled === false ? "disabled" : "enabled",
         },
+        transport,
         live: s,
         status: (s.isConnected ? "connected" : "disconnected") as "connected" | "disconnected",
       };
@@ -1616,9 +2019,12 @@ export class InstancesCommands {
         printInspectionField("Ravi", inst.enabled === false ? "disabled" : "enabled", CONFIG_DB_META, {
           labelWidth: 15,
         });
-        printInspectionField("State", s.state ?? "unknown", LIVE_OMNI_META, { labelWidth: 15 });
-        printInspectionField("Connected", s.isConnected ?? false, LIVE_OMNI_META, { labelWidth: 15 });
-        if (s.profileName) printInspectionField("Profile", s.profileName, LIVE_OMNI_META, { labelWidth: 15 });
+        if (transport === "native") {
+          printInspectionField("Transport", "native WhatsApp (channel runner)", meta, { labelWidth: 15 });
+        }
+        printInspectionField("State", s.state ?? "unknown", meta, { labelWidth: 15 });
+        printInspectionField("Connected", s.isConnected ?? false, meta, { labelWidth: 15 });
+        if (s.profileName) printInspectionField("Profile", s.profileName, meta, { labelWidth: 15 });
         printInspectionField("Agent", inst.agent ?? "(default)", CONFIG_DB_META, { labelWidth: 15 });
         printInspectionField("DM Policy", inst.dmPolicy, CONFIG_DB_META, { labelWidth: 15 });
         printInspectionField("Group Policy", inst.groupPolicy, CONFIG_DB_META, { labelWidth: 15 });

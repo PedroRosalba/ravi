@@ -3393,7 +3393,7 @@ export class RaviClient {
         body: { target },
       });
     },
-    /** Disconnect an instance from omni */
+    /** Disconnect an instance (native channel runner or omni) */
     disconnect: async (name: string): Promise<InstancesDisconnectReturn> => {
       return this.transport.call({
         groupSegments: ["instances"],
