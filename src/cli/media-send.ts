@@ -6,6 +6,7 @@ import { getContext } from "./context.js";
 import { configStore } from "../config-store.js";
 import { sendSlackMedia, type SlackMediaSendInput, type SlackNativeMediaDelivery } from "../channels/slack/media.js";
 import { buildOmniCliAuthEnv, materializeOmniCliAuthConfig, resolveOmniConnection } from "../omni-config.js";
+import { createChannelTransportClient, type ChannelTransportClient } from "../channels/whatsapp/transport-client.js";
 import { isOmniCliAuthFailure, MediaSendAuthError } from "./media-send-auth.js";
 
 const MIME_MAP: Record<string, string> = {
@@ -53,10 +54,21 @@ export interface OmniSendExecution {
   raw?: unknown;
 }
 
-export type MediaSendExecution = OmniSendExecution | SlackNativeMediaDelivery;
+/** Media sent by the `ravi channels` runner for a natively owned WhatsApp instance. */
+export interface NativeWhatsAppMediaDelivery {
+  transport: "whatsapp-native";
+  success: true;
+  messageId?: string;
+  status?: string;
+  raw?: unknown;
+}
+
+export type MediaSendExecution = OmniSendExecution | SlackNativeMediaDelivery | NativeWhatsAppMediaDelivery;
 
 export interface MediaSendDependencies {
   sendSlackMedia?: (input: SlackMediaSendInput) => Promise<SlackNativeMediaDelivery>;
+  /** Routing client for native WhatsApp instances. Defaults to `createChannelTransportClient()`. */
+  transportClient?: Pick<ChannelTransportClient, "native" | "messages">;
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
@@ -166,6 +178,35 @@ export async function sendMediaWithOmniCli(
       type,
       target,
       delivery,
+    };
+  }
+
+  // A natively owned WhatsApp instance: the channel runner reads the file from disk over the RPC.
+  const transportClient = dependencies.transportClient ?? createChannelTransportClient();
+  if (transportClient.native.isNativeInstance(target.instanceId)) {
+    const result = await transportClient.messages.sendMedia({
+      instanceId: target.instanceId,
+      to: target.chatId,
+      type,
+      filePath: absPath,
+      filename,
+      mimeType,
+      ...(args.caption ? { caption: args.caption } : {}),
+      ...(args.voiceNote === true && type === "audio" ? { voiceNote: true } : {}),
+    });
+    return {
+      filePath: absPath,
+      filename,
+      mimeType,
+      type,
+      target,
+      delivery: {
+        transport: "whatsapp-native",
+        success: true,
+        ...(result.messageId ? { messageId: result.messageId } : {}),
+        ...(result.status ? { status: result.status } : {}),
+        raw: result,
+      },
     };
   }
 

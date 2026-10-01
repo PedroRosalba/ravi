@@ -6,11 +6,16 @@ import { join } from "node:path";
 mock.module("../config-store.js", () => ({
   configStore: {
     resolveInstanceId: (accountId: string) => (accountId === "hana-slack" ? undefined : accountId),
+    // No native WhatsApp channels: the routing client leaves these targets on the Omni CLI path.
+    getConfig: () => ({ instances: {}, channels: {}, instanceToAccount: {} }),
   },
 }));
 
 import { runWithContext } from "./context.js";
 import { MediaSendAuthError } from "./media-send-auth.js";
+import { WhatsAppRpcRequestSchema, type WhatsAppRpcRequest } from "../channels/whatsapp/contract.js";
+import { createChannelTransportClient } from "../channels/whatsapp/transport-client.js";
+import type { ChannelConfig, InstanceConfig } from "../router/router-db.js";
 
 const { sendMediaWithOmniCli, resolveMediaSendTarget } = await import("./media-send.js");
 
@@ -264,5 +269,112 @@ exit 1
       fileId: "F123",
       messageId: "1784000000.000100",
     });
+  });
+});
+
+describe("sendMediaWithOmniCli on a native WhatsApp instance", () => {
+  const NATIVE_ID = "5f0c6a8e-4d5b-4c1e-9b7a-2a6f1d3c8e90";
+
+  function nativeConfig() {
+    const instance = { name: "wa-native", instanceId: NATIVE_ID, channel: "whatsapp" } as InstanceConfig;
+    const channel = { name: "wa-native", provider: "whatsapp", enabled: true } as ChannelConfig;
+    return {
+      instances: { "wa-native": instance },
+      channels: { "wa-native": channel },
+      instanceToAccount: { [NATIVE_ID]: "wa-native" },
+    };
+  }
+
+  function fakeRunner() {
+    const requests: Array<{ subject: string; request: WhatsAppRpcRequest; timeout: number }> = [];
+    const connection = {
+      async request(subject: string, data: Uint8Array, options: { timeout: number }) {
+        const request = WhatsAppRpcRequestSchema.parse(JSON.parse(new TextDecoder().decode(data)));
+        requests.push({ subject, request, timeout: options.timeout });
+        const response = { ok: true, requestId: request.requestId, data: { messageId: "BAE5NATIVE", status: "sent" } };
+        return { data: new TextEncoder().encode(JSON.stringify(response)) };
+      },
+    };
+    return { connection, requests };
+  }
+
+  it("sends through the channel runner by absolute file path, without spawning the omni CLI", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ravi-media-send-"));
+    tempDirs.push(dir);
+    const mediaPath = join(dir, "voice.ogg");
+    writeFileSync(mediaPath, "audio");
+    // An omni binary that fails loudly if it is ever spawned.
+    const omniPath = join(dir, "omni");
+    writeFileSync(omniPath, "#!/bin/sh\necho 'omni must not run' >&2\nexit 9\n");
+    chmodSync(omniPath, 0o755);
+    process.env.PATH = `${dir}:${ORIGINAL_PATH}`;
+
+    const runner = fakeRunner();
+    const transportClient = createChannelTransportClient({
+      omni: null,
+      getConfig: nativeConfig,
+      connection: runner.connection,
+    });
+
+    const result = await sendMediaWithOmniCli(
+      {
+        filePath: mediaPath,
+        caption: "ouça",
+        voiceNote: true,
+        target: { channel: "whatsapp-baileys", accountId: NATIVE_ID, chatId: "group:120363425628305127" },
+      },
+      { transportClient },
+    );
+
+    expect(runner.requests).toHaveLength(1);
+    expect(runner.requests[0]?.subject).toBe(`_RAVI.channels.whatsapp.rpc.${NATIVE_ID}`);
+    expect(runner.requests[0]?.request.method).toBe("messages.sendMedia");
+    expect(runner.requests[0]?.request.params).toEqual({
+      to: "120363425628305127@g.us",
+      type: "audio",
+      filePath: mediaPath,
+      filename: "voice.ogg",
+      mimeType: "audio/ogg",
+      caption: "ouça",
+      voiceNote: true,
+    });
+    expect(result.delivery).toMatchObject({ transport: "whatsapp-native", messageId: "BAE5NATIVE", status: "sent" });
+    expect(result.target.instanceId).toBe(NATIVE_ID);
+  });
+
+  it("keeps non-native WhatsApp targets on the omni CLI", async () => {
+    const transportClient = {
+      native: {
+        isNativeInstance: () => false,
+        resolveBinding: () => null,
+        request: async () => {
+          throw new Error("unexpected native RPC");
+        },
+      },
+      messages: {} as ReturnType<typeof createChannelTransportClient>["messages"],
+    };
+    const dir = mkdtempSync(join(tmpdir(), "ravi-media-send-"));
+    tempDirs.push(dir);
+    const omniPath = join(dir, "omni");
+    writeFileSync(
+      omniPath,
+      `#!/bin/sh
+printf '{"success":true,"message":"Media sent","data":{"messageId":"msg-omni","status":"sent"}}\n'
+`,
+    );
+    chmodSync(omniPath, 0o755);
+    const mediaPath = join(dir, "sample.png");
+    writeFileSync(mediaPath, "image");
+    process.env.PATH = `${dir}:${ORIGINAL_PATH}`;
+
+    const result = await sendMediaWithOmniCli(
+      {
+        filePath: mediaPath,
+        target: { channel: "whatsapp-baileys", accountId: "acct-media", chatId: "5511999999999" },
+      },
+      { transportClient },
+    );
+
+    expect(result.delivery).toMatchObject({ transport: "omni-send", messageId: "msg-omni" });
   });
 });

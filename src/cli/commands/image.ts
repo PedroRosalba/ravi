@@ -22,7 +22,12 @@ import {
   type ArtifactRecord,
 } from "../../artifacts/store.js";
 import { sanitizeAtlasCellName, splitImageAtlas, type AtlasSplitFit, type AtlasSplitMode } from "../../image/atlas.js";
-import { resolveMediaSendTarget, sendMediaWithOmniCli, type MediaSendTargetInput } from "../media-send.js";
+import {
+  resolveMediaSendTarget,
+  sendMediaWithOmniCli,
+  type MediaSendExecution,
+  type MediaSendTargetInput,
+} from "../media-send.js";
 import { imageAtlasSplitReturnSchema, imageGenerateReturnSchema } from "./operational-return-schemas.js";
 
 function stringDefault(defaults: Record<string, unknown> | undefined, key: string): string | undefined {
@@ -726,7 +731,7 @@ export class ImageCommands {
         outputDir?: string;
       };
       sent: Array<{
-        transport: "omni-send" | "slack-native";
+        transport: MediaSendExecution["transport"];
         channel?: string;
         accountId: string;
         instanceId: string;
