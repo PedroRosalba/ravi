@@ -1,0 +1,24 @@
+# WhatsApp Adapter Checks
+
+- [ ] A `channels` row with provider `whatsapp` MUST bind the instance with the same name, or `defaults.instance`; a disabled or deleted row MUST bind nothing.
+- [ ] The transport instance id MUST be `instances.instance_id`; a migrated instance MUST keep its UUID and the channel name MUST NOT be used as instance id.
+- [ ] Native inbound envelopes MUST carry `channelType` `whatsapp-baileys` and `source` `ravi.whatsapp.native`, and MUST validate against `WhatsAppTransportEventSchema`.
+- [ ] A native `message.received` MUST produce the same prompt, session key, chat and contact as the identical Omni event.
+- [ ] `message.received` `from` MUST be the bare sender id and `chatId` the canonical LID-first JID.
+- [ ] History-sync and offline-backlog messages MUST persist chat, message and participant and MUST NOT prompt an agent.
+- [ ] The consumer MUST ignore Omni message, instance and reaction events for a natively owned instance.
+- [ ] Every event MUST be published with its id as JetStream `msgID`; a redelivered upsert MUST NOT produce a second prompt.
+- [ ] Inbound media MUST be written under `<RAVI_STATE_DIR>/media/whatsapp/` and read by the consumer from disk; a `file://` URL outside `<RAVI_STATE_DIR>/media` MUST be rejected.
+- [ ] RPC requests and responses MUST validate against the contract schemas on both sides, and response data MUST match the Omni REST shape of the same client call.
+- [ ] No responder MUST map to 503 `WHATSAPP_RUNNER_UNAVAILABLE`, a timeout to 504 `WHATSAPP_RPC_TIMEOUT`, a down socket to 503 `NOT_CONNECTED`.
+- [ ] A non-native call without Omni MUST fail with 503 `OMNI_NOT_CONFIGURED` and MUST NOT be retried.
+- [ ] Outbound media and stickers to a native instance MUST be sent by absolute `filePath` without base64.
+- [ ] `instances.connect` without creds MUST publish `instance.qr_code`, and the CLI MUST receive `ravi.whatsapp.qr.<uuid>` relayed by the daemon.
+- [ ] Runtime `start()` MUST return without network I/O and report `starting` / `pairing_required` when no creds exist.
+- [ ] Health MUST report `failed` / `missing_dependency` when Baileys cannot be loaded.
+- [ ] `ravi channels probe` MUST NOT open a WhatsApp socket.
+- [ ] A 440 `connectionReplaced` MUST NOT trigger a reconnect.
+- [ ] Adding or enabling a WhatsApp channel MUST start its runtime on `ravi.config.changed` without restarting the runner; disabling it MUST stop the runtime.
+- [ ] `ravi instances connect <name> --transport omni` MUST fail with `INSTANCE_NATIVE_OWNED` while an enabled native channel binds `<name>`.
+- [ ] The CLI bundle MUST NOT evaluate Baileys at startup; `bun install --frozen-lockfile` MUST pass on a clean checkout, and the packed package MUST install with `bun add`.
+- [ ] Tests MUST cover the runtime with a fake socket and fake JetStream, the RPC server and client, the routing client and the consumer's native source.

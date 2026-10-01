@@ -34,7 +34,11 @@ Ravi MUST abstract Omni as a transport/gateway adapter. Product and agent-facing
 - Every native provider MUST enter Session/Turn execution through the
   provider-neutral Channel Backend after provider normalization and Ravi route
   resolution. A provider adapter MUST NOT publish an ordinary inbound prompt
-  directly.
+  directly. The only exception is the native WhatsApp adapter
+  (`channels/adapters/whatsapp`): it temporarily emits Omni-compatible events
+  that the daemon's channel consumer turns into prompts exactly as for Omni,
+  until the Channel Backend covers debounce, gateway text delivery and edit
+  restart. No other provider MAY rely on that exception.
 - The Channel Backend MUST durably accept canonical Chat/Message identity and
   an idempotency receipt before prompt publication.
 - Transport adapters MUST only deliver channel-specific payloads and report delivery state.
