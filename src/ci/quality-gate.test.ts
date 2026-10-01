@@ -149,6 +149,12 @@ describe("findTriggeredPrefixes", () => {
     ]);
   });
 
+  it("identifies native WhatsApp channel changes", () => {
+    const files = ["src/channels/whatsapp/runtime.ts", "src/channels/whatsapp/lib/socket.ts"];
+
+    expect(findTriggeredPrefixes(files)).toEqual(["src/channels/", "src/channels/whatsapp/"]);
+  });
+
   it("excludes test files from triggering", () => {
     const files = ["src/omni/consumer-context.test.ts"];
     expect(findTriggeredPrefixes(files)).toEqual([]);
@@ -382,6 +388,39 @@ describe("runCoverageGate", () => {
     expect(mediaCovered.triggeredPrefixes).toEqual(["src/channels/"]);
     expect(sessionPromptCovered.ok).toBe(true);
     expect(sessionPromptCovered.triggeredPrefixes).toEqual(["src/channels/"]);
+  });
+
+  it("requires a focused native WhatsApp test for WhatsApp channel changes", () => {
+    const missing = runCoverageGate(["src/channels/whatsapp/runtime.ts"]);
+    const unrelatedChannelTest = runCoverageGate(["src/channels/whatsapp/runtime.ts", "src/channels/backend.test.ts"]);
+    const runtimeCovered = runCoverageGate([
+      "src/channels/whatsapp/runtime.ts",
+      "src/channels/whatsapp/__tests__/runtime-inbound.test.ts",
+    ]);
+    const libCovered = runCoverageGate([
+      "src/channels/whatsapp/lib/handlers/messages.ts",
+      "src/channels/whatsapp/lib/__tests__/messages-handler.test.ts",
+    ]);
+    const clientCovered = runCoverageGate([
+      "src/channels/whatsapp/transport-client.ts",
+      "src/channels/whatsapp/transport-client.test.ts",
+    ]);
+
+    expect(missing.ok).toBe(false);
+    expect(missing.triggeredPrefixes).toEqual(["src/channels/", "src/channels/whatsapp/"]);
+    expect(missing.errors.map((error) => error.prefix)).toEqual(["src/channels/", "src/channels/whatsapp/"]);
+    expect(unrelatedChannelTest.ok).toBe(false);
+    expect(unrelatedChannelTest.errors.map((error) => error.prefix)).toEqual(["src/channels/whatsapp/"]);
+    expect(runtimeCovered.ok).toBe(true);
+    expect(libCovered.ok).toBe(true);
+    expect(clientCovered.ok).toBe(true);
+  });
+
+  it("accepts the native WhatsApp consumer source test for Omni consumer changes", () => {
+    const result = runCoverageGate(["src/omni/consumer.ts", "src/omni/consumer-native-source.test.ts"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.triggeredPrefixes).toEqual(["src/omni/"]);
   });
 
   it("passes when the session stream focused test is in the diff", () => {
