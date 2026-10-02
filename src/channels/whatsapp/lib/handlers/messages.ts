@@ -141,6 +141,11 @@ function extractEditedText(edited: MessageContent | null | undefined): string | 
  */
 const SEEN_EDITS = new Set<string>();
 const SEEN_EDITS_MAX = 500;
+/** Test-only: forget every remembered edit (the dedupe set is module-level, shared by all sockets). */
+export function resetEditDedupeForTests(): void {
+  SEEN_EDITS.clear();
+}
+
 function rememberEdit(targetMessageId: string, newText: string): boolean {
   const key = `${targetMessageId}:${newText}`;
   if (SEEN_EDITS.has(key)) return false;
