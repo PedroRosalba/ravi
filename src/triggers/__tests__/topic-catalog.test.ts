@@ -11,6 +11,27 @@ describe("trigger topic catalog", () => {
     );
   });
 
+  it("names the WhatsApp runner and the legacy bridge as reaction producers", () => {
+    const notes = findTriggerTopicCatalogEntry("ravi.inbound.reaction")?.notes ?? [];
+
+    expect(notes).toContain(
+      "Producers: the inbound pipeline for WhatsApp (ravi channels runner) and the legacy Omni bridge (Telegram/Discord), and native Slack `reaction_added`.",
+    );
+    expect(notes).toContain(
+      "Omni `message.received.whatsapp-baileys.*`/`reaction.received.whatsapp-baileys.*` subjects no longer carry WhatsApp traffic; trigger on `ravi.inbound.reaction` / `ravi.instances.>` instead.",
+    );
+    expect(notes.some((note) => note.startsWith("Producers: Omni"))).toBe(false);
+  });
+
+  it("describes unregistered instances without assuming Omni", () => {
+    const entry = findTriggerTopicCatalogEntry("ravi.instances.unregistered");
+
+    expect(entry?.description).not.toContain("Omni");
+    expect(entry?.schema?.fields.find((field) => field.path === "instanceId")?.description).toBe(
+      "Transport instance id that emitted the inbound event.",
+    );
+  });
+
   it("registers native interactive component events", () => {
     expect(findTriggerTopicCatalogEntry("ravi.inbound.interaction")).toMatchObject({
       id: "inbound.interaction",
