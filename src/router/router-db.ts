@@ -20,6 +20,7 @@ import { normalizePhone, normalizeRoutePattern } from "../utils/phone.js";
 import { normalizeLimitOffsetPage, type ListPage } from "../utils/pagination.js";
 import { timestampLikeToMs } from "../utils/provider-timestamp.js";
 import { executeWrite } from "../db/write-retry.js";
+import { whatsappChannelNameFor } from "../channels/whatsapp/channel-name.js";
 import {
   CLI_COMMAND_ACCESS_KIND_MIGRATION_KEYS,
   migrateAgentDefaultsRecord,
@@ -44,6 +45,9 @@ const DEFAULT_DB_PATH = join(DEFAULT_RAVI_STATE_DIR, "ravi.db");
 const LEGACY_DB_PATH = join(RAVI_DIR, "ravi.db");
 const IDENTITY_CHAT_BACKFILL_KEY = "identity_chat_backfill_v1";
 const GROUP_METADATA_COPY_KEY = "channel_group_metadata_copy_v1";
+const WHATSAPP_CHANNELS_BACKFILL_KEY = "whatsapp_channels_backfill_v1";
+/** Instance/channel types served by the WhatsApp runner (canonicalChannelId === "whatsapp"). */
+const CANONICAL_WHATSAPP_TYPES = ["whatsapp", "whatsapp-baileys", "whatsapp baileys"] as const;
 
 // ============================================================================
 // Schemas (safe to access at import time - no I/O)
@@ -3261,6 +3265,7 @@ function getDb(): Database {
     );
   `);
   copyLegacyGroupMetadataOnce(db);
+  backfillWhatsAppInstancesToChannels(db);
 
   ensureCostEventMigrations(db);
   ensureColumn(
@@ -5814,6 +5819,115 @@ export function copyLegacyGroupMetadataOnce(database: Database): void {
     database
       .prepare("INSERT OR REPLACE INTO router_meta (key, value, updated_at) VALUES (?, ?, ?)")
       .run(GROUP_METADATA_COPY_KEY, "done", Date.now());
+  })();
+}
+
+function isCanonicalWhatsAppType(value: string | null | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return Boolean(normalized && (CANONICAL_WHATSAPP_TYPES as readonly string[]).includes(normalized));
+}
+
+/** The instance name a channel row binds: `defaults.instance` when set, else the channel name. */
+function channelBoundInstanceName(row: { name: string; defaults: string | null }): string {
+  if (!row.defaults) return row.name;
+  try {
+    const parsed = JSON.parse(row.defaults) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const override = (parsed as Record<string, unknown>).instance;
+      if (typeof override === "string" && override.trim()) return override.trim();
+    }
+  } catch {
+    // Unparseable defaults bind by name, like the channel config loader.
+  }
+  return row.name;
+}
+
+/**
+ * One-time WhatsApp channel backfill (router_meta `whatsapp_channels_backfill_v1`).
+ *
+ * Every non-deleted canonical-WhatsApp instance gets an instance UUID when it has none
+ * (existing ones are never changed) and a `channels` row with provider `whatsapp`, unless a
+ * non-deleted WhatsApp channel already binds it. The channel is enabled when the instance is.
+ * Its name is the instance name when that is a valid, free channel id; otherwise a sanitized
+ * name (`whatsappChannelNameFor`) with the instance name in `defaults.instance`.
+ * `twilio-whatsapp`/`gupshup` instances get no channel. No config event is emitted.
+ */
+export function backfillWhatsAppInstancesToChannels(database: Database): void {
+  database.transaction(() => {
+    const existing = database
+      .prepare("SELECT value FROM router_meta WHERE key = ?")
+      .get(WHATSAPP_CHANNELS_BACKFILL_KEY) as { value: string } | undefined;
+    if (existing?.value === "done") return;
+
+    const placeholders = CANONICAL_WHATSAPP_TYPES.map(() => "?").join(", ");
+    const instances = database
+      .prepare(
+        `SELECT name, instance_id, enabled, created_at, updated_at
+         FROM instances
+         WHERE deleted_at IS NULL AND LOWER(TRIM(channel)) IN (${placeholders})
+         ORDER BY name`,
+      )
+      .all(...CANONICAL_WHATSAPP_TYPES) as Array<{
+      name: string;
+      instance_id: string | null;
+      enabled: number | null;
+      created_at: number;
+      updated_at: number;
+    }>;
+
+    const mintInstanceId = database.prepare(
+      `UPDATE instances SET instance_id = ?, updated_at = ?
+       WHERE name = ? AND (instance_id IS NULL OR TRIM(instance_id) = '')`,
+    );
+    const listChannels = database.prepare("SELECT name, provider, defaults FROM channels WHERE deleted_at IS NULL");
+    const channelNameTaken = database.prepare("SELECT 1 AS taken FROM channels WHERE name = ?");
+    const insertChannel = database.prepare(
+      `INSERT OR IGNORE INTO channels (
+         name, provider, enabled, credential_connection, defaults, created_at, updated_at, deleted_at
+       )
+       VALUES (?, 'whatsapp', ?, NULL, ?, ?, ?, NULL)`,
+    );
+
+    let created = 0;
+    let minted = 0;
+    for (const instance of instances) {
+      const now = Date.now();
+      let instanceId = instance.instance_id?.trim() ?? "";
+      if (!instanceId) {
+        instanceId = randomUUID();
+        minted += mintInstanceId.run(instanceId, now, instance.name).changes;
+      }
+
+      const channels = listChannels.all() as Array<{ name: string; provider: string; defaults: string | null }>;
+      const alreadyBound = channels.some(
+        (channel) => isCanonicalWhatsAppType(channel.provider) && channelBoundInstanceName(channel) === instance.name,
+      );
+      if (alreadyBound) continue;
+
+      const channelName = whatsappChannelNameFor(instance.name, instanceId, (name) =>
+        Boolean(channelNameTaken.get(name)),
+      );
+      if (channelName !== instance.name) {
+        log.info(
+          `WhatsApp instance ${instance.name} gets channel ${channelName} (name in use or not a valid channel id)`,
+        );
+      }
+      created += insertChannel.run(
+        channelName,
+        instance.enabled === 0 ? 0 : 1,
+        channelName === instance.name ? null : JSON.stringify({ instance: instance.name }),
+        instance.created_at,
+        now,
+      ).changes;
+    }
+
+    database
+      .prepare("INSERT OR REPLACE INTO router_meta (key, value, updated_at) VALUES (?, ?, ?)")
+      .run(WHATSAPP_CHANNELS_BACKFILL_KEY, "done", Date.now());
+
+    if (created > 0 || minted > 0) {
+      log.info("Backfilled WhatsApp channels from instances", { channels: created, mintedInstanceIds: minted });
+    }
   })();
 }
 
