@@ -13,6 +13,7 @@
   "files": [
     "bin/ravi",
     "dist/bundle/",
+    "dist/vendor/",
     "dist/tui/",
     "README.md"
   ],
@@ -33,8 +34,9 @@
     "gen:commands": "bun scripts/gen-commands.ts",
     "gen:plugins": "bun scripts/gen-plugins.ts",
     "prebuild": "bun run gen:commands",
-    "build": "bun run build:cli && bun run build:tui && bun run gen:plugins",
-    "build:cli": "bun build src/cli/index.ts --outdir dist/bundle --target bun --minify --splitting --keep-names --sourcemap=linked --external ink --external react --external '@anthropic-ai/*' --external openai --external '@google/*' --external nats --external '@elevenlabs/*' --external e2b --external sharp --external jimp --external link-preview-js",
+    "build": "bun run build:cli && bun run build:vendor && bun run build:tui && bun run gen:plugins",
+    "build:cli": "bun build src/cli/index.ts --outdir dist/bundle --target bun --minify --keep-names --sourcemap=linked --external ink --external react --external '@anthropic-ai/*' --external openai --external '@google/*' --external nats --external '@elevenlabs/*' --external e2b --external sharp --external jimp --external link-preview-js",
+    "build:vendor": "bun build vendor/baileys-entry.ts --outfile dist/vendor/baileys.js --target bun --minify --external sharp --external jimp --external link-preview-js",
     "build:tui": "bun build src/tui/index.tsx --outdir dist/tui --target bun --keep-names --sourcemap=linked --external '@opentui/core' --external '@opentui/react' --external react --external nats",
     "prepack": "bun run build",
     "start": "bun src/index.ts",
