@@ -332,7 +332,7 @@ ravi whatsapp.dm ack <contact> <messageId> --execute  # Send a receipt (without 
   --account <id>                              #   WhatsApp account
 ```
 
-`dm read` is always read-only and never sends a receipt. To send a blue-tick receipt intentionally, use `dm ack <contact> <messageId> --execute`.
+`dm read` is always read-only and never sends a receipt. To send a blue-tick receipt intentionally, use `dm ack <contact> <messageId> --execute`. It emits `ravi.outbound.receipt`; no Ravi process consumes that subject yet, so the receipt does not reach WhatsApp.
 
 ## Media
 

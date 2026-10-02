@@ -46,7 +46,7 @@ Reaction events are correlation signals. Use `targetMessageId` to look up routin
 |-------|---------|
 | `ravi.outbound.deliver` | `{ channel, accountId, to, text?, poll?, typingDelayMs?, pauseMs?, replyTopic? }` |
 | `ravi.outbound.reaction` | `{ channel, accountId, chatId, messageId, emoji }` |
-| `ravi.outbound.receipt` | `{ channel, accountId, chatId, senderId, messageIds[] }` |
+| `ravi.outbound.receipt` | `{ channel, accountId, chatId, senderId, messageIds[] }` (emitted by `ravi whatsapp dm ack`; no Ravi process subscribes today) |
 
 ## Media Events
 
