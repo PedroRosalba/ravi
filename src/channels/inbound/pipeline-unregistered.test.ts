@@ -1,12 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 
-const actualRouterIndexModule = await import("../router/index.js");
-const actualContactsModule = await import("../contacts.js");
-const actualSessionStreamModule = await import("../session-prompts/stream.js");
+const actualRouterIndexModule = await import("../../router/index.js");
+const actualContactsModule = await import("../../contacts.js");
+const actualSessionStreamModule = await import("../../session-prompts/stream.js");
 // Cópia: o namespace é mutado in-place por mock.module.
-const actualNatsModule = { ...(await import("../nats.js")) };
-const actualMediaModule = { ...(await import("../utils/media.js")) };
-const { logger } = await import("../utils/logger.js");
+const actualNatsModule = { ...(await import("../../nats.js")) };
+const actualMediaModule = { ...(await import("../../utils/media.js")) };
+const { logger } = await import("../../utils/logger.js");
 
 const publishCalls: Array<[string, Record<string, unknown>]> = [];
 const warnCalls: Array<[string, Record<string, unknown> | undefined]> = [];
@@ -29,7 +29,7 @@ const publishMock = mock(async (topic: string, payload: Record<string, unknown>)
   publishCalls.push([topic, payload]);
 });
 
-mock.module("../nats.js", () => ({
+mock.module("../../nats.js", () => ({
   getNats: () => {
     throw new Error("not used in this test");
   },
@@ -42,28 +42,28 @@ mock.module("../nats.js", () => ({
   },
 }));
 
-mock.module("../session-prompts/stream.js", () => ({
+mock.module("../../session-prompts/stream.js", () => ({
   ...actualSessionStreamModule,
   publishSessionPrompt: mock(async () => {}),
 }));
 
-mock.module("../slash/index.js", () => ({
+mock.module("../../slash/index.js", () => ({
   handleSlashCommand: mock(async () => false),
 }));
 
-mock.module("../router/index.js", () => ({
+mock.module("../../router/index.js", () => ({
   ...actualRouterIndexModule,
   expandHome: (cwd: string) => cwd,
   resolveRoute: () => null,
 }));
 
-mock.module("../config-store.js", () => ({
+mock.module("../../config-store.js", () => ({
   configStore: {
     getConfig: () => configValue,
   },
 }));
 
-mock.module("../contacts.js", () => ({
+mock.module("../../contacts.js", () => ({
   ...actualContactsModule,
   isContactAllowedForAgent: () => true,
   saveAccountPending: () => false,
@@ -88,19 +88,18 @@ const capturedLogger = {
 
 const loggerChildSpy = spyOn(logger, "child").mockImplementation(() => capturedLogger as never);
 
-mock.module("../utils/media.js", () => ({
+mock.module("../../utils/media.js", () => ({
   ...actualMediaModule,
-  fetchCachedOmniMedia: mock(async () => null),
-  fetchOmniMedia: mock(async () => null),
   saveToAgentAttachments: mock(async () => null),
   MAX_AUDIO_BYTES: 16 * 1024 * 1024,
 }));
 
-mock.module("../transcribe/openai.js", () => ({
+mock.module("../../transcribe/openai.js", () => ({
   transcribeAudio: mock(async () => ""),
 }));
 
-const { OmniConsumer } = await import("./consumer.js");
+const { ChannelInboundPipeline } = await import("./pipeline.js");
+const { inboundEventFromSubject, noopHooks } = await import("./__tests__/fixtures.js");
 
 afterAll(() => {
   loggerChildSpy.mockRestore();
@@ -108,7 +107,7 @@ afterAll(() => {
   // mock.restore() não desfaz mock.module: sem isso o `nats` fake vaza para
   // outros arquivos, e um spyOn(nats, "emit") + mockRestore() posterior zera o
   // mock() de emit (passa a retornar undefined e quebra `nats.emit(...).catch`).
-  mock.module("../nats.js", () => actualNatsModule);
+  mock.module("../../nats.js", () => actualNatsModule);
 });
 
 function makeEvent(instanceId: string) {
@@ -132,7 +131,7 @@ function makeEvent(instanceId: string) {
   };
 }
 
-describe("OmniConsumer instance gating", () => {
+describe("ChannelInboundPipeline instance gating", () => {
   beforeEach(() => {
     configValue = {
       instanceToAccount: {},
@@ -168,22 +167,25 @@ describe("OmniConsumer instance gating", () => {
       ignoredOmniInstanceIds: [],
     };
 
-    const consumer = new OmniConsumer({} as never, "http://omni.local", "test-key");
+    const consumer = new ChannelInboundPipeline({} as never);
 
-    await consumer["handleMessageEvent"](
-      "message.received.whatsapp-baileys.disabled-instance",
-      makeEvent("disabled-instance"),
+    await consumer.handle(
+      inboundEventFromSubject("message.received.whatsapp-baileys.disabled-instance", makeEvent("disabled-instance")),
+      noopHooks(),
     );
 
     expect(publishCalls).toHaveLength(0);
   });
 
   it("still warns and emits for unknown unregistered instances", async () => {
-    const consumer = new OmniConsumer({} as never, "http://omni.local", "test-key");
+    const consumer = new ChannelInboundPipeline({} as never);
 
-    await consumer["handleMessageEvent"](
-      "message.received.whatsapp-baileys.unregistered-instance",
-      makeEvent("unregistered-instance"),
+    await consumer.handle(
+      inboundEventFromSubject(
+        "message.received.whatsapp-baileys.unregistered-instance",
+        makeEvent("unregistered-instance"),
+      ),
+      noopHooks(),
     );
 
     expect(publishCalls).toHaveLength(1);
@@ -197,80 +199,29 @@ describe("OmniConsumer instance gating", () => {
     ]);
   });
 
-  it("silences unknown unregistered instances explicitly ignored in ravi", async () => {
-    configValue = {
-      ...configValue,
-      ignoredOmniInstanceIds: ["ignored-instance"],
-    };
-    const consumer = new OmniConsumer({} as never, "http://omni.local", "test-key");
+  it("silences unknown unregistered instances the source's hook ignores", async () => {
+    const consumer = new ChannelInboundPipeline({} as never);
+    const isIgnoredInstance = mock((instanceId: string) => instanceId === "ignored-instance");
 
-    await consumer["handleMessageEvent"](
-      "message.received.whatsapp-baileys.ignored-instance",
-      makeEvent("ignored-instance"),
+    await consumer.handle(
+      inboundEventFromSubject("message.received.whatsapp-baileys.ignored-instance", makeEvent("ignored-instance")),
+      noopHooks({ isIgnoredInstance }),
     );
 
     expect(publishCalls).toHaveLength(0);
+    expect(isIgnoredInstance).toHaveBeenCalledWith("ignored-instance");
   });
 
-  it("times out cleanly without touching consumer APIs when the stream is still missing", async () => {
-    const consumer = new OmniConsumer({} as never, "http://omni.local", "test-key");
-    consumer["running"] = true;
-    consumer["delay"] = async () => {};
+  it("emits ravi.instances.unregistered once per cooldown when the ignore hook does not match", async () => {
+    const consumer = new ChannelInboundPipeline({} as never);
+    const isIgnoredInstance = mock(() => false);
+    const event = () =>
+      inboundEventFromSubject("message.received.whatsapp-baileys.cooldown-instance", makeEvent("cooldown-instance"));
 
-    const originalNow = Date.now;
-    let now = 1_000;
-    Date.now = () => {
-      const value = now;
-      now += 1_000;
-      return value;
-    };
+    await consumer.handle(event(), noopHooks({ isIgnoredInstance }));
+    await consumer.handle(event(), noopHooks({ isIgnoredInstance }));
 
-    const consumersInfo = mock(async () => ({}));
-    const consumersAdd = mock(async () => ({}));
-    const jsm = {
-      streams: {
-        info: mock(async () => {
-          throw new Error("stream not found");
-        }),
-      },
-      consumers: {
-        info: consumersInfo,
-        add: consumersAdd,
-      },
-    } as never;
-
-    try {
-      const ready = await consumer["ensureConsumer"](jsm, "MESSAGE", "ravi-messages", "message.received.>", 1_500);
-      expect(ready).toBe(false);
-    } finally {
-      Date.now = originalNow;
-    }
-
-    expect(consumersInfo).not.toHaveBeenCalled();
-    expect(consumersAdd).not.toHaveBeenCalled();
-  });
-
-  it("does not call consumers.get when ensureConsumer says the stream is not ready", async () => {
-    const consumer = new OmniConsumer({} as never, "http://omni.local", "test-key");
-    consumer["running"] = true;
-    consumer["jsm"] = {} as never;
-    consumer["ensureConsumer"] = mock(async () => {
-      consumer["running"] = false;
-      return false;
-    });
-    consumer["delay"] = async () => {};
-
-    const getConsumer = mock(async () => ({
-      consume: async function* () {},
-    }));
-    const js = {
-      consumers: {
-        get: getConsumer,
-      },
-    } as never;
-
-    await consumer["consumeLoop"](js, "MESSAGE", "ravi-messages", "message.received.>", async () => {});
-
-    expect(getConsumer).not.toHaveBeenCalled();
+    expect(isIgnoredInstance).toHaveBeenCalledTimes(2);
+    expect(publishCalls.filter(([topic]) => topic === "ravi.instances.unregistered")).toHaveLength(1);
   });
 });

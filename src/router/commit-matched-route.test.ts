@@ -13,7 +13,7 @@
  *
  * Note: we deliberately only assert the purity side of the contract here.
  * Asserting on `commitMatchedRoute` directly is unreliable inside the
- * full-suite run because `src/omni/consumer-context.test.ts` installs a
+ * full-suite run because `src/channels/inbound/pipeline-context.test.ts` installs a
  * `mock.module("../router/index.js", ...)` whose `commitMatchedRoute`
  * override bun propagates into direct imports of `./resolver.js` — a
  * known limitation of bun's module-mock implementation. The commit-side

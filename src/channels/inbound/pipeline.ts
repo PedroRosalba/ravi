@@ -1,37 +1,25 @@
 /**
- * Omni Consumer
+ * Channel inbound pipeline
  *
- * Subscribes to transport event streams and translates incoming message events
- * into ravi session prompts. Two sources share one pipeline:
+ * Turns transport-neutral `ChannelInboundEvent`s into ravi session prompts: session
+ * keys, contacts, chats, mentions, edit-restart, the history ledger, reactions and
+ * pairing relays. One instance is shared by every inbound source (the WhatsApp
+ * runner source and the optional legacy bridge source), so the history cutoff,
+ * the reaction dedupe set and the active typing targets are process-wide.
  *
- * - `omni`: JetStream streams published by omni-v2 (MESSAGE / INSTANCE / REACTION).
- * - `native`: Ravi's CHANNEL_INBOUND stream, where native transports in the
- *   `ravi channels` runner (WhatsApp) publish Omni-identical envelopes under
- *   `ravi.channel.inbound.<omni subject>`. The prefix is stripped before the
- *   handlers run, so both sources behave identically.
- *
- * Replaces the channel plugin inbound subscriptions in gateway.ts.
+ * Sources own the wire format (subjects, envelopes, durables) and pass per-source
+ * behaviour (media loading, group metadata refresh, unknown-instance silencing)
+ * as `InboundSourceHooks` with every event.
  */
 
-import {
-  AckPolicy,
-  DeliverPolicy,
-  StringCodec,
-  type JetStreamClient,
-  type JetStreamManager,
-  type NatsConnection,
-} from "nats";
 import { execFile } from "node:child_process";
-import { getNats, publish, nats } from "../nats.js";
-import { publishSessionPrompt } from "../session-prompts/stream.js";
-import { expandRaviCommandPrompt, RaviCommandError } from "../commands/index.js";
-import { channelMessagePrefixDelivery, parseChannelMessagePrefix } from "../channels/message-prefix.js";
-import { handleSlashCommand } from "../slash/index.js";
-import { isIgnoredOmniInstanceId } from "../router/omni-ignore.js";
+import { publish, nats } from "../../nats.js";
+import { publishSessionPrompt } from "../../session-prompts/stream.js";
+import { expandRaviCommandPrompt, RaviCommandError } from "../../commands/index.js";
+import { channelMessagePrefixDelivery, parseChannelMessagePrefix } from "../message-prefix.js";
+import { handleSlashCommand } from "../../slash/index.js";
 import { promisify } from "node:util";
 
-const CONSUMER_READY_TIMEOUT = 60_000; // Wait up to 60s for streams to appear
-const CONSUMER_RETRY_DELAY_MS = 2_000;
 const UNREGISTERED_COOLDOWN_MS = 5 * 60_000; // 5 min cooldown per instanceId
 const CONSUMER_LAG_WARN_MS = 10_000;
 const unregisteredCooldowns = new Map<string, number>();
@@ -44,8 +32,8 @@ import {
   listSessionSubscriptions,
   matchRoute,
   isChatCompatibleWithSession,
-} from "../router/index.js";
-import { configStore } from "../config-store.js";
+} from "../../router/index.js";
+import { configStore } from "../../config-store.js";
 import {
   getContact,
   getContactName,
@@ -58,7 +46,7 @@ import {
   saveAccountPending,
   type PlatformIdentity,
   upsertAgentPlatformIdentity,
-} from "../contacts.js";
+} from "../../contacts.js";
 import {
   dbCanonicalizeDmChatForContact,
   dbContactDmNormalizedChatId,
@@ -69,8 +57,8 @@ import {
   dbUpsertChatMessage,
   dbUpsertChatParticipant,
   dbUpsertSessionParticipant,
-} from "../router/router-db.js";
-import { resetSession } from "../router/sessions.js";
+} from "../../router/router-db.js";
+import { resetSession } from "../../router/sessions.js";
 import {
   recordChannelMessageReceivedTrace,
   recordPresenceTrace,
@@ -78,62 +66,52 @@ import {
   recordRouteResolvedTrace,
   type NormalizedSessionTraceSource,
   type RouteRejectionReason,
-} from "../session-trace/channel-trace.js";
-import { recordRuntimeTraceEvent } from "../session-trace/runtime-trace.js";
-import { logger } from "../utils/logger.js";
-import { canonicalizeRouteIdentity, isBroadcastJid, normalizePhone } from "../utils/phone.js";
+} from "../../session-trace/channel-trace.js";
+import { recordRuntimeTraceEvent } from "../../session-trace/runtime-trace.js";
+import { logger } from "../../utils/logger.js";
+import { canonicalizeRouteIdentity, isBroadcastJid, normalizePhone } from "../../utils/phone.js";
 import type {
   MessageActorMetadata,
   MessageContext,
   MessageTarget,
   RaviCommandPromptMetadata,
-} from "../runtime/message-types.js";
+} from "../../runtime/message-types.js";
 import {
   actorMetadataFromMessageMetadata,
   buildRuntimeMessageEditRebasePlan,
   renderRuntimeMessageEditRebasePrompt,
   summarizeRuntimeMessageEditRebasePlan,
   type RuntimeMessageEditRebasePlan,
-} from "../runtime/session-rebase.js";
-import type { AgentConfig } from "../router/types.js";
-import type { OmniSender } from "./sender.js";
-import { formatGroupMembersForPrompt, resolveGroupMetadata } from "../channels/group-metadata/cache.js";
-import type { GroupMetadataFetcher } from "../channels/group-metadata/types.js";
-import { createWhatsAppClient } from "../channels/whatsapp/client.js";
-import { createWhatsAppGroupMetadataFetcher } from "../channels/whatsapp/group-metadata.js";
-import type { NativeWhatsAppTransport } from "../channels/whatsapp/transport-client.js";
-import { createOmniGroupMetadataFetcher } from "./group-metadata.js";
-import { readLocalMediaFile, resolveLocalMediaPath } from "../channels/whatsapp/local-media.js";
-import {
-  CHANNEL_INBOUND_STREAM,
-  isNativeWhatsAppInstance,
-  transportSubjectFromChannelInbound,
-  WhatsAppTransportEventSchema,
-} from "../channels/whatsapp/contract.js";
-import { ensureChannelInboundStream } from "../channels/whatsapp/inbound-stream.js";
-import { extractInboundMentionTargets, normalizeInboundMentionText } from "../channels/mentions.js";
-import { TypingPresenceHeartbeat, type TypingPresenceEvent } from "../channels/inbound/typing-presence.js";
-import { runTagRulesForContact } from "../tag-rules/index.js";
-import { fetchCachedOmniMedia, fetchOmniMedia, saveToAgentAttachments, MAX_AUDIO_BYTES } from "../utils/media.js";
-import { firstProviderTimestampMs, timestampLikeToMs } from "../utils/provider-timestamp.js";
-import { transcribeAudio } from "../transcribe/openai.js";
+} from "../../runtime/session-rebase.js";
+import type { AgentConfig } from "../../router/types.js";
+import { canonicalChannelId } from "../capabilities.js";
+import { formatGroupMembersForPrompt, resolveGroupMetadata } from "../group-metadata/cache.js";
+import { extractInboundMentionTargets, normalizeInboundMentionText } from "../mentions.js";
+import type { ChannelMessageSender } from "../outbound/sender.js";
+import { pairingTopicsFor } from "./topics.js";
+import type {
+  ChannelInboundEvent,
+  ChannelInboundEventOf,
+  ChannelInboundHandler,
+  ChannelInboundTransport,
+  ChannelPresenceTargets,
+  InboundMessagePayload,
+  InboundSourceHooks,
+} from "./types.js";
+import { TypingPresenceHeartbeat, type TypingPresenceEvent } from "./typing-presence.js";
+import { runTagRulesForContact } from "../../tag-rules/index.js";
+import { saveToAgentAttachments, MAX_AUDIO_BYTES } from "../../utils/media.js";
+import { firstProviderTimestampMs, timestampLikeToMs } from "../../utils/provider-timestamp.js";
+import { transcribeAudio } from "../../transcribe/openai.js";
 import { readdir } from "node:fs/promises";
-import type { RuntimeAbortProvenance } from "../runtime/session-dispatcher.js";
+import type { RuntimeAbortProvenance } from "../../runtime/session-dispatcher.js";
 
-const log = logger.child("omni:consumer");
-const sc = StringCodec();
+const log = logger.child("channels:inbound");
 const execFileAsync = promisify(execFile);
 
-export function supportsOmniReadReceipts(channelType: string): boolean {
-  switch (channelType.toLowerCase()) {
-    case "whatsapp":
-    case "whatsapp-baileys":
-    case "twilio-whatsapp":
-    case "gupshup":
-      return true;
-    default:
-      return false;
-  }
+/** Read receipts are real only on canonical WhatsApp (canonicalChannelId(channelType) === "whatsapp"). */
+export function supportsReadReceipts(channelType: string): boolean {
+  return canonicalChannelId(channelType) === "whatsapp";
 }
 
 function emitPendingReviewEvent(input: {
@@ -163,130 +141,20 @@ function emitPendingReviewEvent(input: {
   }
 }
 
-/**
- * Where transport events come from.
- *
- * - `omni`: the Omni bridge's own JetStream streams (MESSAGE / INSTANCE / REACTION).
- * - `native`: Ravi's CHANNEL_INBOUND stream, fed by native transports in the
- *   `ravi channels` runner (WhatsApp). Subjects carry the `ravi.channel.inbound.`
- *   prefix, which is stripped so the same handlers see Omni-identical subjects.
- */
-export type OmniConsumerSource = "omni" | "native";
-
-export type OmniConsumerEventKind = "message" | "instance" | "reaction";
-
-export interface OmniConsumerSubscription {
-  readonly source: OmniConsumerSource;
-  readonly kind: OmniConsumerEventKind;
-  readonly stream: string;
-  readonly durable: string;
-  readonly filterSubject: string;
-}
-
-/** Omni bridge streams (must match omni's stream config) and Ravi's durable consumers on them. */
-export const OMNI_SOURCE_SUBSCRIPTIONS: readonly OmniConsumerSubscription[] = [
-  { source: "omni", kind: "message", stream: "MESSAGE", durable: "ravi-messages", filterSubject: "message.received.>" },
-  { source: "omni", kind: "instance", stream: "INSTANCE", durable: "ravi-instances", filterSubject: "instance.>" },
-  {
-    source: "omni",
-    kind: "reaction",
-    stream: "REACTION",
-    durable: "ravi-reactions",
-    filterSubject: "reaction.received.>",
-  },
-];
-
-/** Native transport events on Ravi's CHANNEL_INBOUND stream. */
-export const NATIVE_SOURCE_SUBSCRIPTIONS: readonly OmniConsumerSubscription[] = [
-  {
-    source: "native",
-    kind: "message",
-    stream: CHANNEL_INBOUND_STREAM,
-    durable: "ravi-native-messages",
-    filterSubject: "ravi.channel.inbound.message.received.>",
-  },
-  {
-    source: "native",
-    kind: "instance",
-    stream: CHANNEL_INBOUND_STREAM,
-    durable: "ravi-native-instances",
-    filterSubject: "ravi.channel.inbound.instance.>",
-  },
-  {
-    source: "native",
-    kind: "reaction",
-    stream: CHANNEL_INBOUND_STREAM,
-    durable: "ravi-native-reactions",
-    filterSubject: "ravi.channel.inbound.reaction.received.>",
-  },
-];
-
-export function consumerSubscriptionsFor(sources: readonly OmniConsumerSource[]): OmniConsumerSubscription[] {
-  const unique = Array.from(new Set(sources));
-  return unique.flatMap((source) => (source === "native" ? NATIVE_SOURCE_SUBSCRIPTIONS : OMNI_SOURCE_SUBSCRIPTIONS));
-}
-
-export interface OmniConsumerOptions {
+export interface ChannelInboundPipelineOptions {
+  /** Test seam. */
   resolveGroupMetadata?: typeof resolveGroupMetadata;
+  /** Test seam. */
   formatGroupMembers?: typeof formatGroupMembersForPrompt;
   isRuntimeSessionActive?: (sessionName: string) => boolean;
   abortRuntimeSession?: (sessionName: string, provenance: RuntimeAbortProvenance) => boolean;
-  /** Event sources to consume. Default: `["omni"]`. */
-  sources?: readonly OmniConsumerSource[];
-  /**
-   * Native WhatsApp transport (`ChannelTransportClient.native`). Used for native
-   * ownership checks (which also pick the WhatsApp group metadata fetcher).
-   */
-  nativeWhatsApp?: Pick<NativeWhatsAppTransport, "isNativeInstance" | "request"> | null;
-  /**
-   * Whether an instance (UUID) is owned by a native channel. Defaults to
-   * `nativeWhatsApp.isNativeInstance`, else the live router config.
-   */
-  isNativeInstance?: (instanceId: string) => boolean;
-  /** Directories local (`file://`) media may be read from. Defaults to `<RAVI_STATE_DIR>/media`. */
-  localMediaRoots?: readonly string[];
-  /** Creates the CHANNEL_INBOUND stream when missing. Defaults to `ensureChannelInboundStream`. */
-  ensureNativeStream?: (jsm: JetStreamManager) => Promise<void>;
-  /** NATS connection (test seam). Defaults to the shared daemon connection. */
-  natsConnection?: Pick<NatsConnection, "jetstream" | "jetstreamManager">;
 }
 
-/**
- * Omni event envelope (wraps all events published to JetStream).
- */
-interface OmniEvent {
-  id: string;
-  type: string;
-  payload: unknown;
-  metadata: {
-    instanceId?: string;
-    channelType?: string;
-    personId?: string;
-    source?: string;
-    ingestMode?: "realtime" | "history-sync";
-    pluginReceivedAt?: number | string;
-    receivedAt?: number | string;
-  };
-  timestamp: number;
-}
-
-/** Omni message.received payload */
-interface MessageReceivedPayload {
-  externalId: string;
-  chatId: string;
-  from: string;
-  content: {
-    type: string;
-    text?: string;
-    mediaUrl?: string;
-    mimeType?: string;
-    localPath?: string;
-    isVoiceNote?: boolean;
-  };
-  replyToId?: string;
-  platformTimestamp?: number | string;
-  rawPayload?: Record<string, unknown>;
-}
+/** Message payload as the pipeline reads it (the inbound contract's message payload). */
+type MessageReceivedPayload = InboundMessagePayload;
+type MessageReceivedEvent = ChannelInboundEventOf<"message.received">;
+type ReactionReceivedEvent = ChannelInboundEventOf<"reaction.received">;
+type ConnectionEvent = ChannelInboundEventOf<"connection.qr" | "connection.connected">;
 
 interface MessageEditInfo {
   editedMessageId: string;
@@ -300,30 +168,6 @@ interface WorkspaceChangeInspection {
   state: "clean" | "dirty" | "unavailable";
   changedFiles: number;
   preview: string[];
-}
-
-/** Omni instance.qr_code payload */
-interface InstanceQrCodePayload {
-  instanceId: string;
-  channelType: string;
-  qrCode: string;
-  expiresAt: number;
-}
-
-/** Omni instance.connected payload */
-interface InstanceConnectedPayload {
-  instanceId: string;
-  channelType: string;
-  profileName?: string;
-  ownerIdentifier?: string;
-}
-
-/** Omni reaction.received payload */
-interface ReactionReceivedPayload {
-  messageId: string;
-  chatId: string;
-  from: string;
-  emoji: string;
 }
 
 /**
@@ -375,31 +219,16 @@ function resolveMessageProviderTimestampMs(payload: MessageReceivedPayload, enve
   );
 }
 
-function resolvePluginReceivedAtMs(event: OmniEvent, payload: MessageReceivedPayload): number | null {
+function resolvePluginReceivedAtMs(event: MessageReceivedEvent, payload: MessageReceivedPayload): number | null {
   return (
     timestampLikeToMs(payload.rawPayload?.pluginReceivedAt) ??
     timestampLikeToMs(payload.rawPayload?.plugin_received_at) ??
     timestampLikeToMs(payload.rawPayload?.receivedAt) ??
     timestampLikeToMs(payload.rawPayload?.received_at) ??
-    timestampLikeToMs(event.metadata?.pluginReceivedAt) ??
-    timestampLikeToMs(event.metadata?.receivedAt) ??
+    timestampLikeToMs(event.pluginReceivedAt) ??
+    timestampLikeToMs(event.receivedAt) ??
     null
   );
-}
-
-/**
- * Parse the NATS subject to get channelType and instanceId.
- * Subject format: {eventType}.{channelType}.{instanceId}
- * e.g., "message.received.whatsapp-baileys.abc-123-uuid"
- */
-function parseSubject(subject: string): { channelType: string; instanceId: string } | null {
-  const parts = subject.split(".");
-  // minimum 4 parts: domain.action.channelType.instanceId
-  if (parts.length < 4) return null;
-  const channelType = parts[2];
-  const instanceId = parts.slice(3).join(".");
-  if (!channelType || !instanceId) return null;
-  return { channelType, instanceId };
 }
 
 function uniqueStrings(values: Array<string | undefined | null>): string[] {
@@ -470,31 +299,22 @@ function resolveSenderPlatformIdentity(input: {
 
   return null;
 }
-
-export class OmniConsumer {
-  private running = false;
+export class ChannelInboundPipeline implements ChannelInboundHandler, ChannelPresenceTargets {
   /** Active targets for typing heartbeat: sessionName → MessageTarget */
   private activeTargets = new Map<string, MessageTarget>();
   private readonly typingPresence: TypingPresenceHeartbeat;
-  /** Stored JetStreamManager for use inside consume loops */
-  private jsm: JetStreamManager | null = null;
   /** Startup timestamp (ms) — messages older than this are history sync, skip them */
   private readonly startedAt = Date.now();
   /** Dedup set for recently processed event IDs (prevents double-processing) */
   private readonly processedEvents = new Set<string>();
   private readonly DEDUP_MAX = 500;
-  private whatsappGroupMetadataFetcher: GroupMetadataFetcher | null = null;
-  private omniGroupMetadataFetcher: GroupMetadataFetcher | null = null;
 
   /**
-   * @param omniApiUrl Omni REST API (media + group metadata for Omni instances). Null when Omni is not configured.
-   * @param omniApiKey Omni API key. Null when Omni is not configured.
+   * @param sender Outbound sender used for typing, read receipts and slash-command replies.
    */
   constructor(
-    private sender: OmniSender,
-    private omniApiUrl: string | null,
-    private omniApiKey: string | null,
-    private readonly options: OmniConsumerOptions = {},
+    private readonly sender: ChannelMessageSender,
+    private readonly options: ChannelInboundPipelineOptions = {},
   ) {
     this.typingPresence = new TypingPresenceHeartbeat(
       (target, active) => this.sender.sendTyping(target.instanceId, target.to, active),
@@ -507,316 +327,36 @@ export class OmniConsumer {
     );
   }
 
-  /**
-   * Start the consumer.
-   *
-   * Awaits until both JetStream consumers are ready to process messages
-   * (i.e. streams exist and consumers are registered). Loops continue
-   * running in background after start() resolves.
-   */
-  async start(): Promise<void> {
-    log.info("Starting omni consumer...");
-    this.running = true;
-
-    const nc = this.options.natsConnection ?? getNats();
-    const js = nc.jetstream();
-    this.jsm = await nc.jetstreamManager();
-
-    const sources = this.options.sources ?? ["omni"];
-    const ensureNativeStream = this.options.ensureNativeStream ?? ensureChannelInboundStream;
-    const subscriptions = consumerSubscriptionsFor(sources);
-
-    // Start consume loops and wait until all consumers are ready
-    await Promise.all(
-      subscriptions.map((subscription) =>
-        this.consumeLoop(
-          js,
-          subscription.stream,
-          subscription.durable,
-          subscription.filterSubject,
-          (subject, event) => this.dispatchSourceEvent(subscription, subject, event),
-          subscription.source === "native" ? ensureNativeStream : undefined,
-        ),
-      ),
-    );
-
-    log.info("Omni consumer started", { sources });
-  }
-
-  /**
-   * Route one decoded event from a source to the shared handlers.
-   *
-   * Native events have the `ravi.channel.inbound.` prefix stripped (and the envelope
-   * validated), so the handlers see exactly the subject Omni would publish. Omni
-   * events for an instance a native channel owns are dropped: the native runtime is
-   * the only transport for it, even if Omni still has the same instance connected.
-   */
-  private async dispatchSourceEvent(
-    subscription: Pick<OmniConsumerSubscription, "source" | "kind">,
-    subject: string,
-    event: OmniEvent,
-  ): Promise<void> {
-    let transportSubject = subject;
-    let transportEvent = event;
-
-    if (subscription.source === "native") {
-      const stripped = transportSubjectFromChannelInbound(subject);
-      if (!stripped) {
-        log.warn("Ignoring native transport event outside the channel inbound prefix", { subject });
+  /** Dispatches one inbound event by type. `connection.disconnected` is accepted and ignored. */
+  async handle(event: ChannelInboundEvent, hooks: InboundSourceHooks): Promise<void> {
+    switch (event.type) {
+      case "message.received":
+        return this.handleMessage(event, hooks);
+      case "reaction.received":
+        return this.handleReaction(event);
+      case "connection.qr":
+      case "connection.connected":
+        return this.handleConnection(event);
+      case "connection.disconnected":
         return;
-      }
-      const parsed = WhatsAppTransportEventSchema.safeParse(event);
-      if (!parsed.success) {
-        log.warn("Ignoring invalid native transport event", {
-          subject,
-          eventId: typeof event?.id === "string" ? event.id : undefined,
-          issues: parsed.error.issues.slice(0, 5).map((issue) => `${issue.path.join(".")}: ${issue.message}`),
-        });
-        return;
-      }
-      transportSubject = stripped;
-      transportEvent = parsed.data;
-    } else {
-      const instanceId = parseSubject(subject)?.instanceId;
-      if (instanceId && this.isNativeInstance(instanceId)) {
-        log.debug("Ignoring Omni event for a natively owned instance", { subject, instanceId, eventId: event.id });
-        return;
-      }
-    }
-
-    switch (subscription.kind) {
-      case "message":
-        return this.handleMessageEvent(transportSubject, transportEvent);
-      case "instance":
-        return this.handleInstanceEvent(transportSubject, transportEvent);
-      case "reaction":
-        return this.handleReactionEvent(transportSubject, transportEvent);
     }
   }
 
-  /**
-   * Interim (until the inbound sources split): natively-owned WhatsApp instances refresh group
-   * metadata over the runner RPC, the rest over the Omni REST API when it is configured.
-   */
-  private groupMetadataFetcherFor(instanceId: string): GroupMetadataFetcher | null {
-    if (this.isNativeInstance(instanceId)) {
-      this.whatsappGroupMetadataFetcher ??= createWhatsAppGroupMetadataFetcher(createWhatsAppClient());
-      return this.whatsappGroupMetadataFetcher;
-    }
-    const apiUrl = this.omniApiUrl?.trim();
-    const apiKey = this.omniApiKey?.trim();
-    if (!apiUrl || !apiKey) return null;
-    this.omniGroupMetadataFetcher ??= createOmniGroupMetadataFetcher({ apiUrl, apiKey });
-    return this.omniGroupMetadataFetcher;
-  }
-
-  private isNativeInstance(instanceId: string): boolean {
-    try {
-      if (this.options.isNativeInstance) return this.options.isNativeInstance(instanceId);
-      if (this.options.nativeWhatsApp) return this.options.nativeWhatsApp.isNativeInstance(instanceId);
-      return isNativeWhatsAppInstance(configStore.getConfig(), instanceId);
-    } catch (error) {
-      log.warn("Native ownership check failed; treating instance as Omni-owned", { instanceId, error });
-      return false;
-    }
-  }
-
+  /** Stops every typing heartbeat and forgets the active targets. Sources are stopped by their owner. */
   async stop(): Promise<void> {
-    log.info("Stopping omni consumer...");
-    this.running = false;
+    log.info("Stopping channel inbound pipeline...");
     await this.typingPresence.stopAll();
     this.activeTargets.clear();
-    // Consume loops detect this.running === false and exit gracefully
   }
 
   /**
-   * Ensure a durable pull consumer exists on the given stream.
-   * Retries until the stream appears (omni may still be initializing).
+   * Handle a message.received event from any inbound source.
    */
-  private async ensureConsumer(
-    jsm: JetStreamManager,
-    stream: string,
-    name: string,
-    filterSubject: string,
-    timeoutMs = CONSUMER_READY_TIMEOUT,
-    ensureStream?: (jsm: JetStreamManager) => Promise<void>,
-  ): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-
-    while (this.running && Date.now() < deadline) {
-      try {
-        await jsm.streams.info(stream);
-      } catch (err) {
-        if (!this.running) return false;
-        if (ensureStream) {
-          // Ravi-owned stream (CHANNEL_INBOUND): create it instead of waiting for a publisher.
-          try {
-            await ensureStream(jsm);
-            continue;
-          } catch (ensureErr) {
-            log.warn("Failed to create JetStream stream, retrying in 2s", { stream, name, error: ensureErr });
-          }
-        } else {
-          log.debug("JetStream stream not ready yet, retrying in 2s", { stream, name, error: err });
-        }
-        await this.delay(CONSUMER_RETRY_DELAY_MS);
-        continue;
-      }
-
-      // Check if consumer already exists
-      try {
-        await jsm.consumers.info(stream, name);
-        log.debug("Consumer already exists", { stream, name });
-        return true;
-      } catch {
-        // Not found — try to create
-      }
-
-      // Try to create the consumer
-      try {
-        await jsm.consumers.add(stream, {
-          durable_name: name,
-          filter_subject: filterSubject,
-          ack_policy: AckPolicy.Explicit,
-          deliver_policy: DeliverPolicy.New,
-        });
-        log.info("Created JetStream consumer", { stream, name, filter: filterSubject });
-        return true;
-      } catch (err) {
-        // Stream may not exist yet (omni still initializing — retry)
-        if (!this.running) return false;
-        log.debug("JetStream consumer not ready yet, retrying in 2s", { stream, name, error: err });
-        await this.delay(CONSUMER_RETRY_DELAY_MS);
-      }
-    }
-
-    log.error("Timed out waiting for JetStream stream to appear", { stream, name });
-    return false;
-  }
-
-  private async delay(ms: number): Promise<void> {
-    await new Promise((r) => setTimeout(r, ms));
-  }
-
-  /**
-   * Generic consume loop.
-   *
-   * Returns a Promise that resolves once the consumer is ready (first
-   * consumer.consume() call succeeds). The background loop continues
-   * running after the promise resolves.
-   */
-  private consumeLoop(
-    js: JetStreamClient,
-    stream: string,
-    consumerName: string,
-    filterSubject: string,
-    handler: (subject: string, event: OmniEvent) => Promise<void>,
-    ensureStream?: (jsm: JetStreamManager) => Promise<void>,
-  ): Promise<void> {
-    return new Promise<void>((resolveReady) => {
-      let notifiedReady = false;
-
-      const markReady = () => {
-        if (!notifiedReady) {
-          notifiedReady = true;
-          resolveReady();
-        }
-      };
-
-      // Fallback: unblock start() after timeout even if streams never appear.
-      // The loop continues retrying in the background.
-      const readyFallback = setTimeout(() => {
-        if (!notifiedReady) {
-          log.warn("Consumer ready timeout — unblocking start(), will keep retrying in background", { stream });
-          markReady();
-        }
-      }, CONSUMER_READY_TIMEOUT);
-
-      (async () => {
-        while (this.running) {
-          try {
-            // Ensure consumer exists (retries until stream is available)
-            if (this.jsm) {
-              const ready = await this.ensureConsumer(
-                this.jsm,
-                stream,
-                consumerName,
-                filterSubject,
-                CONSUMER_READY_TIMEOUT,
-                ensureStream,
-              );
-              if (!ready) {
-                if (!this.running) break;
-                continue;
-              }
-            }
-            if (!this.running) break;
-
-            const consumer = await js.consumers.get(stream, consumerName);
-            const messages = await consumer.consume();
-            clearTimeout(readyFallback);
-            markReady(); // Consumer is active — unblock start()
-
-            for await (const msg of messages) {
-              if (!this.running) {
-                msg.nak();
-                break;
-              }
-              try {
-                const raw = sc.decode(msg.data);
-                const event = JSON.parse(raw) as OmniEvent;
-                // Ack immediately so the consume loop is never blocked by slow
-                // handlers (e.g. HTTP timeouts to omni sender). Handlers are
-                // fire-and-forget — errors are logged but don't stall the stream.
-                msg.ack();
-                handler(msg.subject, event).catch((err) => {
-                  log.error("Error handling event", { stream, subject: msg.subject, error: err });
-                });
-              } catch (err) {
-                log.error("Error parsing event", { stream, subject: msg.subject, error: err });
-                msg.nak();
-              }
-            }
-          } catch (err) {
-            if (!this.running) break;
-            if (this.isJetStreamBootstrapError(err)) {
-              log.warn("Consume loop waiting for JetStream bootstrap, retrying in 2s", {
-                stream,
-                consumerName,
-                error: err,
-              });
-            } else {
-              log.error("Consume loop error, restarting in 2s", { stream, consumerName, error: err });
-            }
-            await this.delay(CONSUMER_RETRY_DELAY_MS);
-          }
-        }
-
-        clearTimeout(readyFallback);
-        markReady(); // Unblock start() even on clean exit without connecting
-      })();
-    });
-  }
-
-  private isJetStreamBootstrapError(err: unknown): boolean {
-    const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-    return message.includes("stream not found") || message.includes("consumer not found");
-  }
-
-  /**
-   * Handle message.received event from omni.
-   */
-  private async handleMessageEvent(subject: string, event: OmniEvent): Promise<void> {
-    if (event.type !== "message.received") return;
-
-    const parsed = parseSubject(subject);
-    if (!parsed) {
-      log.warn("Could not parse subject", { subject });
-      return;
-    }
-
-    const { channelType, instanceId } = parsed;
-    let payload = event.payload as MessageReceivedPayload;
+  private async handleMessage(event: MessageReceivedEvent, hooks: InboundSourceHooks): Promise<void> {
+    const { channelType, instanceId } = event;
+    const subject = event.provenance.subject;
+    const transport = event.provenance.transport;
+    let payload: MessageReceivedPayload = event.payload;
 
     // Skip reaction messages — these are handled by the REACTION stream consumer
     if (payload.content.type === "reaction") return;
@@ -838,12 +378,8 @@ export class OmniConsumer {
     const handlerStartedAt = Date.now();
     const pluginReceivedAtMs = resolvePluginReceivedAtMs(event, payload);
     const consumerLagMs = pluginReceivedAtMs === null ? null : Math.max(0, handlerStartedAt - pluginReceivedAtMs);
-    if (
-      consumerLagMs !== null &&
-      consumerLagMs >= CONSUMER_LAG_WARN_MS &&
-      event.metadata?.ingestMode !== "history-sync"
-    ) {
-      log.warn("Omni consumer lag detected", {
+    if (consumerLagMs !== null && consumerLagMs >= CONSUMER_LAG_WARN_MS && event.ingestMode !== "history-sync") {
+      log.warn("Channel inbound lag detected", {
         eventId: event.id,
         subject,
         consumerLagMs,
@@ -858,7 +394,7 @@ export class OmniConsumer {
     const msgTs = resolveMessageProviderTimestampMs(payload, event.timestamp);
     // History-sync/old messages must still feed the durable chat/contact ledger.
     // They are suppressed only before route/runtime dispatch to avoid replaying prompts.
-    const suppressRuntimeReplay = event.metadata?.ingestMode === "history-sync" || msgTs < this.startedAt - 5_000;
+    const suppressRuntimeReplay = event.ingestMode === "history-sync" || msgTs < this.startedAt - 5_000;
 
     // Derive phone and group status from JIDs
     const rawPayload = payload.rawPayload as Record<string, unknown> | undefined;
@@ -913,8 +449,8 @@ export class OmniConsumer {
     const routerConfig = configStore.getConfig();
     const effectiveAccountId = routerConfig.instanceToAccount[instanceId];
     if (!effectiveAccountId) {
-      if (isIgnoredOmniInstanceId(routerConfig.ignoredOmniInstanceIds, instanceId)) {
-        log.debug("Ignoring unknown omni instanceId configured in ravi", { instanceId, channelType });
+      if (hooks.isIgnoredInstance?.(instanceId) ?? false) {
+        log.debug("Ignoring unknown instanceId the source is configured to ignore", { instanceId, channelType });
         return;
       }
 
@@ -998,7 +534,7 @@ export class OmniConsumer {
       chatType: threadId ? "thread" : isGroup ? "group" : isNonDmChannel ? "channel" : "dm",
       title: rawPayloadString(rawPayload, "chatName") ?? null,
       rawProvenance: {
-        source: "omni.message.received",
+        source: `${transport}.message.received`,
         eventId: event.id,
         subject,
         accountId: effectiveAccountId,
@@ -1015,7 +551,7 @@ export class OmniConsumer {
         platformChatId: chatJid,
         title: rawPayloadString(rawPayload, "chatName") ?? rawPayloadString(rawPayload, "pushName") ?? null,
         rawProvenance: {
-          source: "omni.message.received",
+          source: `${transport}.message.received`,
           eventId: event.id,
           accountId: effectiveAccountId,
           instanceId,
@@ -1052,7 +588,7 @@ export class OmniConsumer {
           displayName: rawPayloadString(rawPayload, "pushName") ?? null,
           avatarUrl: rawPayloadString(rawPayload, "avatarUrl") ?? null,
           profileData: {
-            source: "omni.message.received",
+            source: `${transport}.message.received`,
             eventId: event.id,
             accountId: effectiveAccountId,
             rawSenderId: senderPhone,
@@ -1066,7 +602,7 @@ export class OmniConsumer {
           defaultTags: instanceConfig?.defaultContactTags ?? null,
           provenance: {
             subject,
-            omniChannelType: channelType,
+            providerChannelType: channelType,
             providerChatId: chatJid,
             providerSenderId: payload.from,
           },
@@ -1080,7 +616,7 @@ export class OmniConsumer {
             platformChatId: chatJid,
             title: rawPayloadString(rawPayload, "chatName") ?? rawPayloadString(rawPayload, "pushName") ?? null,
             rawProvenance: {
-              source: "omni.message.received",
+              source: `${transport}.message.received`,
               eventId: event.id,
               accountId: effectiveAccountId,
               instanceId,
@@ -1114,7 +650,7 @@ export class OmniConsumer {
       normalizedSenderId,
       ...(senderPlatformIdentity?.confidence ? { identityConfidence: senderPlatformIdentity.confidence } : {}),
       identityProvenance: {
-        source: "omni.message.received",
+        source: `${transport}.message.received`,
         eventId: event.id,
         instanceId,
         accountId: effectiveAccountId,
@@ -1169,10 +705,10 @@ export class OmniConsumer {
           : null,
       },
       rawProvenance: {
-        source: "omni.message.received",
+        source: `${transport}.message.received`,
         eventId: event.id,
         subject,
-        ingestMode: event.metadata?.ingestMode ?? null,
+        ingestMode: event.ingestMode ?? null,
         accountId: effectiveAccountId,
         instanceId,
         channelType,
@@ -1231,7 +767,7 @@ export class OmniConsumer {
         externalId: payload.externalId,
         msgTs,
         startedAt: this.startedAt,
-        ingestMode: event.metadata?.ingestMode ?? null,
+        ingestMode: event.ingestMode ?? null,
       });
       return;
     }
@@ -1286,7 +822,7 @@ export class OmniConsumer {
       const ownerSession = getSession(existingSubscription.sessionKey);
       const ownerAgent = ownerSession ? routerConfig.agents[ownerSession.agentId] : undefined;
       // Instance isolation: never let the subscription override jump
-      // across Omni instances. If the override would route an inbound
+      // across transport instances. If the override would route an inbound
       // from instance A into a session that lives on instance B, the
       // session's outbound would later be emitted via instance B —
       // hitting a different WhatsApp account entirely. The 2026-05-21
@@ -1403,7 +939,8 @@ export class OmniConsumer {
         payloadJson: {
           eventId: event.id,
           subject,
-          omniType: event.type,
+          eventType: event.type,
+          ...(transport === "omni" ? { omniType: event.type } : {}),
           instanceId,
           channelType,
           contentType: payload.content?.type ?? null,
@@ -1670,7 +1207,7 @@ export class OmniConsumer {
     const formatGroupMembers = this.options.formatGroupMembers ?? formatGroupMembersForPrompt;
     const groupMetadata = isGroup
       ? await resolveMetadata({
-          fetcher: this.groupMetadataFetcherFor(instanceId),
+          fetcher: hooks.fetchGroupMetadata,
           accountId: effectiveAccountId,
           instanceId,
           chatId: chatJid,
@@ -1689,9 +1226,9 @@ export class OmniConsumer {
         })
       : [];
 
-    // Process media (download from omni disk → agent attachments, transcribe audio)
+    // Process media (loaded by the source's hook → agent attachments, transcribe audio)
     const agentCwd = expandHome(agent.cwd);
-    const mediaResult = await this.processMedia(payload, agentCwd, instanceId);
+    const mediaResult = await this.processMedia({ ...event, payload }, hooks, agentCwd);
 
     saveInboundMessageMeta({
       transcription: mediaResult?.transcript,
@@ -1870,6 +1407,7 @@ export class OmniConsumer {
             editInfo,
             agentCwd,
             rebasePlan: editRebasePlan,
+            transport,
           })
         : null;
     const finalEnvelope =
@@ -1897,8 +1435,8 @@ export class OmniConsumer {
 
     // Read receipts are real only on WhatsApp-compatible channels. Slack,
     // Discord, and Telegram either do not expose a bot read receipt or only
-    // expose a token-local cursor, so avoid calling Omni's receipt endpoint.
-    if (payload.externalId && supportsOmniReadReceipts(channelType)) {
+    // expose a token-local cursor, so avoid calling a transport receipt endpoint.
+    if (payload.externalId && supportsReadReceipts(channelType)) {
       this.sender.markRead(instanceId, chatJid, [payload.externalId]).catch(() => {});
     }
 
@@ -2087,6 +1625,7 @@ export class OmniConsumer {
     editInfo: MessageEditInfo;
     agentCwd: string;
     rebasePlan: RuntimeMessageEditRebasePlan;
+    transport: ChannelInboundTransport;
   }): Promise<{
     aborted: boolean;
     reset: boolean;
@@ -2094,7 +1633,7 @@ export class OmniConsumer {
   }> {
     const aborted =
       this.options.abortRuntimeSession?.(input.sessionName, {
-        source: "omni",
+        source: input.transport,
         action: "message.edited",
         reason: "message_edited_restart",
         actor: input.source.normalizedSenderId ?? input.context.senderId,
@@ -2219,7 +1758,7 @@ export class OmniConsumer {
     },
   ): string {
     const lines = [
-      "## Mensagem editada detectada pelo Omni",
+      "## Mensagem editada detectada pelo canal",
       "",
       `Mensagem original: ${editInfo.editedMessageId}`,
       `Evento de edicao: ${editInfo.editEventId}`,
@@ -2254,45 +1793,46 @@ export class OmniConsumer {
   }
 
   /**
-   * Handle instance.* events from omni (QR code, connected, etc.)
+   * Handle connection events (QR code, connected): relay them to the pairing topic of the
+   * channel type and register the connected account as the agent's platform identity.
    */
-  private async handleInstanceEvent(subject: string, event: OmniEvent): Promise<void> {
-    const parts = subject.split(".");
-    const eventType = `${parts[0]}.${parts[1]}`; // e.g., "instance.qr_code"
+  private async handleConnection(event: ConnectionEvent): Promise<void> {
+    const { channelType, instanceId } = event;
+    const topics = pairingTopicsFor(channelType, instanceId);
 
-    if (eventType === "instance.qr_code") {
-      const payload = event.payload as InstanceQrCodePayload;
+    if (event.type === "connection.qr") {
       // Relay QR code to any waiting CLI subscriber
-      const relayTopic = `ravi.whatsapp.qr.${payload.instanceId}`;
-      await nats.emit(relayTopic, {
+      await nats.emit(topics.qr, {
         type: "qr",
-        instanceId: payload.instanceId,
-        qr: payload.qrCode,
-        channelType: payload.channelType,
+        instanceId,
+        qr: event.payload.qrCode,
+        channelType,
       });
-      log.debug("QR code relayed", { instanceId: payload.instanceId });
-    } else if (eventType === "instance.connected") {
-      const payload = event.payload as InstanceConnectedPayload;
-      this.registerAgentPlatformIdentity(payload);
-      const relayTopic = `ravi.whatsapp.connected.${payload.instanceId}`;
-      await nats.emit(relayTopic, {
-        type: "connected",
-        instanceId: payload.instanceId,
-        channelType: payload.channelType,
-        profileName: payload.profileName,
-        ownerIdentifier: payload.ownerIdentifier,
-      });
-      log.info("Instance connected", {
-        instanceId: payload.instanceId,
-        channelType: payload.channelType,
-        profileName: payload.profileName,
-      });
+      log.debug("QR code relayed", { instanceId });
+      return;
     }
+
+    const payload = event.payload;
+    this.registerAgentPlatformIdentity(event);
+    await nats.emit(topics.connected, {
+      type: "connected",
+      instanceId,
+      channelType,
+      profileName: payload.profileName,
+      ownerIdentifier: payload.ownerIdentifier,
+    });
+    log.info("Instance connected", {
+      instanceId,
+      channelType,
+      profileName: payload.profileName,
+    });
   }
 
-  private registerAgentPlatformIdentity(payload: InstanceConnectedPayload): void {
+  private registerAgentPlatformIdentity(event: ChannelInboundEventOf<"connection.connected">): void {
+    const { channelType, instanceId, payload } = event;
+    const transport = event.provenance.transport;
     const routerConfig = configStore.getConfig();
-    const accountId = routerConfig.instanceToAccount[payload.instanceId];
+    const accountId = routerConfig.instanceToAccount[instanceId];
     const agentId = accountId
       ? (routerConfig.instances?.[accountId]?.agent ?? routerConfig.accountAgents?.[accountId])
       : undefined;
@@ -2301,25 +1841,25 @@ export class OmniConsumer {
     try {
       upsertAgentPlatformIdentity({
         agentId,
-        channel: payload.channelType,
-        instanceId: payload.instanceId,
+        channel: channelType,
+        instanceId,
         platformUserId: payload.ownerIdentifier,
         platformDisplayName: payload.profileName ?? null,
         profileData: {
-          source: "omni.instance.connected",
-          instanceId: payload.instanceId,
-          channelType: payload.channelType,
+          source: `${transport}.instance.connected`,
+          instanceId,
+          channelType,
           accountId,
           profileName: payload.profileName ?? null,
           ownerIdentifier: payload.ownerIdentifier,
         },
         linkedBy: "auto",
-        linkReason: "omni_instance_connected",
+        linkReason: `${transport}_instance_connected`,
       });
     } catch (error) {
       log.warn("Failed to register agent platform identity", {
-        instanceId: payload.instanceId,
-        channelType: payload.channelType,
+        instanceId,
+        channelType,
         accountId,
         agentId,
         error,
@@ -2328,21 +1868,19 @@ export class OmniConsumer {
   }
 
   /**
-   * Handle reaction.received events from omni.
+   * Handle reaction.received events from any inbound source.
    * Persists the reaction as a durable chat_messages ledger entry and emits
    * ravi.inbound.reaction for approval/poll/trigger resolution.
    */
-  private async handleReactionEvent(subject: string, event: OmniEvent): Promise<void> {
-    if (event.type !== "reaction.received") return;
-
+  private async handleReaction(event: ReactionReceivedEvent): Promise<void> {
     // Skip old reactions (before this daemon started)
     const reactionTs = event.timestamp > 1e12 ? event.timestamp : event.timestamp * 1000;
     if (reactionTs < this.startedAt - 5_000) return;
 
-    const payload = event.payload as ReactionReceivedPayload;
+    const payload = event.payload;
     const senderId = stripJid(payload.from);
 
-    // Dedup: omni publishes duplicate events with different IDs for the same reaction
+    // Dedup: transports may publish duplicate events with different IDs for the same reaction
     const dedupKey = `${payload.messageId}:${payload.emoji}:${senderId}`;
     if (this.processedEvents.has(dedupKey)) return;
     this.processedEvents.add(dedupKey);
@@ -2362,7 +1900,7 @@ export class OmniConsumer {
     // Persist the reaction as a chat_messages row with message_type = "reaction".
     // The deterministic provider_message_id guarantees idempotency via the DB
     // unique constraint, independent of the in-memory dedup set above.
-    this.persistReactionAccounting(subject, event, payload, senderId, reactionTs);
+    this.persistReactionAccounting(event, senderId, reactionTs);
 
     await nats.emit("ravi.inbound.reaction", {
       targetMessageId: payload.messageId,
@@ -2376,20 +1914,10 @@ export class OmniConsumer {
    * Best-effort: logs warnings on resolution failures but never blocks
    * the ravi.inbound.reaction emission.
    */
-  private persistReactionAccounting(
-    subject: string,
-    event: OmniEvent,
-    payload: ReactionReceivedPayload,
-    senderId: string,
-    reactionTs: number,
-  ): void {
+  private persistReactionAccounting(event: ReactionReceivedEvent, senderId: string, reactionTs: number): void {
+    const payload = event.payload;
     try {
-      const parsed = parseSubject(subject);
-      if (!parsed) {
-        log.debug("Reaction accounting skipped: could not parse subject", { subject });
-        return;
-      }
-      const { channelType, instanceId } = parsed;
+      const { channelType, instanceId } = event;
       const sessionChannel = channelType.replace(/-baileys$/, "");
 
       const routerConfig = configStore.getConfig();
@@ -2449,9 +1977,9 @@ export class OmniConsumer {
           senderId,
         },
         rawProvenance: {
-          source: "omni.reaction.received",
+          source: `${event.provenance.transport}.reaction.received`,
           eventId: event.id,
-          subject,
+          subject: event.provenance.subject,
           channelType,
           instanceId,
           accountId: effectiveAccountId,
@@ -2497,7 +2025,7 @@ export class OmniConsumer {
       active: event.active,
       status,
       reason: event.reason,
-      source: "omni.consumer.typing-heartbeat",
+      source: "channels.inbound.typing-heartbeat",
       target: {
         channel: activeTarget.channel,
         accountId: activeTarget.accountId,
@@ -2552,7 +2080,7 @@ export class OmniConsumer {
   // ============================================================================
 
   /**
-   * Extract quoted/reply message context. Uses omni's normalized `replyToId`
+   * Extract quoted/reply message context. Uses the transport's normalized `replyToId`
    * (works for all channels), then enriches with WhatsApp's contextInfo when
    * available (quoted text, sender, media type).
    */
@@ -2564,7 +2092,7 @@ export class OmniConsumer {
     const whatsappContext = this.extractWhatsAppReplyContext(rawPayload);
     if (whatsappContext) return whatsappContext;
 
-    // Fallback: use omni's normalized replyToId (Telegram, Discord, Slack, etc.)
+    // Fallback: use the normalized replyToId (Telegram, Discord, Slack, etc.)
     if (!replyToId) return null;
     return { quotedId: replyToId };
   }
@@ -2681,26 +2209,25 @@ export class OmniConsumer {
   }
 
   /**
-   * Process media: read it from local disk (native transports, `file://`) or fetch it
-   * from the omni HTTP API, save to agent attachments, transcribe audio.
+   * Process media: load it through the source's media hook (local runner files for
+   * WhatsApp, the bridge HTTP API for the legacy bridge), save to agent attachments,
+   * transcribe audio.
    */
   private async processMedia(
-    payload: MessageReceivedPayload,
+    event: MessageReceivedEvent,
+    hooks: InboundSourceHooks,
     agentCwd: string,
-    instanceId: string,
   ): Promise<{ localPath?: string; transcript?: string } | null> {
+    const payload = event.payload;
     const { content } = payload;
     if (content.type === "text" || !content.type) return null;
-    const localMediaPath = resolveLocalMediaPath(content);
-    if (!content.mediaUrl && !localMediaPath) return null;
+    if (!content.mediaUrl && !content.localPath) return null;
 
     const mimeType = content.mimeType ?? "application/octet-stream";
     const isAudio = content.type === "audio" || content.type === "voice";
     const maxBytes = isAudio ? MAX_AUDIO_BYTES : undefined;
 
-    const buffer = localMediaPath
-      ? await readLocalMediaFile(localMediaPath, { maxBytes, roots: this.options.localMediaRoots })
-      : await this.fetchRemoteMedia(payload, instanceId, maxBytes, mimeType);
+    const buffer = await hooks.loadMedia(event, { maxBytes, mimeType });
     if (!buffer) return null;
 
     // Audio needs both: transcript for the prompt and durable file path for later editing/rendering work.
@@ -2729,32 +2256,6 @@ export class OmniConsumer {
       log.warn("Failed to save media to agent attachments", { error: err });
       return null;
     }
-  }
-
-  private async fetchRemoteMedia(
-    payload: MessageReceivedPayload,
-    instanceId: string,
-    maxBytes: number | undefined,
-    mimeType: string,
-  ): Promise<Buffer | null> {
-    const mediaUrl = payload.content.mediaUrl;
-    if (!mediaUrl) return null;
-    const omniApiUrl = this.omniApiUrl;
-    const omniApiKey = this.omniApiKey;
-    if (!omniApiUrl || !omniApiKey) {
-      log.warn("Skipping remote media: Omni is not configured", { instanceId, externalId: payload.externalId });
-      return null;
-    }
-
-    return mediaUrl.startsWith("http")
-      ? ((await fetchCachedOmniMedia(
-          { instanceId, chatExternalId: payload.chatId, externalId: payload.externalId },
-          omniApiUrl,
-          omniApiKey,
-          maxBytes,
-          mimeType,
-        )) ?? (await fetchOmniMedia(mediaUrl, omniApiUrl, omniApiKey, maxBytes, mimeType)))
-      : await fetchOmniMedia(mediaUrl, omniApiUrl, omniApiKey, maxBytes, mimeType);
   }
 
   /**
@@ -2939,7 +2440,7 @@ export class OmniConsumer {
     groupMembers: string[] | undefined,
     mentionedContactsContext: MessageContext["mentionedContactsContext"] | undefined,
     chatJid: string,
-    event: OmniEvent,
+    event: MessageReceivedEvent,
     actorMetadata?: MessageActorMetadata,
     editInfo?: MessageEditInfo | null,
   ): MessageContext & { instanceId: string } {

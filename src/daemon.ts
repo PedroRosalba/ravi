@@ -1,7 +1,8 @@
 /**
  * Ravi Daemon
  *
- * Connects to external NATS and omni services (managed by PM2/omni CLI).
+ * Connects to external NATS and the channel transports (WhatsApp runner, optional legacy
+ * bridge), all managed by PM2 / the ravi CLI.
  * No child process spawning — all infrastructure is external.
  *
  * This process must never block on stdin. Session dispatch, delivery, and the
@@ -22,8 +23,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { RaviBot } from "./bot.js";
 import { createGateway } from "./gateway.js";
-import type { OmniConsumer } from "./omni/index.js";
-import { createDaemonChannelWiring } from "./omni/channel-wiring.js";
+import { createDaemonChannels, type DaemonChannels } from "./daemon-channels.js";
 
 import { loadConfig } from "./utils/config.js";
 import { connectNats, closeNats } from "./nats.js";
@@ -53,7 +53,6 @@ import { startHookRunner, stopHookRunner } from "./hooks-runtime/index.js";
 import { startTaskCheckpointRunner, stopTaskCheckpointRunner } from "./tasks/index.js";
 import { startSyncRunner, stopSyncRunner } from "./sync/index.js";
 import { createSessionAdapterBus } from "./adapters/index.js";
-import { resolveOmniConnection } from "./omni-config.js";
 import { ensureSessionPromptsStream, publishSessionPrompt } from "./session-prompts/stream.js";
 import { ensureRaviEventsStream } from "./events/audit-stream.js";
 import { startWebhookHttpServerFromEnv, type WebhookHttpServerHandle } from "./webhooks/http-server.js";
@@ -64,8 +63,6 @@ import { dbHasActiveAssignedTaskForSession } from "./tasks/task-db.js";
 import { startWorkObjectNatsService, type WorkObjectNatsServiceHandle } from "./work-objects/index.js";
 import { createChannelBackendEgressRequester } from "./channels/backend-egress.js";
 import { setChannelBackendEgressRequesterForRuntime } from "./channels/runtime-events.js";
-import { createWhatsAppClient } from "./channels/whatsapp/client.js";
-import { createWhatsAppGroupMetadataFetcher } from "./channels/whatsapp/group-metadata.js";
 import {
   tryAcquireLeadership,
   startLeadershipRenewal,
@@ -200,7 +197,7 @@ let bot: RaviBot | null = null;
 let gateway: ReturnType<typeof createGateway> | null = null;
 let sessionAdapterBus: ReturnType<typeof createSessionAdapterBus> | null = null;
 let shuttingDown = false;
-let omniConsumer: OmniConsumer | null = null;
+let channels: DaemonChannels | null = null;
 let webhookHttpServer: WebhookHttpServerHandle | null = null;
 let hostCliGateway: HostCliGatewayHandle | null = null;
 let workObjectNatsService: WorkObjectNatsServiceHandle | null = null;
@@ -287,10 +284,8 @@ async function shutdown(signal: string, exitCode = 0) {
       hostCliGateway = null;
     }
 
-    // Stop omni consumer
-    if (omniConsumer) {
-      await omniConsumer.stop();
-    }
+    // Stop inbound sources and the channel pipeline
+    await channels?.stop();
 
     // Stop config store refresh
     configStore.stop();
@@ -299,7 +294,7 @@ async function shutdown(signal: string, exitCode = 0) {
     // Close NATS connection
     await closeNats();
 
-    // Close all SQLite handles AFTER bot/runners/gateway/omni have shut down,
+    // Close all SQLite handles AFTER bot/runners/gateway/channels have shut down,
     // so writes-in-flight have settled. Best-effort: failures are logged but
     // never block the shutdown sequence.
     closeAllRaviDbs();
@@ -337,13 +332,7 @@ export async function startDaemon() {
   // Step 2: Start config store (NATS sub + periodic refresh)
   await configStore.startRefresh();
 
-  // Step 3: Resolve omni connection (optional: native channels work without it)
-  const omniConn = resolveOmniConnection();
-  if (omniConn) {
-    log.info("Omni connection resolved", { apiUrl: omniConn.apiUrl, source: omniConn.source });
-  } else {
-    log.info("Omni not configured — only native channel transports are available");
-  }
+  // Step 3: (no-op) the optional legacy bridge is resolved by createDaemonChannels in step 6.
 
   // Step 4: Ensure SESSION_PROMPTS JetStream stream exists
   // This stream replaces NATS core pub/sub for session routing,
@@ -360,29 +349,23 @@ export async function startDaemon() {
   await bot.start();
   log.info("Bot started");
 
-  // Step 6: Set up the channel transport client + sender + consumer + gateway.
-  // The consumer always reads native transports (CHANNEL_INBOUND); Omni streams only when configured.
-  const channelWiring = createDaemonChannelWiring({
-    omni: omniConn,
-    consumer: {
-      isRuntimeSessionActive: (sessionName) => bot?.isRuntimeSessionActive(sessionName) ?? false,
-      abortRuntimeSession: (sessionName, provenance) => bot?.abortSession(sessionName, provenance) ?? false,
-    },
+  // Step 6: Channel transports (shared inbound pipeline, WhatsApp runner source, optional legacy
+  // bridge source, default-deny sender router), then the gateway.
+  channels = await createDaemonChannels({
+    isRuntimeSessionActive: (sessionName) => bot?.isRuntimeSessionActive(sessionName) ?? false,
+    abortRuntimeSession: (sessionName, provenance) => bot?.abortSession(sessionName, provenance) ?? false,
   });
-  omniConsumer = channelWiring.consumer;
-
-  try {
-    await omniConsumer.start();
-    log.info("Channel consumer started", { sources: channelWiring.sources });
-  } catch (err) {
-    log.error("Failed to start channel consumer", err);
-  }
+  await channels.start();
+  log.info("Channel inbound sources started", {
+    sources: channels.sources.map((source) => source.id),
+    legacyBridge: channels.legacyBridge,
+  });
 
   gateway = createGateway({
     logLevel: config.logLevel,
-    sender: channelWiring.sender,
-    presenceTargets: omniConsumer,
-    groupMetadataFetcher: createWhatsAppGroupMetadataFetcher(createWhatsAppClient()),
+    sender: channels.sender,
+    presenceTargets: channels.presenceTargets,
+    groupMetadataFetcher: channels.groupMetadataFetcher,
   });
 
   await gateway.start();

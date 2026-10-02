@@ -74,7 +74,7 @@ interface ChannelInboundEventBase {
   readonly channelType: string;
   /** Transport instance id (instances.instance_id). */
   readonly instanceId: string;
-  /** Envelope time in ms (was OmniEvent.timestamp). Fallback provider timestamp; reaction cut-off. */
+  /** Envelope time in ms (was the Omni envelope `timestamp`). Fallback provider timestamp; reaction cut-off. */
   readonly timestamp: number;
   readonly ingestMode?: ChannelIngestMode;
   /** Plugin/runner receive time, read by resolvePluginReceivedAtMs for the consumer-lag warning. */
