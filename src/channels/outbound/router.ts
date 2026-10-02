@@ -16,7 +16,13 @@ import type { RouterConfig } from "../../router/types.js";
 import { logger } from "../../utils/logger.js";
 import { isWhatsAppChannelType, isWhatsAppFamilyChannelType, resolveWhatsAppBinding } from "../whatsapp/contract.js";
 import { CHANNEL_TRANSPORT_ERROR_CODES, ChannelTransportError } from "./errors.js";
-import type { ChannelMediaType, ChannelMessageSender, ChannelSendOptions, ChannelSendResult } from "./sender.js";
+import type {
+  ChannelMediaType,
+  ChannelMessageSender,
+  ChannelReactionTarget,
+  ChannelSendOptions,
+  ChannelSendResult,
+} from "./sender.js";
 
 const log = logger.child("channels:outbound-router");
 
@@ -153,8 +159,17 @@ export function createChannelSenderRouter(options: ChannelSenderRouterOptions): 
         log.debug("sendTyping failed", { instanceId, error: err });
       }
     },
-    async sendReaction(instanceId: string, to: string, messageId: string, emoji: string) {
-      return resolveOrThrow(instanceId).sendReaction(instanceId, to, messageId, emoji);
+    async sendReaction(
+      instanceId: string,
+      to: string,
+      messageId: string,
+      emoji: string,
+      target?: ChannelReactionTarget,
+    ) {
+      const sender = resolveOrThrow(instanceId);
+      return target
+        ? sender.sendReaction(instanceId, to, messageId, emoji, target)
+        : sender.sendReaction(instanceId, to, messageId, emoji);
     },
     async deleteMessage(instanceId: string, chatId: string, messageId: string) {
       return resolveOrThrow(instanceId).deleteMessage(instanceId, chatId, messageId);

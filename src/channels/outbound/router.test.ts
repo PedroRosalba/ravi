@@ -156,6 +156,19 @@ describe("createChannelSenderRouter", () => {
     expect(bridge.calls).toEqual([]);
   });
 
+  it("passes a reaction target through only when the caller has one", async () => {
+    const wa = fakeSender("wa");
+    const router = createChannelSenderRouter({ whatsapp: wa.sender, bridge: null, getConfig: config });
+
+    await router.sendReaction(WA_BOUND, "120363@g.us", "m1", "👍", { participant: "123@lid", fromMe: false });
+    await router.sendReaction(WA_BOUND, "120363@g.us", "m2", "👍");
+
+    expect(wa.calls).toEqual([
+      ["sendReaction", WA_BOUND, "120363@g.us", "m1", "👍", { participant: "123@lid", fromMe: false }],
+      ["sendReaction", WA_BOUND, "120363@g.us", "m2", "👍"],
+    ]);
+  });
+
   it("refuses an unmapped UUID with INSTANCE_NOT_FOUND and never calls the bridge", async () => {
     const wa = fakeSender("wa");
     const bridge = fakeSender("bridge");

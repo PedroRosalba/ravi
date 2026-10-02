@@ -20,6 +20,7 @@ import { type TransportRetryOptions, withTransportRetry } from "../outbound/retr
 import type {
   ChannelMediaType,
   ChannelMessageSender,
+  ChannelReactionTarget,
   ChannelSendOptions,
   ChannelSendResult,
 } from "../outbound/sender.js";
@@ -121,12 +122,22 @@ export function createWhatsAppSender(
       }
     },
 
-    async sendReaction(instanceId: string, to: string, messageId: string, emoji: string) {
+    async sendReaction(
+      instanceId: string,
+      to: string,
+      messageId: string,
+      emoji: string,
+      target?: ChannelReactionTarget,
+    ) {
+      const params = {
+        to: toWhatsAppJid(to),
+        messageId,
+        emoji,
+        ...(target?.participant ? { participant: target.participant } : {}),
+        ...(target?.fromMe !== undefined ? { fromMe: target.fromMe } : {}),
+      };
       try {
-        await idempotentRetry(
-          () => client.messages.react(instanceId, { to: toWhatsAppJid(to), messageId, emoji }),
-          `sendReaction(${instanceId})`,
-        );
+        await idempotentRetry(() => client.messages.react(instanceId, params), `sendReaction(${instanceId})`);
       } catch (err) {
         log.error("Failed to send reaction", { instanceId, to, messageId, emoji, error: err });
         throw err;

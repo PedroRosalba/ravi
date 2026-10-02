@@ -41,6 +41,7 @@ const WHATSAPP_FOCUSED_TESTS = [
   "src/channels/whatsapp/channel-name.test.ts",
   "src/channels/whatsapp/provisioning.test.ts",
   "src/channels/whatsapp/contract.test.ts",
+  "src/channels/whatsapp/reaction-target.test.ts",
   // Daemon-side reader of runner-downloaded media.
   "src/channels/whatsapp/local-media.test.ts",
 ];

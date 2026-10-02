@@ -23,12 +23,30 @@ export interface ChannelSendResult {
 
 export type ChannelMediaType = "image" | "video" | "audio" | "document";
 
+/**
+ * What the caller knows about the message a reaction targets. Optional: a sender that
+ * does not need it ignores it. WhatsApp group reactions address the message key, which
+ * includes its sender (`participant`); the runner only remembers recent keys in memory.
+ */
+export interface ChannelReactionTarget {
+  /** Sender id of the target message in a group (WhatsApp: the message key's participant JID). */
+  participant?: string;
+  /** Whether this instance sent the target message. */
+  fromMe?: boolean;
+}
+
 /** Instance-keyed sender. Method shapes deliberately match the legacy bridge sender. */
 export interface ChannelMessageSender {
   send(instanceId: string, to: string, text: string, options?: ChannelSendOptions): Promise<ChannelSendResult>;
   /** Best-effort: never throws. active=false sends "paused". */
   sendTyping(instanceId: string, to: string, active?: boolean): Promise<void>;
-  sendReaction(instanceId: string, to: string, messageId: string, emoji: string): Promise<void>;
+  sendReaction(
+    instanceId: string,
+    to: string,
+    messageId: string,
+    emoji: string,
+    target?: ChannelReactionTarget,
+  ): Promise<void>;
   deleteMessage(instanceId: string, chatId: string, messageId: string): Promise<void>;
   editMessage(instanceId: string, chatId: string, messageId: string, text: string): Promise<void>;
   /** A relative `localPath` is resolved against process.cwd() (parity). The RPC then gets the absolute path. */

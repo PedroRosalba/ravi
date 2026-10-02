@@ -249,6 +249,21 @@ describe("createWhatsAppSender", () => {
     expect(sleeps).toEqual([]);
   });
 
+  it("passes a known reaction target (participant, fromMe) to the runner", async () => {
+    const { sender, calls } = harness();
+    await sender.sendReaction(NATIVE_ID, "group:120363", "M1", "👍", { participant: "123@lid", fromMe: false });
+    await sender.sendReaction(NATIVE_ID, "group:120363", "M2", "🔥", { fromMe: true });
+    await sender.sendReaction(NATIVE_ID, "group:120363", "M3", "👍", {});
+    expect(calls).toEqual([
+      {
+        method: "messages.react",
+        params: { to: "120363@g.us", messageId: "M1", emoji: "👍", participant: "123@lid", fromMe: false },
+      },
+      { method: "messages.react", params: { to: "120363@g.us", messageId: "M2", emoji: "🔥", fromMe: true } },
+      { method: "messages.react", params: { to: "120363@g.us", messageId: "M3", emoji: "👍" } },
+    ]);
+  });
+
   it("retries idempotent reaction, edit and delete on 504/502 as well", async () => {
     const { sender, calls, sleeps } = harness({
       "messages.react": [timeout(), { messageId: "R", success: true }],

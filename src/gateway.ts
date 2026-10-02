@@ -58,6 +58,7 @@ import {
 } from "./router/router-db.js";
 import { prepareMentionMessage, type ChannelUserMention } from "./channels/mentions.js";
 import { resolveGroupMetadata } from "./channels/group-metadata/cache.js";
+import { findWhatsAppGroupReactionTarget } from "./channels/whatsapp/reaction-target.js";
 import { buildRaviTtsRequest, handleRaviTtsRequest, RAVI_TTS_TOPIC, shouldAutoTtsForAgent } from "./audio/tts.js";
 import { handleSlackThreadCreationDelivery, reconcileSlackThreadLifecycle } from "./channels/slack/thread-lifecycle.js";
 import { sendSlackMedia } from "./channels/slack/media.js";
@@ -1888,7 +1889,16 @@ export class Gateway {
         return;
       }
       const reactionChatId = normalizeOutboundJid(data.chatId);
-      await this.sender.sendReaction(resolved.instanceId, reactionChatId, data.messageId, data.emoji);
+      // A group reaction addresses the target's sender; the ledger still knows it after a runner restart.
+      const target =
+        resolved.kind === "whatsapp"
+          ? findWhatsAppGroupReactionTarget(resolved.instanceId, reactionChatId, data.messageId)
+          : undefined;
+      if (target) {
+        await this.sender.sendReaction(resolved.instanceId, reactionChatId, data.messageId, data.emoji, target);
+      } else {
+        await this.sender.sendReaction(resolved.instanceId, reactionChatId, data.messageId, data.emoji);
+      }
       log.info("Reaction sent", { chatId: reactionChatId, messageId: data.messageId, emoji: data.emoji });
     } catch (err) {
       log.error("Failed to send reaction", { error: err });

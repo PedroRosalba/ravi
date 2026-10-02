@@ -5,7 +5,7 @@ import type { SlackTextSendInput } from "./channels/slack/text-send.js";
 import type { requestWhatsAppRpc } from "./channels/whatsapp/rpc-client.js";
 import * as slackTextSend from "./channels/slack/text-send.js";
 import type { ResponseMessage } from "./runtime/message-types.js";
-import { dbUpsertChannel, dbUpsertInstance, getDb } from "./router/router-db.js";
+import { dbUpsertChannel, dbUpsertChat, dbUpsertChatMessage, dbUpsertInstance, getDb } from "./router/router-db.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "./test/ravi-state.js";
 
 const publishedJobs: ChannelOutboundJob[] = [];
@@ -1046,6 +1046,51 @@ describe("Gateway outbound routing (WhatsApp never reaches the legacy bridge)", 
     ]);
     expect(bridgeCalls()).toBe(0);
     expect(emitted).toEqual([["ravi.reply.wa", { success: true, messageId: "wa-1" }]]);
+  });
+
+  it("passes the stored sender of a group message with the reaction (survives a runner restart)", async () => {
+    seedWhatsAppAccount({ bound: true });
+    const group = "120363407390920496@g.us";
+    const chat = dbUpsertChat({ channel: "whatsapp", instanceId: WA_UUID, platformChatId: group, chatType: "group" });
+    dbUpsertChatMessage({
+      chatId: chat.id,
+      channel: "whatsapp",
+      instanceId: WA_UUID,
+      providerMessageId: "WAMID-IN",
+      rawChatId: group,
+      rawSenderId: "112233445566778",
+      actorType: "contact",
+      rawProvenance: {
+        source: "whatsapp.message.received",
+        rawPayload: { key: { remoteJid: group, id: "WAMID-IN", fromMe: false, participant: "112233445566778@lid" } },
+      },
+    });
+    const { gateway, rpcCalls, bridgeCalls } = await createRoutedGateway();
+
+    await handleReaction(gateway, {
+      channel: "whatsapp",
+      accountId: "main",
+      chatId: "group:120363407390920496",
+      messageId: "WAMID-IN",
+      emoji: "👍",
+    });
+    await handleReaction(gateway, {
+      channel: "whatsapp",
+      accountId: "main",
+      chatId: group,
+      messageId: "WAMID-UNKNOWN",
+      emoji: "👍",
+    });
+
+    expect(rpcCalls).toEqual([
+      {
+        instanceId: WA_UUID,
+        method: "messages.react",
+        params: { to: group, messageId: "WAMID-IN", emoji: "👍", participant: "112233445566778@lid", fromMe: false },
+      },
+      { instanceId: WA_UUID, method: "messages.react", params: { to: group, messageId: "WAMID-UNKNOWN", emoji: "👍" } },
+    ]);
+    expect(bridgeCalls()).toBe(0);
   });
 
   it("fails an unbound WhatsApp account with WHATSAPP_NOT_BOUND and never calls the bridge", async () => {
