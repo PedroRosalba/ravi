@@ -255,7 +255,10 @@ cite this exception.
   the device, wipes the creds); without `--execute` it is a dry-run (exit 3).
   When the runner does not answer it wipes the creds locally.
   `ravi instances delete <name>` also logs out (runner, else local wipe)
-  before the soft delete.
+  before the soft delete, and MUST then disable the instance's WhatsApp
+  channel (before `ravi.config.changed`) so the runner stops it instead of
+  failing an unbound start. `ravi instances restore <name>` MUST set the
+  channel back to the restored instance's `enabled` state.
 - `ravi instances enable|disable <name>` MUST also set `channels.enabled` on
   the instance's WhatsApp channel: disable stops the runtime and keeps the
   creds, enable starts it again.

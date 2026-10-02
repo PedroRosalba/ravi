@@ -28,7 +28,7 @@ Taxonomia de saída:
 - `2` erro de uso (flag/argumento inválido). O envelope traz `acceptedFlags`: corrija a chamada, não insista na mesma sintaxe.
 - `3` freio de escrita — não é erro. Nada foi gravado; o envelope traz `dryRun:true` e `plan` com exatamente o que seria feito. Revise o plano e repita com `--execute`.
 
-Onde o freio existe hoje: `instances logout` e `instances pending reject` são dry-run por default e exigem `--execute`. As demais escritas gravam na hora, sem dry-run: `create`, `set`, `enable`, `disable`, `restore`, `delete`, `disconnect`, `connect` (interativo com QR — humano no loop), `routes add`, `routes set`, `routes remove`, `routes restore`, `pending approve`. Nessas o freio é você: confira o alvo antes de rodar. Atenção: `delete` numa instância WhatsApp também desloga e apaga as credenciais; `restore` traz a config de volta, mas é preciso parear de novo com `connect`.
+Onde o freio existe hoje: `instances logout` e `instances pending reject` são dry-run por default e exigem `--execute`. As demais escritas gravam na hora, sem dry-run: `create`, `set`, `enable`, `disable`, `restore`, `delete`, `disconnect`, `connect` (interativo com QR — humano no loop), `routes add`, `routes set`, `routes remove`, `routes restore`, `pending approve`. Nessas o freio é você: confira o alvo antes de rodar. Atenção: `delete` numa instância WhatsApp também desloga, apaga as credenciais e desliga o canal; `restore` traz a config de volta (e religa o canal se a instância está habilitada), mas é preciso parear de novo com `connect`.
 
 Compact mode: `instances list` e `routes list` aceitam `--fields a,b,c` (ex.: `--fields name,channel,agent`) — use em varredura para não arrastar o objeto inteiro de cada instância/rota.
 
@@ -90,7 +90,8 @@ Keys disponíveis:
 
 ### Remover instância
 ```bash
-ravi instances delete <name>            # soft-delete imediato, recuperável com restore (WhatsApp: desloga e apaga as credenciais)
+ravi instances delete <name>            # soft-delete imediato, recuperável com restore (WhatsApp: desloga, apaga as credenciais e desliga o canal)
+ravi instances restore <name>           # restaura; WhatsApp: religa o canal se a instância está habilitada (pareie de novo com connect)
 ```
 
 ## Conexão de Canal

@@ -26,6 +26,7 @@
 - [ ] `connection.disconnect` MUST persist across runner restarts (health `disconnected` / `manual_disconnect`) until `connection.connect`; a disconnect during the Baileys load MUST be honoured.
 - [ ] `ravi instances logout` MUST be a dry-run (exit 3) without `--execute`, and with it MUST wipe the creds through the runner or, when the runner does not answer, locally.
 - [ ] `instances enable|disable` MUST also toggle `channels.enabled` on the instance's WhatsApp channel.
+- [ ] `instances delete` MUST disable the instance's WhatsApp channel, and `instances restore` MUST set it back to the restored instance's `enabled` state.
 - [ ] Auth state MUST be stored in `<RAVI_STATE_DIR>/whatsapp/auth.db` with file mode 0600; one `keys.set` MUST be one transaction, and a failed write MUST stay dirty and be retried.
 - [ ] Runtime `start()` MUST return without network I/O and report `starting` / `pairing_required` when no creds exist.
 - [ ] Health MUST report `failed` / `missing_dependency` when Baileys cannot be loaded; a failed QR-cycle reset MUST report `disconnected` / `qr_reset_failed` instead of crashing the runner.

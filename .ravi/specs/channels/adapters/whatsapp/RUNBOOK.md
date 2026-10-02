@@ -159,7 +159,11 @@ A code rollback (redeploying the previous bundle) is possible. Its effects:
 - `ravi instances disable|enable <name>`: also turns the WhatsApp channel off or
   on; disable keeps the creds.
 - `ravi instances delete <name>`: logs out (runner, else a local wipe of
-  `auth.db` rows) and soft-deletes the instance.
+  `auth.db` rows), soft-deletes the instance and disables its WhatsApp
+  channel, so the runner stops it and stays `ready`.
+- `ravi instances restore <name>`: restores the instance and re-enables its
+  channel when the instance is enabled; pair it again with
+  `ravi instances connect <name>` when delete wiped the creds.
 
 ## Debug
 

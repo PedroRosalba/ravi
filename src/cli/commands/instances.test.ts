@@ -1023,6 +1023,67 @@ describe("instances delete", () => {
     expect(clearedAuth).toEqual([]);
   });
 
+  it("disables the instance's WhatsApp channel so the runner stops it instead of failing an unbound start", async () => {
+    seedWhatsAppInstance();
+    const runner = fakeRunner({ "connection.logout": () => ({}) });
+    useDeps({ runner });
+
+    const payload = await new InstancesCommands().delete("wa-main", true);
+
+    expect(payload).toMatchObject({
+      status: "deleted",
+      channel: { name: "wa-main", enabled: false, changed: true },
+      changedCount: 2,
+    });
+    expect(dbGetChannel("wa-main")).toMatchObject({ enabled: false });
+    expect(dbGetChannel("wa-main")?.deletedAt).toBeFalsy();
+  });
+
+  it("prints the channel change in text mode", async () => {
+    seedWhatsAppInstance();
+    useDeps({ runner: fakeRunner({ "connection.logout": () => ({}) }) });
+
+    await new InstancesCommands().delete("wa-main", false);
+
+    expect(output.join("\n")).toContain("WhatsApp channel disabled: wa-main");
+  });
+
+  it("restore re-enables the channel of an enabled instance", async () => {
+    seedWhatsAppInstance();
+    useDeps({ runner: fakeRunner({ "connection.logout": () => ({}) }) });
+    await new InstancesCommands().delete("wa-main", true);
+    output = [];
+
+    const payload = new InstancesCommands().restore("wa-main", false);
+
+    expect(payload).toMatchObject({
+      status: "restored",
+      channel: { name: "wa-main", enabled: true, changed: true },
+      changedCount: 2,
+    });
+    expect(dbGetInstance("wa-main")).toMatchObject({ name: "wa-main" });
+    expect(dbGetChannel("wa-main")).toMatchObject({ enabled: true });
+    expect(output.join("\n")).toContain("WhatsApp channel enabled: wa-main");
+    expect(output.join("\n")).toContain("ravi instances connect wa-main");
+  });
+
+  it("restore leaves the channel of a disabled instance disabled", async () => {
+    seedWhatsAppInstance();
+    useDeps({ runner: fakeRunner({}) });
+    new InstancesCommands().disable("wa-main", true);
+    await new InstancesCommands().delete("wa-main", true);
+
+    const payload = new InstancesCommands().restore("wa-main", true);
+
+    expect(payload).toMatchObject({
+      status: "restored",
+      channel: { name: "wa-main", enabled: false, changed: false },
+      changedCount: 1,
+    });
+    expect(dbGetInstance("wa-main")).toMatchObject({ enabled: false });
+    expect(dbGetChannel("wa-main")).toMatchObject({ enabled: false });
+  });
+
   it("clears the credentials through the auth store when the runner does not log out", async () => {
     const instanceId = seedWhatsAppInstance();
     const runner = fakeRunner({});
@@ -1042,7 +1103,7 @@ describe("instances delete", () => {
 
     const payload = await new InstancesCommands().delete("tg", true);
 
-    expect(payload).toMatchObject({ status: "deleted", whatsappLogout: null });
+    expect(payload).toMatchObject({ status: "deleted", whatsappLogout: null, channel: null, changedCount: 1 });
     expect(runner.calls).toEqual([]);
     expect(clearedAuth).toEqual([]);
   });

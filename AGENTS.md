@@ -73,7 +73,8 @@ ravi instances logout <name> --execute     # unlink the device, wipe creds (dry-
 - A `channels` row with provider `whatsapp` bound to the instance is what the
   runner serves. The transport instance id stays `instances.instance_id`.
   `instances enable|disable` also toggle that channel row; `instances delete`
-  logs the device out first.
+  logs the device out first and disables the channel row, and
+  `instances restore` re-enables it for an enabled instance.
 - `WHATSAPP_RUNNER_UNAVAILABLE` means no runner answered: run
   `ravi channels start` (or `restart`) and repeat the command.
 - Health reasons: `pairing_required` / `logged_out` (pair again),

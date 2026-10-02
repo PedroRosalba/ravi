@@ -211,8 +211,8 @@ Instances follow a lifecycle that supports recovery:
 3. **Active** — Messages flow through the instance, routed to agents
 4. **Disconnect** — `ravi instances disconnect` closes the connection and keeps the credentials; for WhatsApp it persists across runner restarts until the next `connect`
 5. **Logout** — `ravi instances logout <name> --execute` (WhatsApp only, dry-run without `--execute`) unlinks the device and wipes the credentials; a new QR pairing is needed
-6. **Delete (soft)** — `ravi instances delete` marks the instance as deleted but keeps the data; for WhatsApp it also logs out
-7. **Restore** — `ravi instances restore` recovers a soft-deleted instance (a WhatsApp instance needs a new `connect`)
+6. **Delete (soft)** — `ravi instances delete` marks the instance as deleted but keeps the data; for WhatsApp it also logs out and disables the instance's channel
+7. **Restore** — `ravi instances restore` recovers a soft-deleted instance and re-enables its WhatsApp channel when the instance is enabled (a WhatsApp instance needs a new `connect`)
 
 ```bash
 # Soft-delete an instance immediately

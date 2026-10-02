@@ -1075,8 +1075,9 @@ async function logoutWhatsApp(
 }
 
 /**
- * D18: a WhatsApp instance's channel row follows `instances enable|disable`, so the runner
- * starts or stops its runtime. Returns null for non-WhatsApp instances or when no channel exists.
+ * D18: a WhatsApp instance's channel row follows `instances enable|disable` (and `delete` /
+ * `restore`), so the runner starts or stops its runtime. Returns null for non-WhatsApp
+ * instances or when no channel exists.
  */
 function syncWhatsAppChannelEnabled(
   inst: InstanceConfig,
@@ -1975,7 +1976,8 @@ export class InstancesCommands {
   // --------------------------------------------------------------------------
   @Command({
     name: "delete",
-    description: "Delete an instance (soft-delete, recoverable; WhatsApp: also logs out and wipes its credentials)",
+    description:
+      "Delete an instance (soft-delete, recoverable; WhatsApp: also logs out, wipes its credentials and disables its channel)",
   })
   @CommandAccess({ kind: "mutate", resource: "instances", action: "delete", risk: "medium" })
   async delete(
@@ -1997,16 +1999,21 @@ export class InstancesCommands {
 
     const deleted = dbDeleteInstance(name);
     if (!deleted) fail(`Failed to delete instance: ${name}`);
+    // Before the config change: the runner then stops the channel instead of retrying an
+    // unbound start (a deleted instance has no binding) and reporting itself degraded.
+    const channel = syncWhatsAppChannelEnabled(inst, false);
     const payload = {
       status: "deleted" as const,
       instance: inst,
       whatsappLogout,
-      changedCount: 1,
+      channel,
+      changedCount: 1 + (channel?.changed ? 1 : 0),
     };
     if (asJson) {
       printJson(payload);
     } else {
       console.log(`✓ Instance deleted: ${name} (recoverable with: ravi instances restore ${name})`);
+      if (channel?.changed) console.log(`  WhatsApp channel disabled: ${channel.name} (the channel runner stops it)`);
       if (whatsappLogout?.via === "runner") console.log("  WhatsApp logged out: device unlinked, credentials wiped");
       if (whatsappLogout?.via === "auth-store") {
         console.log("  WhatsApp credentials wiped locally (the channel runner did not log out).");
@@ -2023,7 +2030,10 @@ export class InstancesCommands {
   // --------------------------------------------------------------------------
   // restore
   // --------------------------------------------------------------------------
-  @Command({ name: "restore", description: "Restore a soft-deleted instance" })
+  @Command({
+    name: "restore",
+    description: "Restore a soft-deleted instance (WhatsApp: re-enables its channel when the instance is enabled)",
+  })
   @CommandAccess({ kind: "mutate", resource: "instances", action: "restore", risk: "medium" })
   restore(
     @Arg("name", { description: "Instance name" }) name: string,
@@ -2031,15 +2041,23 @@ export class InstancesCommands {
   ) {
     const ok = dbRestoreInstance(name);
     if (ok) {
+      const restored = dbGetInstance(name);
+      // `delete` disabled the WhatsApp channel; it follows the restored instance's state again.
+      const channel = restored ? syncWhatsAppChannelEnabled(restored, restored.enabled !== false) : null;
       const payload = {
         status: "restored" as const,
-        instance: dbGetInstance(name),
-        changedCount: 1,
+        instance: restored,
+        channel,
+        changedCount: 1 + (channel?.changed ? 1 : 0),
       };
       if (asJson) {
         printJson(payload);
       } else {
         console.log(`✓ Instance restored: ${name}`);
+        if (channel?.changed && channel.enabled) {
+          console.log(`  WhatsApp channel enabled: ${channel.name} (the channel runner starts it)`);
+          console.log(`  Pair it again if delete wiped its credentials: ravi instances connect ${name}`);
+        }
       }
       emitConfigChanged();
       return payload;
