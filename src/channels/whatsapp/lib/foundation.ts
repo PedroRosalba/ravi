@@ -141,6 +141,12 @@ export interface SendResult {
 // Plugin storage (@omni/channel-sdk PluginStorage)
 // ============================================================================
 
+/** One write of a batch: `value` null deletes the key. */
+export interface AuthStorageWrite {
+  readonly key: string;
+  readonly value: string | null;
+}
+
 /** Key-value storage the auth state persists through (see auth-store.ts for SQLite). */
 export interface PluginStorage {
   get<T>(key: string): Promise<T | null>;
@@ -149,6 +155,8 @@ export interface PluginStorage {
   has(key: string): Promise<boolean>;
   /** List keys matching a glob pattern (`*` wildcard). */
   keys(pattern?: string): Promise<string[]>;
+  /** Apply a batch of writes atomically (one transaction). Optional: without it, auth.ts writes key by key. */
+  writeMany?(writes: readonly AuthStorageWrite[]): Promise<void>;
 }
 
 // ============================================================================

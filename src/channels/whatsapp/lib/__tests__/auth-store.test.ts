@@ -1,14 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { Database } from "bun:sqlite";
+import { existsSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import { getDb } from "../../../../router/router-db.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../../../../test/ravi-state.js";
 import { loadBaileys } from "../../baileys-loader.js";
 import { clearAuthState, clearSenderKeys, createStorageAuthState } from "../auth.js";
 import {
   SqliteWhatsAppAuthStorage,
+  WHATSAPP_AUTH_META_TABLE,
+  WHATSAPP_AUTH_ROUTER_COPY_MARKER,
   WHATSAPP_AUTH_STATE_TABLE,
   clearWhatsAppAuthState,
+  closeWhatsAppAuthDbs,
   hasWhatsAppAuthCreds,
+  isWhatsAppManuallyDisconnected,
+  openWhatsAppAuthDb,
   parseWhatsAppAuthKey,
+  whatsappAuthDbPath,
 } from "../auth-store.js";
 
 const { BufferJSON, initAuthCreds, proto } = await loadBaileys();
@@ -19,6 +28,19 @@ const OTHER_INSTANCE = "5f0c1d2e-0000-4000-8000-000000000002";
 /** Let auth.ts' fire-and-forget background persists settle. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
+/** The auth database of the isolated state dir. */
+const authDb = () => openWhatsAppAuthDb();
+
+/** Seed the pre-auth.db router-DB table the way the old store wrote it. */
+function seedRouterTable(rows: Array<[string, string, string, number]>): void {
+  const db = getDb();
+  db.exec(`CREATE TABLE IF NOT EXISTS ${WHATSAPP_AUTH_STATE_TABLE} (
+    instance_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, updated_at INTEGER NOT NULL,
+    PRIMARY KEY (instance_id, key))`);
+  const insert = db.prepare(`INSERT INTO ${WHATSAPP_AUTH_STATE_TABLE} VALUES (?, ?, ?, ?)`);
+  for (const row of rows) insert.run(...row);
+}
+
 let stateDir: string | null = null;
 
 beforeEach(async () => {
@@ -26,6 +48,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  closeWhatsAppAuthDbs();
   await cleanupIsolatedRaviState(stateDir);
   stateDir = null;
 });
@@ -47,11 +70,11 @@ describe("parseWhatsAppAuthKey", () => {
 });
 
 describe("SqliteWhatsAppAuthStorage", () => {
-  it("lazily creates whatsapp_auth_state with the (instance_id, key) primary key", async () => {
+  it("lazily creates whatsapp_auth_state in auth.db with the (instance_id, key) primary key", async () => {
     const storage = new SqliteWhatsAppAuthStorage();
     await storage.set(`auth:${INSTANCE}:creds`, "{}");
 
-    const columns = getDb().prepare(`PRAGMA table_info(${WHATSAPP_AUTH_STATE_TABLE})`).all() as Array<{
+    const columns = authDb().prepare(`PRAGMA table_info(${WHATSAPP_AUTH_STATE_TABLE})`).all() as Array<{
       name: string;
       pk: number;
     }>;
@@ -68,7 +91,7 @@ describe("SqliteWhatsAppAuthStorage", () => {
     expect(await storage.get<string>(`auth:${OTHER_INSTANCE}:keys:pre-key:1`)).toBeNull();
     expect(await storage.has(`auth:${INSTANCE}:keys:pre-key:1`)).toBe(true);
 
-    const row = getDb().prepare(`SELECT instance_id, key, updated_at FROM ${WHATSAPP_AUTH_STATE_TABLE}`).get() as {
+    const row = authDb().prepare(`SELECT instance_id, key, updated_at FROM ${WHATSAPP_AUTH_STATE_TABLE}`).get() as {
       instance_id: string;
       key: string;
       updated_at: number;
@@ -137,6 +160,147 @@ describe("SqliteWhatsAppAuthStorage", () => {
     expect(await storage.keys(`auth:${INSTANCE}:*`)).toEqual([]);
     expect(await storage.get<string>(`auth:${OTHER_INSTANCE}:creds`)).toBe("other");
     expect(clearWhatsAppAuthState(OTHER_INSTANCE)).toBe(1);
+  });
+});
+
+describe("auth.db file", () => {
+  it("lives in <state>/whatsapp/auth.db, outside the router DB, in WAL mode", async () => {
+    const storage = new SqliteWhatsAppAuthStorage();
+    await storage.set(`auth:${INSTANCE}:creds`, "{}");
+    expect(whatsappAuthDbPath()).toBe(`${stateDir}/whatsapp/auth.db`);
+    expect(existsSync(whatsappAuthDbPath())).toBe(true);
+    expect((authDb().prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode).toBe("wal");
+    expect((authDb().prepare("PRAGMA busy_timeout").get() as { timeout: number }).timeout).toBe(250);
+    const routerTable = getDb()
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(WHATSAPP_AUTH_STATE_TABLE);
+    expect(routerTable).toBeNull();
+  });
+
+  it("creates the file 0600 (WAL sidecars too) in a 0700 directory", async () => {
+    const storage = new SqliteWhatsAppAuthStorage();
+    await storage.set(`auth:${INSTANCE}:creds`, "{}");
+    const path = whatsappAuthDbPath();
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
+    for (const sidecar of [`${path}-wal`, `${path}-shm`]) {
+      if (existsSync(sidecar)) expect(statSync(sidecar).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("copies the router-DB rows once and never again (rows already in auth.db win)", async () => {
+    seedRouterTable([
+      [INSTANCE, "creds", '{"me":{"id":"5511999990000:1@s.whatsapp.net"}}', 10],
+      [INSTANCE, "keys:pre-key:1", "p1", 11],
+    ]);
+    expect(hasWhatsAppAuthCreds(INSTANCE)).toBe(true);
+    const storage = new SqliteWhatsAppAuthStorage();
+    expect(await storage.get<string>(`auth:${INSTANCE}:keys:pre-key:1`)).toBe("p1");
+    const marker = authDb()
+      .prepare(`SELECT value FROM ${WHATSAPP_AUTH_META_TABLE} WHERE key = ?`)
+      .get(WHATSAPP_AUTH_ROUTER_COPY_MARKER);
+    expect(marker).not.toBeNull();
+
+    // A later router-DB row (another process on the old store) is not copied again, even after a reopen.
+    await storage.delete(`auth:${INSTANCE}:keys:pre-key:1`);
+    seedRouterTable([[INSTANCE, "keys:pre-key:2", "p2", 12]]);
+    closeWhatsAppAuthDbs();
+    const reopened = new SqliteWhatsAppAuthStorage();
+    expect(await reopened.get(`auth:${INSTANCE}:keys:pre-key:1`)).toBeNull();
+    expect(await reopened.get(`auth:${INSTANCE}:keys:pre-key:2`)).toBeNull();
+    // The old table is left untouched.
+    expect((getDb().prepare(`SELECT COUNT(*) AS n FROM ${WHATSAPP_AUTH_STATE_TABLE}`).get() as { n: number }).n).toBe(
+      3,
+    );
+  });
+
+  it("writeMany applies upserts and deletes in one transaction", async () => {
+    const storage = new SqliteWhatsAppAuthStorage({ now: () => 77 });
+    await storage.set(`auth:${INSTANCE}:keys:pre-key:1`, "old");
+    const db = authDb();
+    const before = db.query("SELECT total_changes() AS n").get() as { n: number };
+    const originalTransaction = db.transaction.bind(db);
+    let transactions = 0;
+    // Count transactions opened by writeMany.
+    db.transaction = ((fn: (...args: never[]) => unknown) => {
+      transactions++;
+      return originalTransaction(fn);
+    }) as typeof db.transaction;
+    try {
+      await storage.writeMany([
+        { key: `auth:${INSTANCE}:keys:pre-key:1`, value: null },
+        { key: `auth:${INSTANCE}:keys:pre-key:2`, value: "two" },
+        { key: `auth:${INSTANCE}:keys:pre-key:3`, value: "three" },
+      ]);
+    } finally {
+      db.transaction = originalTransaction;
+    }
+    expect(transactions).toBe(1);
+    expect((db.query("SELECT total_changes() AS n").get() as { n: number }).n - before.n).toBe(3);
+    expect((await storage.keys(`auth:${INSTANCE}:*`)).sort()).toEqual([
+      `auth:${INSTANCE}:keys:pre-key:2`,
+      `auth:${INSTANCE}:keys:pre-key:3`,
+    ]);
+  });
+
+  it("retries a locked database asynchronously, then succeeds", async () => {
+    const path = whatsappAuthDbPath();
+    let sleeps = 0;
+    let locker: Database | null = null;
+    // The other connection releases its write lock during the second retry sleep.
+    const storage = new SqliteWhatsAppAuthStorage({
+      sleep: async () => {
+        sleeps++;
+        if (sleeps === 2) locker?.exec("COMMIT");
+      },
+    });
+    await storage.set(`auth:${INSTANCE}:creds`, "{}");
+    locker = new Database(path);
+    locker.exec("PRAGMA busy_timeout = 0");
+    locker.exec("BEGIN IMMEDIATE");
+    try {
+      await storage.set(`auth:${INSTANCE}:keys:pre-key:9`, "nine");
+    } finally {
+      if (locker.inTransaction) locker.exec("ROLLBACK");
+      locker.close();
+    }
+    // Locked twice (two retry sleeps), then the write went through.
+    expect(sleeps).toBe(2);
+    expect(await storage.get<string>(`auth:${INSTANCE}:keys:pre-key:9`)).toBe("nine");
+  });
+
+  it("gives up with the lock error after lockRetries attempts", async () => {
+    const path = whatsappAuthDbPath();
+    const storage = new SqliteWhatsAppAuthStorage({ lockRetries: 1, sleep: async () => {} });
+    await storage.set(`auth:${INSTANCE}:creds`, "{}");
+    const locker = new Database(path);
+    locker.exec("BEGIN IMMEDIATE");
+    try {
+      await expect(storage.set(`auth:${INSTANCE}:keys:pre-key:9`, "nine")).rejects.toThrow(/locked|busy/i);
+    } finally {
+      locker.exec("ROLLBACK");
+      locker.close();
+    }
+  });
+});
+
+describe("manual-disconnect marker", () => {
+  it("is persisted per instance and cleared with the auth state", async () => {
+    const storage = new SqliteWhatsAppAuthStorage({ now: () => 5 });
+    expect(storage.isManuallyDisconnected(INSTANCE)).toBe(false);
+    storage.setManuallyDisconnected(INSTANCE, true);
+    expect(isWhatsAppManuallyDisconnected(INSTANCE)).toBe(true);
+    expect(isWhatsAppManuallyDisconnected(OTHER_INSTANCE)).toBe(false);
+
+    closeWhatsAppAuthDbs();
+    expect(new SqliteWhatsAppAuthStorage().isManuallyDisconnected(INSTANCE)).toBe(true);
+
+    storage.setManuallyDisconnected(INSTANCE, false);
+    expect(storage.isManuallyDisconnected(INSTANCE)).toBe(false);
+
+    storage.setManuallyDisconnected(INSTANCE, true);
+    clearWhatsAppAuthState(INSTANCE);
+    expect(storage.isManuallyDisconnected(INSTANCE)).toBe(false);
   });
 });
 

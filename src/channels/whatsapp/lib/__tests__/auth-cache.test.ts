@@ -386,3 +386,216 @@ describe("Auth key store write-behind cache (#70)", () => {
     });
   });
 });
+
+/** In-memory store with `writeMany` (one call = one transaction) and scripted failures. */
+function createBatchStorage(options: { failWrites?: number } = {}) {
+  const data = new Map<string, string>();
+  const batches: Array<Array<{ key: string; value: string | null }>> = [];
+  let failuresLeft = options.failWrites ?? 0;
+  let gate: Promise<void> | null = null;
+  const storage: PluginStorage = {
+    async get<T>(key: string): Promise<T | null> {
+      return (data.get(key) ?? null) as T | null;
+    },
+    async set(key: string, value: unknown): Promise<void> {
+      data.set(key, String(value));
+    },
+    async delete(key: string): Promise<boolean> {
+      return data.delete(key);
+    },
+    async has(key: string): Promise<boolean> {
+      return data.has(key);
+    },
+    async keys(pattern?: string): Promise<string[]> {
+      const keys = Array.from(data.keys());
+      return pattern ? keys.filter((key) => patternToRegex(pattern).test(key)) : keys;
+    },
+    async writeMany(writes) {
+      const batch = writes.map((write) => ({ ...write }));
+      batches.push(batch);
+      if (gate) await gate;
+      if (failuresLeft > 0) {
+        failuresLeft--;
+        throw new Error("database is locked");
+      }
+      for (const write of batch) {
+        if (write.value === null) data.delete(write.key);
+        else data.set(write.key, write.value);
+      }
+    },
+  };
+  return {
+    storage,
+    data,
+    batches,
+    /** Hold every write until the returned release function runs. */
+    hold(): () => void {
+      let release = () => {};
+      gate = new Promise<void>((resolve) => {
+        release = () => {
+          gate = null;
+          resolve();
+        };
+      });
+      return release;
+    },
+  };
+}
+
+/** Manual retry timers: nothing fires on its own. */
+function manualRetry() {
+  const timers: Array<{ callback: () => void; ms: number }> = [];
+  return {
+    timers,
+    retry: {
+      setTimer: (callback: () => void, ms: number) => {
+        const entry = { callback, ms };
+        timers.push(entry);
+        return entry;
+      },
+      clearTimer: (handle: unknown) => {
+        const index = timers.indexOf(handle as { callback: () => void; ms: number });
+        if (index >= 0) timers.splice(index, 1);
+      },
+      sleep: async () => {},
+      random: () => 0.5,
+    },
+  };
+}
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+describe("auth write queue (auth.db write-behind)", () => {
+  const instanceId = "queue-instance";
+  const preKey = (id: string) => `auth:${instanceId}:keys:pre-key:${id}`;
+
+  it("writes ONE transaction per keys.set, covering every entry", async () => {
+    const store = createBatchStorage();
+    const { state, flush } = await createStorageAuthState(store.storage, instanceId);
+    await state.keys.set({
+      "pre-key": { "1": { public: Buffer.from([1]), private: Buffer.from([2]) }, "2": null },
+      session: { abc: Buffer.from([3]) },
+    });
+    expect(await flush()).toBe(true);
+    expect(store.batches).toHaveLength(1);
+    expect(store.batches[0]?.map((write) => write.key).sort()).toEqual(
+      [preKey("1"), preKey("2"), `auth:${instanceId}:keys:session:abc`].sort(),
+    );
+    expect(store.batches[0]?.find((write) => write.key === preKey("2"))?.value).toBeNull();
+  });
+
+  it("retries a locked store with backoff and flush() waits until the keys are written", async () => {
+    const store = createBatchStorage({ failWrites: 2 });
+    const { timers, retry } = manualRetry();
+    const handle = await createStorageAuthState(store.storage, instanceId, { retry });
+    await handle.state.keys.set({ "pre-key": { "5": { public: Buffer.from([5]), private: Buffer.from([5]) } } });
+    await tick();
+    // First background attempt failed: the key is dirty and a jittered 250 ms retry is armed.
+    expect(store.batches).toHaveLength(1);
+    expect(handle.pendingWrites()).toBe(1);
+    expect(timers.map((timer) => timer.ms)).toEqual([250]);
+
+    // flush() keeps trying (second attempt locked too) and resolves only once written.
+    expect(await handle.flush({ timeoutMs: 5_000 })).toBe(true);
+    expect(store.batches).toHaveLength(3);
+    expect(store.data.has(preKey("5"))).toBe(true);
+    expect(handle.pendingWrites()).toBe(0);
+    expect(timers).toHaveLength(0);
+  });
+
+  it("doubles the retry delay up to the cap, with jitter", async () => {
+    const store = createBatchStorage({ failWrites: 100 });
+    const { timers, retry } = manualRetry();
+    const handle = await createStorageAuthState(store.storage, instanceId, {
+      retry: { ...retry, baseDelayMs: 250, maxDelayMs: 1_000, random: () => 0 },
+    });
+    await handle.state.keys.set({ "pre-key": { "6": null } });
+    await tick();
+    const delays: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const timer = timers.shift();
+      if (!timer) throw new Error("no retry armed");
+      delays.push(timer.ms);
+      timer.callback();
+      await tick();
+    }
+    // random() = 0 → -20% jitter: 250, 500, 1000, 1000 → 200, 400, 800, 800.
+    expect(delays).toEqual([200, 400, 800, 800]);
+    expect(handle.pendingWrites()).toBe(1);
+    await handle.discard();
+  });
+
+  it("a newer value replaces the queued one, also while the older write is in flight or failed", async () => {
+    const store = createBatchStorage({ failWrites: 1 });
+    const { timers, retry } = manualRetry();
+    const handle = await createStorageAuthState(store.storage, instanceId, { retry });
+    const release = store.hold();
+    await handle.state.keys.set({ session: { s: Buffer.from("v1") } });
+    await tick();
+    // v1 is in flight (held); v2 arrives.
+    await handle.state.keys.set({ session: { s: Buffer.from("v2") } });
+    release();
+    await tick();
+    // The v1 write failed; the retry carries only v2.
+    expect(await handle.flush({ timeoutMs: 1_000 })).toBe(true);
+    expect(timers).toHaveLength(0);
+    const last = store.batches.at(-1);
+    expect(last).toHaveLength(1);
+    const stored = store.data.get(`auth:${instanceId}:keys:session:s`) ?? "";
+    expect(JSON.parse(stored, (await loadBaileys()).BufferJSON.reviver)).toEqual(Buffer.from("v2"));
+    // v1 was never written after v2.
+    expect(
+      store.batches.filter((batch) => batch[0]?.value?.includes(Buffer.from("v1").toString("base64"))),
+    ).toHaveLength(1);
+  });
+
+  it("never evicts dirty keys from the cache while the store is down", async () => {
+    const previous = process.env.WHATSAPP_AUTH_KEY_CACHE_MAX_ENTRIES;
+    process.env.WHATSAPP_AUTH_KEY_CACHE_MAX_ENTRIES = "2";
+    try {
+      const store = createBatchStorage({ failWrites: 1_000 });
+      const { retry } = manualRetry();
+      const handle = await createStorageAuthState(store.storage, instanceId, { retry });
+      for (const id of ["a", "b", "c", "d", "e"]) {
+        await handle.state.keys.set({ "pre-key": { [id]: { public: Buffer.from(id), private: Buffer.from(id) } } });
+      }
+      await tick();
+      const read = await handle.state.keys.get("pre-key", ["a", "b", "c", "d", "e"]);
+      expect(Object.keys(read).sort()).toEqual(["a", "b", "c", "d", "e"]);
+      expect(handle.pendingWrites()).toBe(5);
+      expect(await handle.flush({ timeoutMs: 0 })).toBe(false);
+      await handle.discard();
+    } finally {
+      if (previous === undefined) delete process.env.WHATSAPP_AUTH_KEY_CACHE_MAX_ENTRIES;
+      else process.env.WHATSAPP_AUTH_KEY_CACHE_MAX_ENTRIES = previous;
+    }
+  });
+
+  it("saveCreds writes the creds through the queue and fails (keeping them queued) while the store is down", async () => {
+    const store = createBatchStorage({ failWrites: 1 });
+    const { timers, retry } = manualRetry();
+    const handle = await createStorageAuthState(store.storage, instanceId, { retry });
+    await expect(handle.saveCreds()).rejects.toThrow("stay queued");
+    expect(handle.pendingWrites()).toBe(1);
+    expect(timers).toHaveLength(1);
+    await handle.saveCreds();
+    expect(timers).toHaveLength(0);
+    expect(store.data.has(`auth:${instanceId}:creds`)).toBe(true);
+    expect(handle.pendingWrites()).toBe(0);
+  });
+
+  it("discard() drops pending writes and ignores later ones (the auth state is being cleared)", async () => {
+    const store = createBatchStorage({ failWrites: 1_000 });
+    const { timers, retry } = manualRetry();
+    const handle = await createStorageAuthState(store.storage, instanceId, { retry });
+    await handle.state.keys.set({ "pre-key": { x: null } });
+    await tick();
+    await handle.discard();
+    expect(handle.pendingWrites()).toBe(0);
+    expect(timers).toHaveLength(0);
+    await handle.state.keys.set({ "pre-key": { y: null } });
+    await tick();
+    expect(handle.pendingWrites()).toBe(0);
+    expect(await handle.flush()).toBe(true);
+  });
+});
