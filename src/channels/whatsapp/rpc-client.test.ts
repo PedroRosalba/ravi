@@ -4,6 +4,8 @@ import {
   WHATSAPP_RPC_SCHEMA_VERSION,
   WhatsAppRpcRequestSchema,
   whatsappRpcSubject,
+  type WhatsAppRpcMethod,
+  type WhatsAppRpcParams,
   type WhatsAppRpcRequest,
   type WhatsAppRpcResponse,
 } from "./contract.js";
@@ -12,7 +14,6 @@ import {
   WHATSAPP_RPC_INVALID_RESPONSE_CODE,
   mapWhatsAppRpcTransportError,
   requestWhatsAppRpc,
-  requestWhatsAppRpcRaw,
   type WhatsAppRpcConnection,
 } from "./rpc-client.js";
 
@@ -38,6 +39,11 @@ function fakeConnection(reply: Reply) {
     },
   };
   return { connection, calls };
+}
+
+/** Params a caller built at runtime (e.g. from JSON): the typed API still validates them. */
+function untypedParams<M extends WhatsAppRpcMethod>(_method: M, value: unknown): WhatsAppRpcParams<M> {
+  return value as WhatsAppRpcParams<M>;
 }
 
 async function captureError(promise: Promise<unknown>): Promise<WhatsAppRpcError> {
@@ -87,7 +93,12 @@ describe("requestWhatsAppRpc", () => {
   it("rejects invalid params with 400 before sending", async () => {
     const { connection, calls } = fakeConnection(new Error("must not be called"));
     const err = await captureError(
-      requestWhatsAppRpcRaw(INSTANCE_ID, "messages.sendMedia", { to: "x@g.us", type: "image" }, { connection }),
+      requestWhatsAppRpc(
+        INSTANCE_ID,
+        "messages.sendMedia",
+        untypedParams("messages.sendMedia", { to: "x@g.us", type: "image" }),
+        { connection },
+      ),
     );
     expect(err.status).toBe(400);
     expect(err.code).toBe("INVALID_REQUEST");
@@ -103,11 +114,15 @@ describe("requestWhatsAppRpc", () => {
       { to: "x@g.us", type: "image", filePath: "relative/a.png" },
       { to: "x@g.us", type: "image", base64: "AAAA" },
     ]) {
-      const err = await captureError(requestWhatsAppRpcRaw(INSTANCE_ID, "messages.sendMedia", params, { connection }));
+      const err = await captureError(
+        requestWhatsAppRpc(INSTANCE_ID, "messages.sendMedia", untypedParams("messages.sendMedia", params), {
+          connection,
+        }),
+      );
       expect(err.status).toBe(400);
     }
     const sticker = await captureError(
-      requestWhatsAppRpcRaw(INSTANCE_ID, "messages.sendSticker", { to: "x@g.us", filePath: "s.webp" }, { connection }),
+      requestWhatsAppRpc(INSTANCE_ID, "messages.sendSticker", { to: "x@g.us", filePath: "s.webp" }, { connection }),
     );
     expect(sticker.message).toContain("filePath must be an absolute path");
     expect(calls).toHaveLength(0);

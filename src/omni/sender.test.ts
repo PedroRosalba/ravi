@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import type { ChannelMessageSender } from "../channels/outbound/sender.js";
-import { createOmniClient } from "./client.js";
 import { OmniSender } from "./sender.js";
 
 function withTempFile(name: string, contents: string, run: (path: string) => Promise<void>) {
@@ -21,13 +20,15 @@ type FetchReply = () => Response | Promise<Response>;
 function fakeOmni(replies: FetchReply[]) {
   const bodies: Array<Record<string, unknown>> = [];
   const urls: string[] = [];
+  const apiKeys: Array<string | null> = [];
   globalThis.fetch = mock(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     urls.push(String(input));
+    apiKeys.push(new Headers(init?.headers).get("x-api-key"));
     bodies.push(init?.body ? JSON.parse(String(init.body)) : {});
     const reply = replies[Math.min(bodies.length - 1, replies.length - 1)]!;
     return reply();
   }) as unknown as typeof fetch;
-  return { bodies, urls };
+  return { bodies, urls, apiKeys };
 }
 
 const ok =
@@ -160,11 +161,12 @@ describe("OmniSender (legacy bridge)", () => {
     expect(calls.bodies[1]).toMatchObject({ type: "paused", duration: 0 });
   });
 
-  it("can be built from an existing Omni client", async () => {
-    const { bodies } = fakeOmni([ok({ messageId: "msg-2", status: "sent" })]);
-    const client = createOmniClient({ baseUrl: "http://omni.local", apiKey: "k" });
-    const omni = new OmniSender(client);
+  it("talks to the configured Omni API URL with its API key", async () => {
+    const { bodies, urls, apiKeys } = fakeOmni([ok({ messageId: "msg-2", status: "sent" })]);
+    const omni = new OmniSender("http://omni.local/", "k");
     expect(await omni.send("instance-1", "5511@s.whatsapp.net", "oi")).toEqual({ messageId: "msg-2" });
     expect(bodies).toHaveLength(1);
+    expect(urls[0]?.startsWith("http://omni.local/api/v2/")).toBe(true);
+    expect(apiKeys).toEqual(["k"]);
   });
 });

@@ -34,27 +34,9 @@ export class OmniSender implements ChannelMessageSender {
   private retry: TransportRetryOptions;
 
   /** Omni REST sender. */
-  constructor(apiUrl: string, apiKey: string, options?: OmniSenderOptions);
-  /**
-   * Sender over an existing Omni client (test seam).
-   * @deprecated Also accepts the routing transport client for the callers that still pass it
-   * (`omni/channel-wiring.ts`, `cli/commands/group.ts`); both stop in this refactor and
-   * WP-Z removes this overload.
-   */
-  constructor(client: OmniClient, options?: OmniSenderOptions);
-  constructor(
-    apiUrlOrClient: string | OmniClient,
-    apiKeyOrOptions?: string | OmniSenderOptions,
-    maybe?: OmniSenderOptions,
-  ) {
-    if (typeof apiUrlOrClient === "string") {
-      if (typeof apiKeyOrOptions !== "string") throw new TypeError("OmniSender(apiUrl, apiKey) requires an apiKey");
-      this.client = createOmniClient({ baseUrl: apiUrlOrClient, apiKey: apiKeyOrOptions });
-      this.retry = { ...maybe?.retry };
-    } else {
-      this.client = apiUrlOrClient;
-      this.retry = { ...(typeof apiKeyOrOptions === "object" ? apiKeyOrOptions.retry : undefined) };
-    }
+  constructor(apiUrl: string, apiKey: string, options: OmniSenderOptions = {}) {
+    this.client = createOmniClient({ baseUrl: apiUrl, apiKey });
+    this.retry = { ...options.retry };
   }
 
   private withRetry<T>(operation: () => Promise<T>, context: string): Promise<T> {
@@ -222,22 +204,5 @@ export class OmniSender implements ChannelMessageSender {
       // Best-effort — don't throw
       log.debug("Failed to mark messages as read", { instanceId, chatId, error: err });
     }
-  }
-
-  /**
-   * @deprecated Only `omni/channel-wiring.test.ts` (deleted by WP-A) reads it. WP-Z removes it.
-   */
-  getClient(): OmniClient {
-    return this.client;
-  }
-
-  /**
-   * @deprecated Native WhatsApp transport of a routing client passed through the deprecated
-   * constructor overload, else null. Only `omni/channel-wiring.test.ts` (deleted by WP-A) reads
-   * it; nothing in production does. WP-Z removes it with the overload.
-   */
-  getNativeWhatsApp(): unknown {
-    const native = (this.client as OmniClient & { native?: unknown }).native;
-    return native ?? null;
   }
 }

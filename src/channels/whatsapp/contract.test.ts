@@ -3,15 +3,12 @@ import type { ChannelConfig, InstanceConfig } from "../../router/router-db.js";
 import {
   findWhatsAppChannelForInstance,
   InstanceIdSchema,
-  isNativeWhatsAppInstance,
   isWhatsAppBound,
   isWhatsAppChannelType,
   isWhatsAppFamilyChannelType,
   isWhatsAppInstanceConfig,
-  listNativeWhatsAppBindings,
   listWhatsAppBindings,
   type OwnershipConfig,
-  resolveNativeWhatsAppBinding,
   resolveWhatsAppBinding,
 } from "./contract.js";
 
@@ -83,11 +80,11 @@ describe("WhatsApp bindings", () => {
     expect(isWhatsAppBound(config(), undefined)).toBe(false);
   });
 
-  it("keeps the deprecated native aliases equivalent", () => {
-    expect(listNativeWhatsAppBindings(config())).toEqual(listWhatsAppBindings(config()));
-    expect(resolveNativeWhatsAppBinding(config(), MAIN_ID)).toEqual(resolveWhatsAppBinding(config(), MAIN_ID));
-    expect(isNativeWhatsAppInstance(config(), LOJA_ID)).toBe(true);
-    expect(isNativeWhatsAppInstance(config(), OFF_ID)).toBe(false);
+  it("reports whether a ref is bound", () => {
+    expect(isWhatsAppBound(config(), LOJA_ID)).toBe(true);
+    expect(isWhatsAppBound(config(), "Loja São Paulo")).toBe(true);
+    expect(isWhatsAppBound(config(), OFF_ID)).toBe(false);
+    expect(isWhatsAppBound(config(), "noid")).toBe(false);
   });
 });
 

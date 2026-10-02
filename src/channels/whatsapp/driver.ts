@@ -294,8 +294,3 @@ function resolveBinding(getConfig: () => BindingConfig, channel: NativeChannelDr
   }
   return binding;
 }
-
-/** @deprecated Use `createWhatsAppChannelDriver`. Deleted in WP-Z. */
-export const createWhatsAppNativeChannelDriver = createWhatsAppChannelDriver;
-/** @deprecated Use `WhatsAppChannelDriverOptions`. Deleted in WP-Z. */
-export type WhatsAppNativeChannelDriverOptions = WhatsAppChannelDriverOptions;

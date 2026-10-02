@@ -49,52 +49,6 @@ export function whatsappRpcSubject(instanceId: string): string {
   return `${WHATSAPP_RPC_SUBJECT_PREFIX}${InstanceIdSchema.parse(instanceId)}`;
 }
 
-/**
- * PR #590 inbound subject tail, e.g. `message.received.whatsapp-baileys.<uuid>`.
- * @deprecated The runner publishes on `whatsappInboundSubject` (events.ts). Deleted in WP-Z.
- */
-export function whatsappTransportSubject(eventType: string, instanceId: string): string {
-  return `${eventType}.${WHATSAPP_CHANNEL_TYPE}.${InstanceIdSchema.parse(instanceId)}`;
-}
-
-/** @deprecated Use `whatsappInboundSubject` (events.ts). Deleted in WP-Z. */
-export function channelInboundSubject(transportSubject: string): string {
-  return `${CHANNEL_INBOUND_SUBJECT_PREFIX}${transportSubject}`;
-}
-
-/**
- * Strip the Ravi inbound prefix, returning the PR #590 subject tail.
- * @deprecated Use `parseWhatsAppInboundSubject` (events.ts). Deleted in WP-Z.
- */
-export function transportSubjectFromChannelInbound(subject: string): string | null {
-  if (!subject.startsWith(CHANNEL_INBOUND_SUBJECT_PREFIX)) return null;
-  const rest = subject.slice(CHANNEL_INBOUND_SUBJECT_PREFIX.length);
-  return rest.length > 0 ? rest : null;
-}
-
-// ============================================================================
-// PR #590 inbound envelope (replaced by WhatsAppInboundEventSchema, events.ts)
-// ============================================================================
-
-/** @deprecated Use `WhatsAppInboundEventSchema` (events.ts). Deleted in WP-Z. */
-export const WhatsAppTransportEventSchema = z.object({
-  id: z.string().min(1),
-  type: z.string().min(1),
-  payload: z.unknown(),
-  metadata: z.object({
-    instanceId: z.string().min(1),
-    channelType: z.literal(WHATSAPP_CHANNEL_TYPE),
-    source: z.literal("ravi.whatsapp.native"),
-    ingestMode: z.enum(["realtime", "history-sync"]).optional(),
-    pluginReceivedAt: z.number().optional(),
-    receivedAt: z.number().optional(),
-  }),
-  timestamp: z.number(),
-});
-
-/** @deprecated Use `WhatsAppInboundEvent` (events.ts). Deleted in WP-Z. */
-export type WhatsAppTransportEvent = z.infer<typeof WhatsAppTransportEventSchema>;
-
 // ============================================================================
 // RPC
 // ============================================================================
@@ -363,9 +317,6 @@ export interface WhatsAppBinding {
   readonly instance: InstanceConfig;
 }
 
-/** @deprecated Use `WhatsAppBinding`. Deleted in WP-Z. */
-export type NativeWhatsAppBinding = WhatsAppBinding;
-
 export type OwnershipConfig = Pick<RouterConfig, "instances" | "channels" | "instanceToAccount">;
 
 function boundInstanceName(channel: ChannelConfig): string {
@@ -452,22 +403,4 @@ export function findWhatsAppChannelForInstance(
     if (boundInstanceName(channel) === name) return channel;
   }
   return null;
-}
-
-/** @deprecated Use `listWhatsAppBindings`. Deleted in WP-Z. */
-export function listNativeWhatsAppBindings(config: OwnershipConfig): WhatsAppBinding[] {
-  return listWhatsAppBindings(config);
-}
-
-/** @deprecated Use `resolveWhatsAppBinding`. Deleted in WP-Z. */
-export function resolveNativeWhatsAppBinding(
-  config: OwnershipConfig,
-  instanceIdOrAccount: string | undefined | null,
-): WhatsAppBinding | null {
-  return resolveWhatsAppBinding(config, instanceIdOrAccount);
-}
-
-/** @deprecated Use `isWhatsAppBound`. Deleted in WP-Z. */
-export function isNativeWhatsAppInstance(config: OwnershipConfig, instanceIdOrAccount: string | undefined | null) {
-  return isWhatsAppBound(config, instanceIdOrAccount);
 }

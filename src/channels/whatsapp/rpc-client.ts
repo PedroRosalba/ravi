@@ -122,25 +122,10 @@ function invalidResponse(instanceId: string, method: WhatsAppRpcMethod, details:
  * (400 INVALID_REQUEST on failure); the `data` of a successful response is returned
  * as the contract's `WhatsAppRpcResult<M>`.
  */
-export function requestWhatsAppRpc<M extends WhatsAppRpcMethod>(
+export async function requestWhatsAppRpc<M extends WhatsAppRpcMethod>(
   instanceId: string,
   method: M,
   params: WhatsAppRpcParams<M>,
-  options: WhatsAppRpcRequestOptions = {},
-): Promise<WhatsAppRpcResult<M>> {
-  return requestWhatsAppRpcRaw(instanceId, method, params, options);
-}
-
-/**
- * Same as `requestWhatsAppRpc` for params that are only known at runtime. The params
- * are validated against the contract schema here, exactly as for the typed variant.
- *
- * @deprecated Untyped params; only for transport-client.ts, deleted with it.
- */
-export async function requestWhatsAppRpcRaw<M extends WhatsAppRpcMethod>(
-  instanceId: string,
-  method: M,
-  params: unknown,
   options: WhatsAppRpcRequestOptions = {},
 ): Promise<WhatsAppRpcResult<M>> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_WHATSAPP_RPC_TIMEOUT_MS;

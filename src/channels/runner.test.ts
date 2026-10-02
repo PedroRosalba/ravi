@@ -29,7 +29,7 @@ import type { NativeChannelReconcileOptions, NativeInboundChannelActionHandler }
 import type { ChannelConfig, InstanceConfig } from "../router/router-db.js";
 import type { ChannelRuntimeEventSink } from "./runtime-events.js";
 import { createSlackNativeChannelDriver } from "./slack/driver.js";
-import { createWhatsAppChannelDriver, createWhatsAppNativeChannelDriver } from "./whatsapp/driver.js";
+import { createWhatsAppChannelDriver } from "./whatsapp/driver.js";
 import type { ChannelOutboundJob } from "./outbound-stream.js";
 import { buildRunnerPm2Env } from "./pm2-env.js";
 import { EventEmitter } from "node:events";
@@ -663,9 +663,8 @@ describe("channel runner native channel reconcile", () => {
     expect(CHANNEL_PROBE_SKIPPED_PROVIDERS).toEqual(["whatsapp"]);
   });
 
-  it("registers the WhatsApp channel driver for the whatsapp provider (old factory name is an alias)", () => {
+  it("registers the WhatsApp channel driver for the whatsapp provider", () => {
     expect(createWhatsAppChannelDriver().descriptor).toMatchObject({ driverId: "ravi.whatsapp", provider: "whatsapp" });
-    expect(createWhatsAppNativeChannelDriver).toBe(createWhatsAppChannelDriver);
   });
 
   it("derives binding keys only for WhatsApp channels (including the provider alias)", () => {

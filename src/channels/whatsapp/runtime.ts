@@ -3047,10 +3047,3 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     this.sentIds.set(messageId, true);
   }
 }
-
-/** @deprecated Use `WhatsAppRuntime`. Deleted in WP-Z. */
-export const WhatsAppNativeRuntime = WhatsAppRuntime;
-/** @deprecated Use `WhatsAppRuntime`. Deleted in WP-Z. */
-export type WhatsAppNativeRuntime = WhatsAppRuntime;
-/** @deprecated Use `WhatsAppRuntimeOptions`. Deleted in WP-Z. */
-export type WhatsAppNativeRuntimeOptions = WhatsAppRuntimeOptions;
