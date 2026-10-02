@@ -2139,6 +2139,10 @@ export class InstancesCommands {
       printJson(payload);
     } else {
       console.log(`✓ Disconnected: ${name}`);
+      if (transport === "whatsapp") {
+        // R4: the runner persists a manual disconnect; it does not auto-connect again until `connect`.
+        console.log(`  Stays disconnected across runner restarts. Reconnect with: ravi instances connect ${name}`);
+      }
     }
     return payload;
   }

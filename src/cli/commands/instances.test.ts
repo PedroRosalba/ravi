@@ -827,6 +827,17 @@ describe("instances live status", () => {
     expect(legacyLoads).toBe(0);
   });
 
+  it("disconnect text says a WhatsApp instance stays disconnected until connect (R4)", async () => {
+    seedWhatsAppInstance();
+    useDeps({ runner: fakeRunner({ "connection.disconnect": () => ({}) }) });
+
+    await new InstancesCommands().disconnect("wa-main", false);
+
+    const text = output.join("\n");
+    expect(text).toContain("✓ Disconnected: wa-main");
+    expect(text).toContain("Stays disconnected across runner restarts. Reconnect with: ravi instances connect wa-main");
+  });
+
   it("disconnect of a telegram instance goes to the legacy bridge", async () => {
     dbUpsertInstance({ name: "tg", instanceId: "tg-uuid", channel: "telegram" });
     const legacy = fakeLegacy();
