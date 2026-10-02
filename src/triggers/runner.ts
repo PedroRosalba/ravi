@@ -509,7 +509,7 @@ export class TriggerRunner {
         triggerId: trigger.id,
         triggerName: trigger.name,
         topic: event.topic,
-        filter: trigger.filter,
+        // The filter literal can carry chat ids or phone numbers; `ravi triggers show` has it.
         eventKeys: eventKeysForLog(event.data),
       });
     } else {
