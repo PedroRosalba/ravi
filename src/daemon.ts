@@ -64,6 +64,8 @@ import { dbHasActiveAssignedTaskForSession } from "./tasks/task-db.js";
 import { startWorkObjectNatsService, type WorkObjectNatsServiceHandle } from "./work-objects/index.js";
 import { createChannelBackendEgressRequester } from "./channels/backend-egress.js";
 import { setChannelBackendEgressRequesterForRuntime } from "./channels/runtime-events.js";
+import { createWhatsAppClient } from "./channels/whatsapp/client.js";
+import { createWhatsAppGroupMetadataFetcher } from "./channels/whatsapp/group-metadata.js";
 import {
   tryAcquireLeadership,
   startLeadershipRenewal,
@@ -380,6 +382,7 @@ export async function startDaemon() {
     logLevel: config.logLevel,
     sender: channelWiring.sender,
     presenceTargets: omniConsumer,
+    groupMetadataFetcher: createWhatsAppGroupMetadataFetcher(createWhatsAppClient()),
   });
 
   await gateway.start();

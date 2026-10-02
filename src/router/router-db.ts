@@ -43,6 +43,7 @@ const DEFAULT_RAVI_STATE_DIR = getRaviStateDir({});
 const DEFAULT_DB_PATH = join(DEFAULT_RAVI_STATE_DIR, "ravi.db");
 const LEGACY_DB_PATH = join(RAVI_DIR, "ravi.db");
 const IDENTITY_CHAT_BACKFILL_KEY = "identity_chat_backfill_v1";
+const GROUP_METADATA_COPY_KEY = "channel_group_metadata_copy_v1";
 
 // ============================================================================
 // Schemas (safe to access at import time - no I/O)
@@ -596,7 +597,15 @@ export type ChatType = "dm" | "group" | "room" | "thread" | "channel" | "unknown
 export type ChatParticipantType = "contact" | "agent" | "raw";
 export type ChatParticipantRole = "member" | "admin" | "owner" | "agent" | "unknown" | (string & {});
 export type ChatParticipantStatus = "active" | "left" | "removed" | "unknown" | (string & {});
-export type ChatParticipantSource = "omni" | "inbound_message" | "manual" | "import" | "backfill" | (string & {});
+export type ChatParticipantSource =
+  | "omni"
+  | "whatsapp"
+  | "group_metadata"
+  | "inbound_message"
+  | "manual"
+  | "import"
+  | "backfill"
+  | (string & {});
 export type SessionParticipantOwnerType = "contact" | "agent" | "unknown";
 export type SessionParticipantRole = "human" | "agent" | "system" | "observer" | "unknown" | (string & {});
 
@@ -2040,8 +2049,10 @@ function getDb(): Database {
     CREATE INDEX IF NOT EXISTS idx_session_events_contact_time
       ON session_events(contact_id, timestamp);
 
-    -- Omni group metadata cache: local snapshot used by prompt context.
-    CREATE TABLE IF NOT EXISTS omni_group_metadata (
+    -- Channel group metadata cache: local snapshot used by prompt context and outbound mentions.
+    -- The legacy omni_group_metadata table is no longer created; existing DBs keep it untouched and
+    -- its rows are copied once (copyLegacyGroupMetadataOnce).
+    CREATE TABLE IF NOT EXISTS channel_group_metadata (
       account_id TEXT NOT NULL,
       instance_id TEXT NOT NULL,
       chat_id TEXT NOT NULL,
@@ -2061,8 +2072,8 @@ function getDb(): Database {
       PRIMARY KEY (account_id, instance_id, chat_id)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_omni_group_metadata_fetched
-      ON omni_group_metadata(fetched_at);
+    CREATE INDEX IF NOT EXISTS idx_channel_group_metadata_fetched
+      ON channel_group_metadata(fetched_at);
 
     CREATE TABLE IF NOT EXISTS session_turns (
       turn_id TEXT PRIMARY KEY,
@@ -2539,7 +2550,7 @@ function getDb(): Database {
     CREATE INDEX IF NOT EXISTS idx_sync_dead_letters_source
       ON sync_dead_letters(source, source_id);
 
-    -- Instances: central config entity (one per omni connection)
+    -- Instances: central config entity (one per channel transport connection)
     CREATE TABLE IF NOT EXISTS instances (
       name         TEXT PRIMARY KEY,
       instance_id  TEXT UNIQUE,
@@ -3249,6 +3260,7 @@ function getDb(): Database {
       updated_at INTEGER NOT NULL
     );
   `);
+  copyLegacyGroupMetadataOnce(db);
 
   ensureCostEventMigrations(db);
   ensureColumn(
@@ -5601,7 +5613,7 @@ function backfillChatModel(database: Database): void {
   executeWrite(
     database,
     (database) => {
-      const groupRows = database.prepare("SELECT * FROM omni_group_metadata").all() as Array<{
+      const groupRows = database.prepare("SELECT * FROM channel_group_metadata").all() as Array<{
         account_id: string;
         instance_id: string;
         chat_id: string;
@@ -5631,7 +5643,7 @@ function backfillChatModel(database: Database): void {
             participantCount: row.participant_count,
           },
           rawProvenance: {
-            sourceTable: "omni_group_metadata",
+            sourceTable: "channel_group_metadata",
             accountId: row.account_id,
             instanceId: row.instance_id,
             chatId: row.chat_id,
@@ -5650,9 +5662,9 @@ function backfillChatModel(database: Database): void {
             normalizedPlatformUserId: normalizePhone(participant.platformUserId) || participant.platformUserId,
             role: normalizeParticipantRole(participant.role),
             status: "active",
-            source: "omni",
+            source: "group_metadata",
             metadata: {
-              omniParticipantId: participant.id ?? null,
+              providerParticipantId: participant.id ?? null,
               displayName: participant.displayName ?? null,
             },
             seenAt: row.fetched_at || now,
@@ -5760,6 +5772,49 @@ function backfillChatModel(database: Database): void {
     },
     { label: "router:backfillChatModel" },
   );
+}
+
+/**
+ * One-time copy of the legacy `omni_group_metadata` cache into `channel_group_metadata`
+ * (router_meta `channel_group_metadata_copy_v1`). The old table is never renamed or dropped:
+ * a still-running older daemon keeps using it, and a rollback binary finds it intact.
+ * Rows that daemon writes after the copy are not carried over; it is a cache and refills.
+ */
+export function copyLegacyGroupMetadataOnce(database: Database): void {
+  database.transaction(() => {
+    const existing = database.prepare("SELECT value FROM router_meta WHERE key = ?").get(GROUP_METADATA_COPY_KEY) as
+      | { value: string }
+      | undefined;
+    if (existing?.value === "done") return;
+
+    const legacy = database
+      .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'omni_group_metadata'")
+      .get() as { present: number } | undefined;
+    if (legacy) {
+      const copied = database
+        .prepare(
+          `
+          INSERT OR IGNORE INTO channel_group_metadata (
+            account_id, instance_id, chat_id, chat_uuid, external_id, channel, name,
+            description, avatar_url, participant_count, participants_json, settings_json,
+            platform_metadata_json, fetched_at, created_at, updated_at
+          )
+          SELECT account_id, instance_id, chat_id, chat_uuid, external_id, channel, name,
+            description, avatar_url, participant_count, participants_json, settings_json,
+            platform_metadata_json, fetched_at, created_at, updated_at
+          FROM omni_group_metadata
+        `,
+        )
+        .run();
+      if (copied.changes > 0) {
+        log.info("Copied legacy group metadata cache rows", { rows: copied.changes });
+      }
+    }
+
+    database
+      .prepare("INSERT OR REPLACE INTO router_meta (key, value, updated_at) VALUES (?, ?, ?)")
+      .run(GROUP_METADATA_COPY_KEY, "done", Date.now());
+  })();
 }
 
 function backfillChatModelOnce(database: Database): void {
@@ -8748,7 +8803,7 @@ export function dbFindActiveSubscriptionByChat(chatId: string): SessionChatSubsc
 
 /**
  * Active subscription chat ids on the given instance ids.
- * Chats store the Omni instance UUID (and sometimes the account name).
+ * Chats store the transport instance UUID (and sometimes the account name).
  */
 export function dbListActiveSubscriptionChatIds(instanceIds: string[]): string[] {
   const ids = [...new Set(instanceIds.map((id) => id.trim()).filter((id) => id.length > 0))];

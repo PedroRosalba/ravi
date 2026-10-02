@@ -2468,33 +2468,56 @@ describe("OmniConsumer channel context", () => {
       expect(fetchOmniMediaMock).not.toHaveBeenCalled();
     });
 
-    it("passes the native transport to group metadata resolution", async () => {
-      const nativeWhatsApp = { isNativeInstance: () => true, request: mock() as never };
+    it("passes a group metadata fetcher chosen by instance ownership", async () => {
       const resolveInputs: Array<Record<string, unknown>> = [];
-      const consumer = new OmniConsumer(createSender() as never, null, null, {
+      const resolveGroupMetadata = async (input: unknown) => {
+        resolveInputs.push(input as Record<string, unknown>);
+        return null;
+      };
+      const dispatch = (consumer: InstanceType<typeof OmniConsumer>, id: string) =>
+        consumer["dispatchSourceEvent"](
+          { source: "native", kind: "message" },
+          nativeSubject("message.received"),
+          groupMessageEvent(id, "ravi.whatsapp.native", Date.now()),
+        );
+
+      // Native instance: the WhatsApp runner fetcher, even without Omni.
+      const native = new OmniConsumer(createSender() as never, null, null, {
         sources: ["native"],
-        nativeWhatsApp,
-        resolveGroupMetadata: async (input) => {
-          resolveInputs.push(input as unknown as Record<string, unknown>);
-          return null;
-        },
+        nativeWhatsApp: { isNativeInstance: () => true, request: mock() as never },
+        resolveGroupMetadata,
       });
-
-      await consumer["dispatchSourceEvent"](
-        { source: "native", kind: "message" },
-        nativeSubject("message.received"),
-        groupMessageEvent("msg-native-group", "ravi.whatsapp.native", Date.now()),
-      );
-
+      await dispatch(native, "msg-native-group");
       expect(resolveInputs).toHaveLength(1);
       expect(resolveInputs[0]).toMatchObject({
-        omniApiUrl: null,
-        omniApiKey: null,
         accountId: "main",
         instanceId: "instance-1",
         chatId: "120363424772797713@g.us",
       });
-      expect(resolveInputs[0]?.nativeTransport).toBe(nativeWhatsApp);
+      expect(resolveInputs[0]).not.toHaveProperty("omniApiUrl");
+      const whatsappFetcher = resolveInputs[0]?.fetcher;
+      expect(typeof whatsappFetcher).toBe("function");
+
+      // Not native, Omni configured: a different (Omni REST) fetcher.
+      const omni = new OmniConsumer(createSender() as never, "http://omni.local", "test-key", {
+        sources: ["native"],
+        nativeWhatsApp: { isNativeInstance: () => false, request: mock() as never },
+        resolveGroupMetadata,
+      });
+      await dispatch(omni, "msg-omni-group");
+      expect(resolveInputs).toHaveLength(2);
+      expect(typeof resolveInputs[1]?.fetcher).toBe("function");
+      expect(resolveInputs[1]?.fetcher).not.toBe(whatsappFetcher);
+
+      // Not native, no Omni: cache only.
+      const cacheOnly = new OmniConsumer(createSender() as never, null, null, {
+        sources: ["native"],
+        nativeWhatsApp: { isNativeInstance: () => false, request: mock() as never },
+        resolveGroupMetadata,
+      });
+      await dispatch(cacheOnly, "msg-cache-group");
+      expect(resolveInputs).toHaveLength(3);
+      expect(resolveInputs[2]?.fetcher).toBeNull();
     });
   });
 });

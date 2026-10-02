@@ -97,11 +97,12 @@ import {
 } from "../runtime/session-rebase.js";
 import type { AgentConfig } from "../router/types.js";
 import type { OmniSender } from "./sender.js";
-import {
-  formatOmniGroupMembersForPrompt,
-  resolveOmniGroupMetadata,
-  type NativeGroupMetadataTransport,
-} from "./group-metadata-cache.js";
+import { formatGroupMembersForPrompt, resolveGroupMetadata } from "../channels/group-metadata/cache.js";
+import type { GroupMetadataFetcher } from "../channels/group-metadata/types.js";
+import { createWhatsAppClient } from "../channels/whatsapp/client.js";
+import { createWhatsAppGroupMetadataFetcher } from "../channels/whatsapp/group-metadata.js";
+import type { NativeWhatsAppTransport } from "../channels/whatsapp/transport-client.js";
+import { createOmniGroupMetadataFetcher } from "./group-metadata.js";
 import { readLocalMediaFile, resolveLocalMediaPath } from "../channels/whatsapp/local-media.js";
 import {
   CHANNEL_INBOUND_STREAM,
@@ -226,17 +227,17 @@ export function consumerSubscriptionsFor(sources: readonly OmniConsumerSource[])
 }
 
 export interface OmniConsumerOptions {
-  resolveGroupMetadata?: typeof resolveOmniGroupMetadata;
-  formatGroupMembers?: typeof formatOmniGroupMembersForPrompt;
+  resolveGroupMetadata?: typeof resolveGroupMetadata;
+  formatGroupMembers?: typeof formatGroupMembersForPrompt;
   isRuntimeSessionActive?: (sessionName: string) => boolean;
   abortRuntimeSession?: (sessionName: string, provenance: RuntimeAbortProvenance) => boolean;
   /** Event sources to consume. Default: `["omni"]`. */
   sources?: readonly OmniConsumerSource[];
   /**
    * Native WhatsApp transport (`ChannelTransportClient.native`). Used for native
-   * ownership checks and for group metadata of natively-owned instances.
+   * ownership checks (which also pick the WhatsApp group metadata fetcher).
    */
-  nativeWhatsApp?: NativeGroupMetadataTransport | null;
+  nativeWhatsApp?: Pick<NativeWhatsAppTransport, "isNativeInstance" | "request"> | null;
   /**
    * Whether an instance (UUID) is owned by a native channel. Defaults to
    * `nativeWhatsApp.isNativeInstance`, else the live router config.
@@ -482,6 +483,8 @@ export class OmniConsumer {
   /** Dedup set for recently processed event IDs (prevents double-processing) */
   private readonly processedEvents = new Set<string>();
   private readonly DEDUP_MAX = 500;
+  private whatsappGroupMetadataFetcher: GroupMetadataFetcher | null = null;
+  private omniGroupMetadataFetcher: GroupMetadataFetcher | null = null;
 
   /**
    * @param omniApiUrl Omni REST API (media + group metadata for Omni instances). Null when Omni is not configured.
@@ -589,6 +592,22 @@ export class OmniConsumer {
       case "reaction":
         return this.handleReactionEvent(transportSubject, transportEvent);
     }
+  }
+
+  /**
+   * Interim (until the inbound sources split): natively-owned WhatsApp instances refresh group
+   * metadata over the runner RPC, the rest over the Omni REST API when it is configured.
+   */
+  private groupMetadataFetcherFor(instanceId: string): GroupMetadataFetcher | null {
+    if (this.isNativeInstance(instanceId)) {
+      this.whatsappGroupMetadataFetcher ??= createWhatsAppGroupMetadataFetcher(createWhatsAppClient());
+      return this.whatsappGroupMetadataFetcher;
+    }
+    const apiUrl = this.omniApiUrl?.trim();
+    const apiKey = this.omniApiKey?.trim();
+    if (!apiUrl || !apiKey) return null;
+    this.omniGroupMetadataFetcher ??= createOmniGroupMetadataFetcher({ apiUrl, apiKey });
+    return this.omniGroupMetadataFetcher;
   }
 
   private isNativeInstance(instanceId: string): boolean {
@@ -1645,15 +1664,13 @@ export class OmniConsumer {
     const senderName =
       pushName || getContactName(resolvedSenderPhone) || getContactName(senderPhone) || resolvedSenderPhone;
 
-    // Resolve group metadata from local Omni cache/API, then fall back to the inbound payload.
+    // Resolve group metadata from the local cache/transport, then fall back to the inbound payload.
     const rawGroupName = isGroup ? this.resolveGroupName(rawPayload, chatJid) : undefined;
-    const resolveGroupMetadata = this.options.resolveGroupMetadata ?? resolveOmniGroupMetadata;
-    const formatGroupMembers = this.options.formatGroupMembers ?? formatOmniGroupMembersForPrompt;
+    const resolveMetadata = this.options.resolveGroupMetadata ?? resolveGroupMetadata;
+    const formatGroupMembers = this.options.formatGroupMembers ?? formatGroupMembersForPrompt;
     const groupMetadata = isGroup
-      ? await resolveGroupMetadata({
-          omniApiUrl: this.omniApiUrl,
-          omniApiKey: this.omniApiKey,
-          nativeTransport: this.options.nativeWhatsApp ?? null,
+      ? await resolveMetadata({
+          fetcher: this.groupMetadataFetcherFor(instanceId),
           accountId: effectiveAccountId,
           instanceId,
           chatId: chatJid,

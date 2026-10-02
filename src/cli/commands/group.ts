@@ -22,7 +22,10 @@ import {
   getFirstAccountName,
 } from "../../router/router-db.js";
 import { publishChannelSessionPrompt } from "../../channels/session-prompt.js";
-import { resolveOmniGroupMetadata } from "../../omni/group-metadata-cache.js";
+import { resolveGroupMetadata } from "../../channels/group-metadata/cache.js";
+import type { GroupMetadataFetcher } from "../../channels/group-metadata/types.js";
+import { createWhatsAppGroupMetadataFetcher } from "../../channels/whatsapp/group-metadata.js";
+import { createOmniGroupMetadataFetcher } from "../../omni/group-metadata.js";
 import { prepareMentionMessage } from "../../channels/mentions.js";
 import { OmniSender } from "../../omni/sender.js";
 import { resolveOmniConnection, type OmniConnection } from "../../omni-config.js";
@@ -421,6 +424,23 @@ function resolveGroupTransport(accountId: string, instanceId: string): GroupTran
   return { accountId, instanceId, client, native, omniConnection };
 }
 
+/**
+ * Group metadata refresh source (interim until the CLI drops the legacy bridge): the runner
+ * RPC for native WhatsApp instances (over the same routing client as every other group
+ * call here), the Omni REST API otherwise.
+ */
+function groupMetadataFetcherFor(
+  context: Pick<GroupTransportContext, "client" | "native" | "omniConnection">,
+): GroupMetadataFetcher | null {
+  if (context.native) {
+    const native = context.client.native;
+    return createWhatsAppGroupMetadataFetcher({
+      groups: { metadata: (ref, params, options) => native.request(ref, "groups.metadata", params, options) },
+    });
+  }
+  return context.omniConnection ? createOmniGroupMetadataFetcher(context.omniConnection) : null;
+}
+
 function resolveGroupOmniContext(account?: string): GroupTransportContext {
   const { accountId, instanceId } = resolveGroupInstance(account);
   return resolveGroupTransport(accountId, instanceId);
@@ -559,10 +579,8 @@ async function getGroupInfoViaOmni(
     const id = normalizeGroupLookupKey(item.id);
     return id === lookup || item.id === groupId || item.subject === groupId;
   });
-  const metadata = await resolveOmniGroupMetadata({
-    omniApiUrl: context.omniConnection?.apiUrl ?? null,
-    omniApiKey: context.omniConnection?.apiKey ?? null,
-    nativeTransport: context.native ? context.client.native : null,
+  const metadata = await resolveGroupMetadata({
+    fetcher: groupMetadataFetcherFor(context),
     accountId,
     instanceId,
     chatId: groupJid,
@@ -1063,10 +1081,8 @@ export class GroupCommands {
 
     const shouldResolveParticipants = mentionTargets.length > 0 || cleanMessage.includes("@");
     const metadata = shouldResolveParticipants
-      ? await resolveOmniGroupMetadata({
-          omniApiUrl: connection?.apiUrl ?? null,
-          omniApiKey: connection?.apiKey ?? null,
-          nativeTransport: transport.native ? transport.client.native : null,
+      ? await resolveGroupMetadata({
+          fetcher: groupMetadataFetcherFor(transport),
           accountId,
           instanceId,
           chatId: groupJid,

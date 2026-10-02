@@ -54,8 +54,7 @@ import {
   dbUpsertChatMessage,
 } from "./router/router-db.js";
 import { prepareMentionMessage, type ChannelUserMention } from "./channels/mentions.js";
-import { resolveOmniConnection } from "./omni-config.js";
-import { resolveOmniGroupMetadata } from "./omni/group-metadata-cache.js";
+import { resolveGroupMetadata } from "./channels/group-metadata/cache.js";
 import { buildRaviTtsRequest, handleRaviTtsRequest, RAVI_TTS_TOPIC, shouldAutoTtsForAgent } from "./audio/tts.js";
 import { handleSlackThreadCreationDelivery, reconcileSlackThreadLifecycle } from "./channels/slack/thread-lifecycle.js";
 import { sendSlackMedia } from "./channels/slack/media.js";
@@ -231,18 +230,6 @@ export interface GatewayOptions {
   /** Refresh source for outbound @mention participants (WhatsApp groups only). Null = cache only. */
   groupMetadataFetcher?: GroupMetadataFetcher | null;
   emitEvent?: typeof nats.emit;
-}
-
-type LegacyNativeWhatsAppTransport = Parameters<typeof resolveOmniGroupMetadata>[0]["nativeTransport"];
-
-/**
- * Interim (WP-0 step 5 until the group-metadata split): the daemon's sender is still
- * OmniSender over the routing client, which exposes the native WhatsApp transport used
- * to refresh group metadata. Any other sender has none.
- */
-function legacyNativeWhatsApp(sender: ChannelMessageSender): LegacyNativeWhatsAppTransport {
-  const getter = (sender as { getNativeWhatsApp?: () => LegacyNativeWhatsAppTransport }).getNativeWhatsApp;
-  return typeof getter === "function" ? (getter.call(sender) ?? null) : null;
 }
 
 type PresenceTarget = {
@@ -525,18 +512,8 @@ export class Gateway {
       return { text: input.text, mentions: mergeMentions(input.mentions) };
     }
 
-    // Natively-owned WhatsApp instances refresh group metadata over the runner RPC.
-    const nativeWhatsApp = legacyNativeWhatsApp(this.sender);
-    const isNative = nativeWhatsApp?.isNativeInstance(input.instanceId) ?? false;
-    const connection = isNative ? null : resolveOmniConnection();
-    if (!isNative && !connection) {
-      return { text: input.text, mentions: mergeMentions(input.mentions) };
-    }
-
-    const metadata = await resolveOmniGroupMetadata({
-      omniApiUrl: connection?.apiUrl ?? null,
-      omniApiKey: connection?.apiKey ?? null,
-      nativeTransport: nativeWhatsApp,
+    const metadata = await resolveGroupMetadata({
+      fetcher: this.groupMetadataFetcher,
       accountId: input.accountId,
       instanceId: input.instanceId,
       chatId: input.chatId,

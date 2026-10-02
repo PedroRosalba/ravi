@@ -16,7 +16,7 @@ import { recordDeliveryTrace } from "./session-trace/channel-trace.js";
 import { listSessionEvents } from "./session-trace/session-trace-db.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "./test/ravi-state.js";
 import type { ResponseMessage } from "./runtime/message-types.js";
-import { upsertOmniGroupMetadata } from "./omni/group-metadata-cache.js";
+import { upsertGroupMetadata } from "./channels/group-metadata/cache.js";
 import type { ChannelUserMention } from "./channels/outbound/sender.js";
 
 const emitted: Array<[string, Record<string, unknown>]> = [];
@@ -523,7 +523,7 @@ describe("Gateway session trace instrumentation", () => {
     try {
       const { sessionName } = seedSession();
       const groupJid = "120363000000000000@g.us";
-      upsertOmniGroupMetadata({
+      upsertGroupMetadata({
         accountId: "main",
         instanceId: "11111111-1111-1111-1111-111111111111",
         chatId: groupJid,
@@ -578,7 +578,7 @@ describe("Gateway session trace instrumentation", () => {
     try {
       const { sessionName } = seedSession();
       const groupJid = "120363000000000002@g.us";
-      upsertOmniGroupMetadata({
+      upsertGroupMetadata({
         accountId: "main",
         instanceId: "11111111-1111-1111-1111-111111111111",
         chatId: groupJid,
@@ -634,7 +634,7 @@ describe("Gateway session trace instrumentation", () => {
     try {
       const { sessionName } = seedSession();
       const groupJid = "120363000000000001@g.us";
-      upsertOmniGroupMetadata({
+      upsertGroupMetadata({
         accountId: "main",
         instanceId: "11111111-1111-1111-1111-111111111111",
         chatId: groupJid,

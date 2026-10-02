@@ -165,11 +165,19 @@ mock.module("../../channels/session-prompt.js", () => ({
   },
 }));
 
-mock.module("../../omni/group-metadata-cache.js", () => ({
-  resolveOmniGroupMetadata: async (input: Record<string, unknown>) => {
+// Defines every export of cache.js: group.ts imports resolveGroupMetadata, and the
+// fetcher modules it imports (whatsapp/group-metadata.js, omni/group-metadata.js) import
+// the rest. The real module cannot be spread here: router-db.js is mocked without getDb.
+mock.module("../../channels/group-metadata/cache.js", () => ({
+  resolveGroupMetadata: async (input: Record<string, unknown>) => {
     metadataCalls.push(input);
     return metadataResult;
   },
+  getCachedGroupMetadata: () => null,
+  upsertGroupMetadata: () => {},
+  enrichParticipantsFromChatModel: <T>(metadata: T) => metadata,
+  normalizeGroupParticipant: () => null,
+  formatGroupMembersForPrompt: () => undefined,
 }));
 
 const actualMentionsModule = await import("../../channels/mentions.js");
@@ -196,7 +204,11 @@ mock.module("../../omni/sender.js", () => ({
 
 // The routing client: same instance API for Omni and native instances (the real one
 // dispatches per instance), plus the native ownership probe group.ts branches on.
-const fakeNativeTransport = {
+const fakeNativeTransport: {
+  isNativeInstance: (ref: string | undefined | null) => boolean;
+  resolveBinding: () => null;
+  request: (...args: unknown[]) => Promise<unknown>;
+} = {
   isNativeInstance: (ref: string | undefined | null) => Boolean(ref && nativeInstanceIds.has(ref)),
   resolveBinding: () => null,
   request: async () => {
@@ -327,6 +339,25 @@ type ContractErrorInstance = InstanceType<typeof ContractError>;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** The fetcher group.ts passed calls `groups.metadata` over the routing client's native transport. */
+async function expectWhatsAppFetcher(fetcher: unknown): Promise<void> {
+  expect(typeof fetcher).toBe("function");
+  const calls: unknown[][] = [];
+  const originalRequest = fakeNativeTransport.request;
+  fakeNativeTransport.request = async (...args: unknown[]) => {
+    calls.push(args);
+    return { groupJid: "111@g.us", subject: "Equipe", participants: [], fetchedAt: 1 };
+  };
+  try {
+    const fetch = fetcher as (input: Record<string, unknown>) => Promise<{ platformMetadata?: unknown } | null>;
+    const fetched = await fetch({ accountId: "main", instanceId: "native-1", chatId: "111", fetchTimeoutMs: 1234 });
+    expect(calls).toEqual([["native-1", "groups.metadata", { groupJid: "111@g.us" }, { timeoutMs: 1234 }]]);
+    expect(fetched?.platformMetadata).toEqual({ transport: "whatsapp" });
+  } finally {
+    fakeNativeTransport.request = originalRequest;
+  }
+}
 
 async function silenced<T>(run: () => Promise<T> | T): Promise<T> {
   const originalLog = console.log;
@@ -874,13 +905,8 @@ describe("whatsapp group on a native WhatsApp instance", () => {
     const result = await silenced(() => commands.info("111", undefined, true));
 
     expect(metadataCalls).toHaveLength(1);
-    expect(metadataCalls[0]).toMatchObject({
-      instanceId: "native-1",
-      chatId: "111@g.us",
-      omniApiUrl: null,
-      omniApiKey: null,
-      nativeTransport: fakeNativeTransport,
-    });
+    expect(metadataCalls[0]).toMatchObject({ instanceId: "native-1", chatId: "111@g.us", maxAgeMs: 0 });
+    await expectWhatsAppFetcher(metadataCalls[0]?.fetcher);
     expect(result).toMatchObject({
       source: "native.rpc",
       participants: [{ id: "5511999999999@s.whatsapp.net", admin: "admin" }],
@@ -895,7 +921,8 @@ describe("whatsapp group on a native WhatsApp instance", () => {
       commands.send("120363000000000001", "oi @Joao", undefined, undefined, true, true),
     );
 
-    expect(metadataCalls[0]).toMatchObject({ nativeTransport: fakeNativeTransport, omniApiUrl: null });
+    expect(metadataCalls[0]).toMatchObject({ instanceId: "native-1", chatId: "120363000000000001@g.us" });
+    await expectWhatsAppFetcher(metadataCalls[0]?.fetcher);
     expect(senderConstructions).toHaveLength(1);
     expect(senderConstructions[0]?.[0]).toMatchObject({ native: fakeNativeTransport });
     expect(senderSendCalls[0]).toMatchObject({ instanceId: "native-1", to: "120363000000000001@g.us" });

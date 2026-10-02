@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { createWhatsAppClient } from "./channels/whatsapp/client.js";
+import { createWhatsAppGroupMetadataFetcher } from "./channels/whatsapp/group-metadata.js";
+import type { requestWhatsAppRpc } from "./channels/whatsapp/rpc-client.js";
 import { Gateway } from "./gateway.js";
+import type { RouterConfig } from "./router/types.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "./test/ravi-state.js";
 
 const NATIVE_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -26,10 +30,26 @@ afterEach(async () => {
   stateDir = null;
 });
 
-function makeGateway(native: unknown) {
+/** Router config with one WhatsApp channel bound to NATIVE_ID (account "wa-native"). */
+function boundConfig(): Pick<RouterConfig, "instances" | "channels" | "instanceToAccount"> {
+  return {
+    instances: { "wa-native": { name: "wa-native", instanceId: NATIVE_ID, channel: "whatsapp-baileys" } },
+    channels: {
+      "wa-native": { name: "wa-native", provider: "whatsapp", enabled: true },
+    },
+    instanceToAccount: { [NATIVE_ID]: "wa-native" },
+  } as unknown as Pick<RouterConfig, "instances" | "channels" | "instanceToAccount">;
+}
+
+function makeGateway(request: unknown) {
+  const client = createWhatsAppClient({
+    getConfig: boundConfig,
+    request: request as typeof requestWhatsAppRpc,
+  });
   return new Gateway({
-    sender: { getNativeWhatsApp: () => native } as never,
+    sender: {} as never,
     presenceTargets: {} as never,
+    groupMetadataFetcher: createWhatsAppGroupMetadataFetcher(client),
   });
 }
 
@@ -56,8 +76,7 @@ describe("Gateway outbound mentions for native WhatsApp", () => {
       ],
       fetchedAt: Date.now(),
     }));
-    const native = { isNativeInstance: (id: string) => id === NATIVE_ID, request };
-    const gateway = makeGateway(native);
+    const gateway = makeGateway(request);
     const prepare = (gateway as unknown as { prepareOutboundMentionMessage: PrepareMentions })
       .prepareOutboundMentionMessage;
 
@@ -75,7 +94,7 @@ describe("Gateway outbound mentions for native WhatsApp", () => {
     expect(prepared.text).not.toContain("@Luis Filipe");
   });
 
-  it("does not use the runner RPC for instances it does not own", async () => {
+  it("does not call the runner RPC for instances not bound to a WhatsApp channel", async () => {
     // A host-level ~/.omni/config.json may still resolve an Omni connection; keep it offline.
     globalThis.fetch = mock(async () =>
       Response.json({ error: "offline" }, { status: 503 }),
@@ -83,7 +102,7 @@ describe("Gateway outbound mentions for native WhatsApp", () => {
     const request = mock(async () => {
       throw new Error("should not be called");
     });
-    const gateway = makeGateway({ isNativeInstance: () => false, request });
+    const gateway = makeGateway(request);
     const prepare = (gateway as unknown as { prepareOutboundMentionMessage: PrepareMentions })
       .prepareOutboundMentionMessage;
 
