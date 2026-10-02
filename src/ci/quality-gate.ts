@@ -41,6 +41,8 @@ const WHATSAPP_FOCUSED_TESTS = [
   "src/channels/whatsapp/channel-name.test.ts",
   "src/channels/whatsapp/provisioning.test.ts",
   "src/channels/whatsapp/contract.test.ts",
+  // Moved from src/omni/local-media.test.ts (daemon-side reader of runner-downloaded media).
+  "src/channels/whatsapp/local-media.test.ts",
 ];
 
 /**

@@ -23,7 +23,7 @@ import {
 } from "../../router/router-db.js";
 import { publishChannelSessionPrompt } from "../../channels/session-prompt.js";
 import { resolveOmniGroupMetadata } from "../../omni/group-metadata-cache.js";
-import { prepareOmniMentionMessage } from "../../omni/mentions.js";
+import { prepareMentionMessage } from "../../channels/mentions.js";
 import { OmniSender } from "../../omni/sender.js";
 import { resolveOmniConnection, type OmniConnection } from "../../omni-config.js";
 import { createChannelTransportClient, type ChannelTransportClient } from "../../channels/whatsapp/transport-client.js";
@@ -1074,7 +1074,7 @@ export class GroupCommands {
         })
       : null;
 
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: cleanMessage,
       explicitTargets: mentionTargets,
       participants: metadata?.participants,

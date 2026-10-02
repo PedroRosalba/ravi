@@ -17,7 +17,7 @@ import { listSessionEvents } from "./session-trace/session-trace-db.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "./test/ravi-state.js";
 import type { ResponseMessage } from "./runtime/message-types.js";
 import { upsertOmniGroupMetadata } from "./omni/group-metadata-cache.js";
-import type { OmniUserMention } from "./omni/mentions.js";
+import type { ChannelUserMention } from "./channels/outbound/sender.js";
 
 const emitted: Array<[string, Record<string, unknown>]> = [];
 const emitMock = mock(async (topic: string, payload: Record<string, unknown>) => {
@@ -32,7 +32,7 @@ type RuntimePresenceEventData = {
   _source?: NonNullable<ResponseMessage["target"]>;
 };
 
-type GatewaySendOptions = string | { threadId?: string; mentions?: OmniUserMention[] };
+type GatewaySendOptions = string | { threadId?: string; mentions?: ChannelUserMention[] };
 type GatewaySend = (
   instanceId: string,
   chatId: string,

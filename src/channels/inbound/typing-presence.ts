@@ -1,6 +1,6 @@
-import { logger } from "../utils/logger.js";
+import { logger } from "../../utils/logger.js";
 
-const log = logger.child("omni:typing-presence");
+const log = logger.child("channels:typing-presence");
 
 export interface TypingPresenceTarget {
   instanceId: string;

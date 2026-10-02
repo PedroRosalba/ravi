@@ -172,8 +172,10 @@ mock.module("../../omni/group-metadata-cache.js", () => ({
   },
 }));
 
-mock.module("../../omni/mentions.js", () => ({
-  prepareOmniMentionMessage: (input: { text: string }) => ({
+const actualMentionsModule = await import("../../channels/mentions.js");
+mock.module("../../channels/mentions.js", () => ({
+  ...actualMentionsModule,
+  prepareMentionMessage: (input: { text: string }) => ({
     text: input.text,
     mentions: [],
     resolved: [],

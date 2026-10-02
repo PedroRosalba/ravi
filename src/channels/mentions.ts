@@ -1,9 +1,8 @@
-export interface OmniUserMention {
-  id: string;
-  type: "user";
-}
+import type { ChannelUserMention } from "./outbound/sender.js";
 
-export interface OmniMentionParticipant {
+export type { ChannelUserMention } from "./outbound/sender.js";
+
+export interface MentionParticipant {
   platformUserId: string;
   normalizedPlatformUserId?: string | null;
   mentionUserId?: string | null;
@@ -12,7 +11,7 @@ export interface OmniMentionParticipant {
   displayName?: string | null;
 }
 
-export interface ResolvedOmniMention {
+export interface ResolvedMention {
   id: string;
   placeholder: string;
   displayName?: string;
@@ -20,10 +19,10 @@ export interface ResolvedOmniMention {
   matched: string;
 }
 
-export interface PreparedOmniMentionMessage {
+export interface PreparedMentionMessage {
   text: string;
-  mentions: OmniUserMention[];
-  resolved: ResolvedOmniMention[];
+  mentions: ChannelUserMention[];
+  resolved: ResolvedMention[];
 }
 
 export interface InboundMentionReplacement {
@@ -39,12 +38,12 @@ export interface InboundMentionTarget {
 }
 
 interface ParticipantCandidate {
-  participant: OmniMentionParticipant;
+  participant: MentionParticipant;
   keys: Set<string>;
 }
 
 interface InlineMentionAlias {
-  participant: OmniMentionParticipant;
+  participant: MentionParticipant;
   surface: string;
 }
 
@@ -274,7 +273,7 @@ export function normalizeInboundMentionText(input: {
   return { text, replacements };
 }
 
-function participantIdentityValues(participant: OmniMentionParticipant): string[] {
+function participantIdentityValues(participant: MentionParticipant): string[] {
   const values = [
     participant.platformUserId,
     participant.normalizedPlatformUserId,
@@ -285,7 +284,7 @@ function participantIdentityValues(participant: OmniMentionParticipant): string[
   return Array.from(new Set(values.map((value) => (value ? cleanMentionRef(value) : "")).filter(Boolean)));
 }
 
-function participantPhoneAliasBase(participant: OmniMentionParticipant): string | undefined {
+function participantPhoneAliasBase(participant: MentionParticipant): string | undefined {
   for (const value of [
     participant.mentionUserId,
     participant.phoneJid,
@@ -298,7 +297,7 @@ function participantPhoneAliasBase(participant: OmniMentionParticipant): string 
   return undefined;
 }
 
-function participantNativeMentionId(participant: OmniMentionParticipant): string {
+function participantNativeMentionId(participant: MentionParticipant): string {
   const platformUserId = cleanMentionRef(participant.platformUserId);
   if (!platformUserId) return cleanMentionRef(participant.mentionUserId ?? participant.platformUserId);
   if (platformUserId.includes("@")) return platformUserId;
@@ -313,7 +312,7 @@ function participantNativeMentionId(participant: OmniMentionParticipant): string
   return platformUserId;
 }
 
-function participantMentionId(participant: OmniMentionParticipant): string {
+function participantMentionId(participant: MentionParticipant): string {
   return participantNativeMentionId(participant);
 }
 
@@ -325,7 +324,7 @@ function addCandidateKey(keys: Set<string>, value: string | null | undefined): v
   if (compact) keys.add(compact);
 }
 
-function participantCandidates(participants: readonly OmniMentionParticipant[] = []): ParticipantCandidate[] {
+function participantCandidates(participants: readonly MentionParticipant[] = []): ParticipantCandidate[] {
   const firstTokenCounts = new Map<string, number>();
   for (const participant of participants) {
     const first = normalizeLookup(participant.displayName ?? "").split(" ")[0];
@@ -352,8 +351,8 @@ function participantCandidates(participants: readonly OmniMentionParticipant[] =
 
 function findParticipant(
   ref: string,
-  participants: readonly OmniMentionParticipant[] = [],
-): { participant: OmniMentionParticipant; ambiguous: boolean } | null {
+  participants: readonly MentionParticipant[] = [],
+): { participant: MentionParticipant; ambiguous: boolean } | null {
   const normalized = normalizeLookup(ref);
   const compact = compactLookup(ref);
   const candidates = participantCandidates(participants);
@@ -364,7 +363,7 @@ function findParticipant(
   return null;
 }
 
-function firstNameCounts(participants: readonly OmniMentionParticipant[]): Map<string, number> {
+function firstNameCounts(participants: readonly MentionParticipant[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const participant of participants) {
     const first = normalizeLookup(participant.displayName ?? "").split(" ")[0];
@@ -373,7 +372,7 @@ function firstNameCounts(participants: readonly OmniMentionParticipant[]): Map<s
   return counts;
 }
 
-function aliasSurfacesForParticipant(participant: OmniMentionParticipant, firstCounts: Map<string, number>): string[] {
+function aliasSurfacesForParticipant(participant: MentionParticipant, firstCounts: Map<string, number>): string[] {
   const surfaces = new Set<string>();
   const addSurface = (value: string | null | undefined) => {
     const clean = safeDisplayName(value ?? undefined);
@@ -408,7 +407,7 @@ function aliasSurfacesForParticipant(participant: OmniMentionParticipant, firstC
   return Array.from(surfaces).filter((surface) => normalizeLookup(surface));
 }
 
-function buildInlineMentionAliases(participants: readonly OmniMentionParticipant[]): InlineMentionAlias[] {
+function buildInlineMentionAliases(participants: readonly MentionParticipant[]): InlineMentionAlias[] {
   const firstCounts = firstNameCounts(participants);
   const byLookup = new Map<string, InlineMentionAlias[]>();
 
@@ -451,7 +450,7 @@ function isVisiblePlaceholderAt(text: string, offset: number, placeholder: strin
 
 function resolveMention(
   ref: string,
-  participants: readonly OmniMentionParticipant[] = [],
+  participants: readonly MentionParticipant[] = [],
 ): { id: string; displayName?: string; ambiguous?: boolean } | null {
   const participant = findParticipant(ref, participants);
   if (participant?.ambiguous) return { id: participantMentionId(participant.participant), ambiguous: true };
@@ -470,12 +469,12 @@ function resolveMention(
 }
 
 function addResolvedMention(
-  resolvedById: Map<string, ResolvedOmniMention>,
+  resolvedById: Map<string, ResolvedMention>,
   input: { id: string; displayName?: string; matched: string; placeholder?: string; source: "explicit" | "inline" },
-): ResolvedOmniMention {
+): ResolvedMention {
   const existing = resolvedById.get(input.id);
   if (existing) return existing;
-  const resolved: ResolvedOmniMention = {
+  const resolved: ResolvedMention = {
     id: input.id,
     placeholder:
       input.placeholder ??
@@ -501,8 +500,8 @@ function mentionPlaceholderForMode(
 
 function replaceInlineMentions(
   text: string,
-  participants: readonly OmniMentionParticipant[],
-  resolvedById: Map<string, ResolvedOmniMention>,
+  participants: readonly MentionParticipant[],
+  resolvedById: Map<string, ResolvedMention>,
   placeholderMode: MentionPlaceholderMode,
 ): string {
   let out = text;
@@ -545,18 +544,18 @@ function replaceExplicitPlaceholder(text: string, target: string, placeholder: s
   return `${placeholder} ${text}`.trim();
 }
 
-export function prepareOmniMentionMessage(input: {
+export function prepareMentionMessage(input: {
   text: string;
   explicitTargets?: readonly string[];
-  participants?: readonly OmniMentionParticipant[] | null;
+  participants?: readonly MentionParticipant[] | null;
   autoResolveInline?: boolean;
   autoResolvePhoneNumbers?: boolean;
   placeholderMode?: MentionPlaceholderMode;
-}): PreparedOmniMentionMessage {
+}): PreparedMentionMessage {
   const participants = input.participants ?? [];
   const placeholderMode = input.placeholderMode ?? "display";
   const explicitTargets = [...(input.explicitTargets ?? [])].map(cleanMentionRef).filter(Boolean);
-  const resolvedById = new Map<string, ResolvedOmniMention>();
+  const resolvedById = new Map<string, ResolvedMention>();
   let text =
     input.autoResolveInline === false
       ? input.text

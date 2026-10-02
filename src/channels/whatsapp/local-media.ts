@@ -14,11 +14,11 @@
 import { realpath, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { logger } from "../utils/logger.js";
-import { MAX_MEDIA_BYTES } from "../utils/media.js";
-import { getRaviStateDir } from "../utils/paths.js";
+import { logger } from "../../utils/logger.js";
+import { MAX_MEDIA_BYTES } from "../../utils/media.js";
+import { getRaviStateDir } from "../../utils/paths.js";
 
-const log = logger.child("omni:local-media");
+const log = logger.child("channels:whatsapp:local-media");
 
 /** Default roots local media may be read from. Resolved per call (tests switch RAVI_STATE_DIR). */
 export function defaultLocalMediaRoots(env: NodeJS.ProcessEnv = process.env): string[] {

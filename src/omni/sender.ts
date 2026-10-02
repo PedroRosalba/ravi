@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import type { ChannelTransportClient, NativeWhatsAppTransport } from "../channels/whatsapp/transport-client.js";
 import { createOmniClient, type OmniClient } from "./client.js";
 import { logger } from "../utils/logger.js";
-import type { OmniUserMention } from "./mentions.js";
+import type { ChannelUserMention } from "../channels/outbound/sender.js";
 
 const log = logger.child("omni:sender");
 
@@ -109,7 +109,7 @@ export class OmniSender {
     instanceId: string,
     to: string,
     text: string,
-    optionsOrThreadId?: string | { threadId?: string; mentions?: OmniUserMention[] },
+    optionsOrThreadId?: string | { threadId?: string; mentions?: ChannelUserMention[] },
   ): Promise<{ messageId?: string }> {
     try {
       const options =

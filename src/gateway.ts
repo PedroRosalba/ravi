@@ -53,7 +53,7 @@ import {
   dbSaveMessageMeta,
   dbUpsertChatMessage,
 } from "./router/router-db.js";
-import { prepareOmniMentionMessage, type OmniUserMention } from "./omni/mentions.js";
+import { prepareMentionMessage, type ChannelUserMention } from "./channels/mentions.js";
 import { resolveOmniConnection } from "./omni-config.js";
 import { resolveOmniGroupMetadata } from "./omni/group-metadata-cache.js";
 import { buildRaviTtsRequest, handleRaviTtsRequest, RAVI_TTS_TOPIC, shouldAutoTtsForAgent } from "./audio/tts.js";
@@ -90,8 +90,8 @@ function isWhatsAppGroupJid(chatId: string): boolean {
   return chatId.endsWith("@g.us");
 }
 
-function mergeMentions(...lists: Array<readonly OmniUserMention[] | undefined>): OmniUserMention[] | undefined {
-  const byId = new Map<string, OmniUserMention>();
+function mergeMentions(...lists: Array<readonly ChannelUserMention[] | undefined>): ChannelUserMention[] | undefined {
+  const byId = new Map<string, ChannelUserMention>();
   for (const list of lists) {
     for (const mention of list ?? []) {
       byId.set(mention.id, mention);
@@ -289,7 +289,7 @@ type DirectSendRequest = {
   accountId: string;
   to: string;
   text?: string;
-  mentions?: OmniUserMention[];
+  mentions?: ChannelUserMention[];
   poll?: { name: string; values: string[]; selectableCount?: number };
   typingDelayMs?: number;
   pauseMs?: number;
@@ -519,8 +519,8 @@ export class Gateway {
     chatId: string;
     channel: string;
     text: string;
-    mentions?: readonly OmniUserMention[];
-  }): Promise<{ text: string; mentions?: OmniUserMention[] }> {
+    mentions?: readonly ChannelUserMention[];
+  }): Promise<{ text: string; mentions?: ChannelUserMention[] }> {
     if (!input.text.includes("@") || !isWhatsAppGroupJid(input.chatId)) {
       return { text: input.text, mentions: mergeMentions(input.mentions) };
     }
@@ -543,7 +543,7 @@ export class Gateway {
       channel: input.channel,
     });
 
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: input.text,
       participants: metadata?.participants,
       autoResolvePhoneNumbers: true,

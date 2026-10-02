@@ -102,7 +102,7 @@ import {
   resolveOmniGroupMetadata,
   type NativeGroupMetadataTransport,
 } from "./group-metadata-cache.js";
-import { readLocalMediaFile, resolveLocalMediaPath } from "./local-media.js";
+import { readLocalMediaFile, resolveLocalMediaPath } from "../channels/whatsapp/local-media.js";
 import {
   CHANNEL_INBOUND_STREAM,
   isNativeWhatsAppInstance,
@@ -110,8 +110,8 @@ import {
   WhatsAppTransportEventSchema,
 } from "../channels/whatsapp/contract.js";
 import { ensureChannelInboundStream } from "../channels/whatsapp/inbound-stream.js";
-import { extractInboundMentionTargets, normalizeInboundMentionText } from "./mentions.js";
-import { TypingPresenceHeartbeat, type TypingPresenceEvent } from "./typing-presence.js";
+import { extractInboundMentionTargets, normalizeInboundMentionText } from "../channels/mentions.js";
+import { TypingPresenceHeartbeat, type TypingPresenceEvent } from "../channels/inbound/typing-presence.js";
 import { runTagRulesForContact } from "../tag-rules/index.js";
 import { fetchCachedOmniMedia, fetchOmniMedia, saveToAgentAttachments, MAX_AUDIO_BYTES } from "../utils/media.js";
 import { firstProviderTimestampMs, timestampLikeToMs } from "../utils/provider-timestamp.js";

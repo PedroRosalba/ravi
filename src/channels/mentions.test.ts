@@ -3,7 +3,7 @@ import {
   extractInboundMentionTargets,
   mentionPlaceholderForId,
   normalizeInboundMentionText,
-  prepareOmniMentionMessage,
+  prepareMentionMessage,
 } from "./mentions.js";
 
 const participants = [
@@ -12,9 +12,9 @@ const participants = [
   { platformUserId: "5511999999999@s.whatsapp.net", displayName: "Israel Nunes" },
 ];
 
-describe("Omni mention preparation", () => {
+describe("mention preparation", () => {
   it("resolves inline participant names to native WhatsApp mention payloads", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "@ravi olha isso",
       participants,
     });
@@ -29,7 +29,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("resolves exact full display names with spaces", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "oi @Ravi Bot",
       participants,
     });
@@ -39,7 +39,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("prefixes explicit mentions when the message has no placeholder", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "olha isso",
       explicitTargets: ["Israel"],
       participants,
@@ -50,7 +50,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("uses explicit raw JIDs without requiring participant metadata", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "teste",
       explicitTargets: ["91015272759397@lid"],
     });
@@ -60,7 +60,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("normalizes accents and unique first names", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "@Luis confere",
       participants,
     });
@@ -70,7 +70,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("uses the native LID mention id when a group member has a distinct phone alias", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "@Luis confere",
       participants: [
         {
@@ -90,7 +90,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("can emit native WhatsApp placeholders for outbound group delivery", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "@Luis confere",
       participants: [
         {
@@ -107,7 +107,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("does not resolve partial inline names", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "@Luisalgo confere @Lu",
       participants,
     });
@@ -117,7 +117,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("resolves exact numeric participant ids and ignores wrong-length suffixes", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "oi @91015272759397 e @910152727593970",
       participants,
     });
@@ -127,7 +127,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("does not auto-resolve raw participant ids without a safe display label", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "oi @91015272759397",
       participants: [{ platformUserId: "91015272759397@lid" }],
     });
@@ -137,7 +137,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("does not resolve inline ids that are not participants", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "oi @12345678901234",
       participants,
     });
@@ -147,7 +147,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("can resolve inline phone placeholders as WhatsApp mentions when enabled", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "@5511947879044, cola isso no terminal pra ver:",
       autoResolvePhoneNumbers: true,
     });
@@ -162,7 +162,7 @@ describe("Omni mention preparation", () => {
   });
 
   it("keeps inline phone placeholders as plain text unless the WhatsApp fallback is enabled", () => {
-    const prepared = prepareOmniMentionMessage({
+    const prepared = prepareMentionMessage({
       text: "oi @5511947879044",
     });
 
@@ -172,7 +172,7 @@ describe("Omni mention preparation", () => {
 
   it("fails explicit ambiguous names instead of guessing", () => {
     expect(() =>
-      prepareOmniMentionMessage({
+      prepareMentionMessage({
         text: "oi",
         explicitTargets: ["Luis"],
         participants: [
