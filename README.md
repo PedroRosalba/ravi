@@ -67,7 +67,7 @@ When an agent opens or updates a pull request with `gh`, Ravi follows that PR an
 
 ### Pages people can open
 
-`ravi pages ship` publishes a page in one call. Each project owns one default host (`<org>-<project>.ravi.page`), and pages are routes on it. Visibility and passwords change per route without re-uploading, and comments left on a page wake the agent that shipped it.
+`ravi pages ship` publishes a page in one call. Each project owns one default host (`<org>-<project>.ravi.page`), and pages are routes on it. Visibility and passwords change per route without re-uploading. A successful ship also subscribes the shipping agent to new comments on that page, so feedback reaches the session that published it.
 
 ```bash
 ravi pages published --project <project> --json
@@ -112,10 +112,10 @@ ravi sessions send main "Summarize the current Ravi runtime state" --wait
 ravi tui main
 ```
 
-Connect WhatsApp through the channel bridge:
+Connect a WhatsApp instance through the channel bridge (shows a QR code to pair):
 
 ```bash
-ravi whatsapp connect
+ravi instances connect main
 ```
 
 ## Everyday Commands
@@ -233,7 +233,7 @@ NATS carries live events and coordination. SQLite stores local operational state
 
 ## Runtime Provider Contract
 
-Providers are adapters, not owners of Ravi behavior. They normalize native execution into canonical events: `thread.started`, `turn.started`, `assistant.message`, `tool.started`, `tool.completed`, `approval.requested`, `turn.complete`, `turn.failed`, and `turn.interrupted`.
+Providers are adapters, not owners of Ravi behavior. They normalize native execution into canonical events: `thread.started`, `turn.started`, `item.started`, `item.completed`, `text.delta`, `status`, `assistant.message`, `tool.started`, `tool.completed`, `approval.requested`, `approval.resolved`, `turn.interrupted`, `turn.failed`, and `turn.complete`.
 
 Ravi remains responsible for:
 
@@ -291,7 +291,7 @@ packages/             generated SDK packages
 - Contacts represent people or organizations, chats represent conversations, and agents remain agents.
 - Providers do not bypass Ravi permissions or mutate tasks and sessions directly.
 - Secrets must not be stored in SQLite, emitted in traces, forwarded to shell tools, or leaked through provider raw events.
-- Channel drivers may declare a bounded set of inbound slash actions. Only the action name, whether arguments were present, and the authenticated channel identity cross that boundary, and an action fails closed when its runtime is unavailable.
+- Channel drivers may declare a bounded set of inbound slash actions. Only the action name, whether arguments were present, and the channel identity carried by the inbound event cross that boundary. The boundary checks the identity's shape but does not authenticate it. An action fails closed when its runtime is unavailable.
 - Cloud auth stores Ravi-owned CLI credentials, not browser cookies or provider tokens.
 - Commercial hosting, billing, quotas, hosted artifact serving, private asset auth, custom domains, and Console server policy live outside this open-source repo.
 
@@ -345,7 +345,7 @@ bun run lint
 bun run check:docs
 ```
 
-`bun install` installs a pre-push hook that mirrors the CI quality gate and checks SDK drift before pushing.
+`bun install` sets up a pre-push hook that checks SDK drift and then runs the build, typecheck, and test commands.
 
 ## Useful Docs
 
