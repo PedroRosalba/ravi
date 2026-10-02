@@ -2,10 +2,9 @@
 name: instances-manager
 description: |
   Gerencia instâncias de canais do Ravi. Use quando o usuário quiser:
-  - Criar, listar ou configurar instâncias (contas Omni ou WhatsApp nativo)
-  - Conectar/desconectar contas WhatsApp, Matrix, etc
-  - Conectar WhatsApp pelo transporte nativo (Baileys no runner `ravi channels`)
-  - Migrar uma instância WhatsApp do Omni para o transporte nativo
+  - Criar, listar ou configurar instâncias (WhatsApp, Telegram, Discord, etc)
+  - Conectar, desconectar ou deslogar contas WhatsApp (Baileys no runner `ravi channels`)
+  - Migrar uma instância WhatsApp que estava no Omni para o runner `ravi channels`
   - Definir policies de DM e grupo por instância
   - Configurar contact intake automático por instância
   - Gerenciar rotas de uma instância específica
@@ -14,7 +13,9 @@ description: |
 
 # Instances Manager
 
-Instâncias são a entidade central de configuração do Ravi. Cada instância representa uma conta conectada (WhatsApp, Matrix, etc) com seu próprio agent, policies e rotas.
+Instâncias são a entidade central de configuração do Ravi. Cada instância representa uma conta conectada (WhatsApp, Telegram, Discord, etc) com seu próprio agent, policies e rotas.
+
+Transportes: WhatsApp roda sempre no runner `ravi channels` (Baileys, processo PM2 `ravi-channels`). Telegram e Discord passam pela ponte legada Omni, que é opcional. WhatsApp nunca passa pelo Omni; instâncias `twilio-whatsapp` e `gupshup` não são suportadas (`connect`, `create`, `disconnect` e `status` falham com `USAGE_ERROR`).
 
 ## Contrato Do CLI
 
@@ -27,7 +28,7 @@ Taxonomia de saída:
 - `2` erro de uso (flag/argumento inválido). O envelope traz `acceptedFlags`: corrija a chamada, não insista na mesma sintaxe.
 - `3` freio de escrita — não é erro. Nada foi gravado; o envelope traz `dryRun:true` e `plan` com exatamente o que seria feito. Revise o plano e repita com `--execute`.
 
-Onde o freio existe hoje: `instances pending reject` é dry-run por default e exige `--execute`. As demais escritas gravam na hora, sem dry-run: `create`, `set`, `enable`, `disable`, `restore`, `delete`, `disconnect`, `connect` (interativo com QR — humano no loop), `routes add`, `routes set`, `routes remove`, `routes restore`, `pending approve`. Nessas o freio é você: confira o alvo antes de rodar.
+Onde o freio existe hoje: `instances logout` e `instances pending reject` são dry-run por default e exigem `--execute`. As demais escritas gravam na hora, sem dry-run: `create`, `set`, `enable`, `disable`, `restore`, `delete`, `disconnect`, `connect` (interativo com QR — humano no loop), `routes add`, `routes set`, `routes remove`, `routes restore`, `pending approve`. Nessas o freio é você: confira o alvo antes de rodar. Atenção: `delete` numa instância WhatsApp também desloga e apaga as credenciais; `restore` traz a config de volta, mas é preciso parear de novo com `connect`.
 
 Compact mode: `instances list` e `routes list` aceitam `--fields a,b,c` (ex.: `--fields name,channel,agent`) — use em varredura para não arrastar o objeto inteiro de cada instância/rota.
 
@@ -44,7 +45,7 @@ Instância isolada não conta a história toda. Ao diagnosticar o estado, combin
 
 ```bash
 ravi instances list --json                    # canais conectados, intake mode, default tags
-ravi instances show <name> --json             # detalhes + rotas + status ao vivo + transport (native|omni)
+ravi instances show <name> --json             # detalhes + rotas + status ao vivo + transport (whatsapp|omni)
 ravi contacts list --json                     # quantos contatos cada instância gerou
 ravi chats list --json                        # quantos chats por instância
 ```
@@ -84,12 +85,12 @@ Keys disponíveis:
 - `groupPolicy` - Política para grupos: `open` | `allowlist` | `closed`
 - `dmScope` - Escopo de sessões DM: `main` | `per-peer` | `per-channel-peer` | `per-account-channel-peer`
 - `contactIntakeMode` - Criação/link automático de contatos em DMs: `off` | `discovered` | `pending`
-- `instanceId` - UUID de transporte da instância (Omni ou nativo; auto-preenchido no connect, nunca troque numa migração)
-- `channel` - Canal: `whatsapp` | `matrix` | etc
+- `instanceId` - UUID de transporte da instância (auto-preenchido no connect; uma instância vinda do Omni mantém o mesmo UUID, nunca troque numa migração)
+- `channel` - Canal: `whatsapp` | `telegram` | `discord` | etc
 
 ### Remover instância
 ```bash
-ravi instances delete <name>            # soft-delete imediato, recuperável com restore
+ravi instances delete <name>            # soft-delete imediato, recuperável com restore (WhatsApp: desloga e apaga as credenciais)
 ```
 
 ## Conexão de Canal
@@ -98,45 +99,42 @@ ravi instances delete <name>            # soft-delete imediato, recuperável com
 ```bash
 ravi instances connect <name>
 ravi instances connect vendas --agent vendas-agent
-ravi instances connect vendas --agent vendas-agent --transport native
 ```
 
-`--transport <native|omni>` escolhe quem segura o socket do WhatsApp. Sem a flag, a ordem é:
-
-1. canal não-WhatsApp (telegram, discord, ...) → omni;
-2. instância que já tem canal WhatsApp nativo → native;
-3. setting `whatsapp.transport` (`ravi settings set whatsapp.transport native`);
-4. omni se o Omni estiver configurado, senão native.
-
-`--transport native` com `--channel` não-WhatsApp é erro de uso (exit 2). `--transport omni` numa instância dona de canal nativo falha com `INSTANCE_NATIVE_OWNED`.
+`connect` de WhatsApp sempre usa o runner `ravi channels`. Não existe flag `--transport` nem setting `whatsapp.transport`. Para Telegram/Discord, `ravi instances connect <name> --channel telegram` usa a ponte legada Omni.
 
 ### Ver status
 ```bash
 ravi instances status <name>
 ```
 
-Com `--json`, `status`, `show`, `list` e `disconnect` trazem `transport` (`native`, `omni` ou `null`). Instância nativa consulta o runner: `live` traz `state` (`connected`, `connecting`, `qr`, `disconnected`, `logged_out`, `error`). Em `list`, runner fora do ar aparece como `disconnected` sem falhar; em `status`, falha com `WHATSAPP_RUNNER_UNAVAILABLE`.
+Com `--json`, `status`, `show`, `list` e `disconnect` trazem `transport` (`whatsapp`, `omni` para a ponte legada, ou `null` para `twilio-whatsapp`/`gupshup`). Instância WhatsApp consulta o runner: `live` traz `state` (`connected`, `connecting`, `qr`, `disconnected`, `logged_out`, `error`). Em `list`, runner fora do ar aparece como `disconnected` sem falhar; em `status`, o comando falha (rode `ravi channels start`).
 
-### Desconectar
+### Desconectar, deslogar, desabilitar
 ```bash
-ravi instances disconnect <name>
+ravi instances disconnect <name>             # fecha o socket, mantém as credenciais
+ravi instances logout <name>                 # dry-run (exit 3): mostra o plano
+ravi instances logout <name> --execute       # desvincula o aparelho e apaga as credenciais
+ravi instances disable <name>                # desliga a instância e o canal WhatsApp dela
 ```
 
-Em instância nativa, `disconnect` fecha o socket no runner sem deslogar o aparelho: um `connect` depois reconecta sem QR.
+- `disconnect` persiste entre reinícios do runner (saúde `disconnected` / `manual_disconnect`) até o próximo `connect`, que reconecta sem QR.
+- `logout` só vale para WhatsApp. Depois dele, só um QR novo pareia a conta. Se o runner não responder, as credenciais são apagadas localmente; remova o aparelho no celular (WhatsApp > Aparelhos conectados).
+- `enable`/`disable` também ligam/desligam o canal WhatsApp da instância; `disable` mantém as credenciais.
 
-## WhatsApp Nativo
+## WhatsApp No Runner `ravi channels`
 
-O transporte nativo roda o Baileys dentro do runner `ravi channels` (processo PM2 `ravi-channels`), sem Omni. O daemon continua processando as mensagens pelo mesmo pipeline do Omni: sessões, chats, contatos e rotas não mudam.
+O WhatsApp roda o Baileys dentro do runner `ravi channels` (processo PM2 `ravi-channels`). O daemon recebe os eventos pelo stream `CHANNEL_INBOUND` e processa no mesmo pipeline de sempre: sessões, chats, contatos e rotas.
 
 Pré-requisitos:
 
 - `ravi daemon start` rodando (ele repassa os QR codes para o CLI);
-- `ravi channels start` rodando (o daemon não sobe o runner sozinho). Depois de atualizar o Ravi, use `ravi channels restart`.
+- `ravi channels start` rodando (o daemon não sobe o runner sozinho). Depois de atualizar o Ravi, reinicie o daemon e depois o runner (`ravi daemon restart && ravi channels restart`): o runner recusa um bundle diferente do daemon.
 
-O que `ravi instances connect <name> --transport native` faz:
+O que `ravi instances connect <name>` faz:
 
 1. cria a instância com UUID novo, ou mantém o UUID que ela já tem (ex.: vindo do Omni);
-2. cria o canal `<name>` com provider `whatsapp` (`ravi channels show <name>`); o vínculo canal↔instância é pelo nome;
+2. cria o canal `<name>` com provider `whatsapp` (`ravi channels show <name>`); o vínculo canal↔instância é pelo nome (ou por `defaults.instance` quando o nome do canal precisou ser sanitizado);
 3. avisa o runner (`ravi.config.changed`) e espera até 15s ele subir o canal;
 4. imprime QR codes até o celular conectar (até 120s); com `--json`, retorna no primeiro QR.
 
@@ -144,33 +142,27 @@ Erros comuns:
 
 - `WHATSAPP_RUNNER_UNAVAILABLE`: o runner não respondeu. Rode `ravi channels start` (ou `ravi channels restart`) e repita o mesmo comando; instância e canal já ficaram criados.
 - `INSTANCE_CONNECT_TIMEOUT`: nenhum QR/conexão chegou. Confira `ravi daemon status` e `ravi channels status`.
-- `NATIVE_INSTANCE_CONFLICT`: o nome pertence a uma instância não-WhatsApp, a um canal de outro provider ou a um canal WhatsApp desabilitado.
+- `WHATSAPP_INSTANCE_CONFLICT`: o nome pertence a uma instância não-WhatsApp ou a um canal ligado a outra instância. Uma instância soft-deletada falha com `USAGE_ERROR`: rode `ravi instances restore <name>` antes.
 
-Saúde: `ravi channels status` lista cada canal com estado e motivo (`connected`, `starting (pairing_required)`, `starting (qr_pending)`, `reconnecting`, `disconnected (logged_out|connection_replaced|...)`, `failed (missing_dependency)`). `pairing_required` ou `logged_out` → pareie de novo com `connect`. `connection_replaced` → outro processo usa a mesma sessão; procure um segundo runner.
+Saúde: `ravi channels status` lista cada canal com estado e motivo (`connected`, `starting (pairing_required)`, `starting (qr_pending)`, `reconnecting`, `disconnected (manual_disconnect|logged_out|connection_replaced|qr_reset_failed)`, `failed (missing_dependency)`). `pairing_required` ou `logged_out` → pareie de novo com `connect`. `manual_disconnect` → alguém rodou `disconnect`; `connect` reconecta. `connection_replaced` → outro processo usa a mesma sessão; procure um segundo runner ou uma instância ainda conectada no Omni.
 
-### Migrar uma instância do Omni para o nativo
+### Migrar uma instância que estava no Omni
 
-Uma instância por vez:
+Leia antes o aviso de NATS: em hosts que vieram do Omni, o processo PM2 `omni-nats` **é o NATS do Ravi**. Nunca rode `omni stop|start|restart|install` nem `pm2 stop|delete|restart omni-nats`.
+
+Uma instância por vez (o UUID, as sessões e os chats não mudam):
 
 ```bash
 ravi instances show vendas --json                      # anote o instanceId (UUID): ele não muda
-ravi channels status                                   # runner rodando? senão: ravi channels start
-ravi instances disconnect vendas                       # ainda pelo Omni
-# remova o aparelho do Omni no celular (WhatsApp > Aparelhos conectados)
-ravi instances connect vendas --transport native       # escaneie o QR novo
-ravi instances status vendas --json                    # transport "native", state "connected"
+ravi daemon restart && ravi channels restart           # mesmo bundle nos dois, daemon primeiro
+omni instances disconnect <uuid>                       # para a instância no lado do Omni
+ravi instances connect vendas                          # escaneie o QR novo
+ravi instances status vendas --json                    # transport "whatsapp", status "connected"
 ```
 
-Depois teste uma DM e um grupo: devem cair nas mesmas sessões de antes.
+Entre o restart e o `connect` a instância fica muda (eventos do Omni são ignorados e o runner ainda não tem socket). Depois teste uma DM e um grupo: devem cair nas mesmas sessões de antes. Triggers em subjects do Omni (`message.received.whatsapp-baileys.>`, ...) param de disparar: mova para `ravi.inbound.reaction`, `ravi.instances.>` ou `ravi.whatsapp.>`.
 
-Rollback:
-
-```bash
-ravi channels set vendas enabled false                 # a instância volta a ser do Omni na hora
-ravi instances connect vendas --transport omni
-```
-
-Para voltar ao nativo: `ravi channels set vendas enabled true` e `ravi instances connect vendas --transport native` (reconecta sem QR se o aparelho não foi deslogado).
+Não há rollback para o Omni no WhatsApp. O procedimento completo está no runbook do adapter: `ravi specs get channels/adapters/whatsapp --mode runbook`.
 
 ## Policies
 
@@ -249,10 +241,10 @@ ravi instances set main groupPolicy open
 ravi instances connect main
 ```
 
-### Bot sem Omni (WhatsApp nativo)
+### Bot WhatsApp do zero
 ```bash
 ravi channels start
-ravi instances connect main --agent main --transport native
+ravi instances connect main --agent main
 ravi instances set main dmPolicy open
 ```
 
