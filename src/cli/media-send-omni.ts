@@ -12,7 +12,7 @@ import { buildOmniCliAuthEnv, materializeOmniCliAuthConfig, resolveOmniConnectio
 import { isOmniCliAuthFailure, MediaSendAuthError } from "./media-send-auth.js";
 import type { MediaType, ResolvedMediaSendTarget } from "./media-send.js";
 
-export interface OmniSendExecution {
+export interface LegacyBridgeSendExecution {
   transport: "omni-send";
   args: string[];
   success: true;
@@ -51,7 +51,7 @@ function extractErrorMessage(json: Record<string, unknown> | null, fallback: str
   return fallback;
 }
 
-export async function sendMediaWithOmniCli(input: OmniMediaSendInput): Promise<OmniSendExecution> {
+export async function sendMediaWithOmniCli(input: OmniMediaSendInput): Promise<LegacyBridgeSendExecution> {
   const { target } = input;
   const omniArgs = ["send", "--instance", target.instanceId, "--to", target.chatId, "--media", input.filePath];
 
@@ -72,7 +72,7 @@ export async function sendMediaWithOmniCli(input: OmniMediaSendInput): Promise<O
       materializeOmniCliAuthConfig(connection, authDir);
     }
 
-    return await new Promise<OmniSendExecution>((resolveExecution, rejectExecution) => {
+    return await new Promise<LegacyBridgeSendExecution>((resolveExecution, rejectExecution) => {
       const child = spawn("omni", omniArgs, {
         env: {
           ...process.env,

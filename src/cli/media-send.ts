@@ -8,9 +8,9 @@ import { sendSlackMedia, type SlackMediaSendInput, type SlackNativeMediaDelivery
 import { createWhatsAppClient, type WhatsAppClient } from "../channels/whatsapp/client.js";
 import { WHATSAPP_RPC_ERROR_CODES } from "../channels/whatsapp/contract.js";
 import { WHATSAPP_RUNNER_UNAVAILABLE_MESSAGE } from "../channels/whatsapp/rpc-client.js";
-import type { OmniSendExecution } from "./media-send-omni.js";
+import type { LegacyBridgeSendExecution } from "./media-send-omni.js";
 
-export type { OmniSendExecution } from "./media-send-omni.js";
+export type { LegacyBridgeSendExecution } from "./media-send-omni.js";
 
 const MIME_MAP: Record<string, string> = {
   ".jpg": "image/jpeg",
@@ -56,7 +56,7 @@ export interface WhatsAppMediaDelivery {
   raw?: unknown;
 }
 
-export type MediaSendExecution = OmniSendExecution | SlackNativeMediaDelivery | WhatsAppMediaDelivery;
+export type MediaSendExecution = LegacyBridgeSendExecution | SlackNativeMediaDelivery | WhatsAppMediaDelivery;
 
 type LegacyBridgeMediaModule = Pick<typeof import("./media-send-omni.js"), "sendMediaWithOmniCli">;
 
