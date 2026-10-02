@@ -2155,7 +2155,13 @@ export class InstancesCommands {
     description:
       "Log a WhatsApp instance out: unlink the device and wipe its saved credentials (dry-run without --execute)",
   })
-  @CommandAccess({ kind: "mutate", resource: "instances", action: "logout", risk: "high" })
+  @CommandAccess({
+    kind: "mutate",
+    resource: "instances",
+    action: "logout",
+    risk: "destructive",
+    requiresConfirmation: true,
+  })
   async logout(
     @Arg("name", { description: "Instance name" }) name: string,
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
