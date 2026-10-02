@@ -54,6 +54,16 @@ export function createFakeJwks(keys: TestKey[]): FakeJwks {
   return state;
 }
 
+/**
+ * JWT-shaped string with no real signature, built at runtime so no token
+ * literal lives in source (secret scanners flag those). Use it as a leak
+ * sentinel or for shape-only checks.
+ */
+export function fakeCompactJws(claims: Record<string, unknown> = { sub: "x" }): string {
+  const encode = (value: string) => Buffer.from(value).toString("base64url");
+  return [encode(JSON.stringify({ alg: "ES256" })), encode(JSON.stringify(claims)), encode("signature")].join(".");
+}
+
 export async function signToken(input: {
   key: TestKey;
   claims: Record<string, unknown>;

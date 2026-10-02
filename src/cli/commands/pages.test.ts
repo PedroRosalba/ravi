@@ -6,6 +6,7 @@ import type { ConsoleApiClient } from "../../cloud-auth/client.js";
 import type { CloudCredentials } from "../../cloud-auth/types.js";
 import { closeConsoleScopeStore, upsertConsoleScopeDefault } from "../../console-scope/store.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../../test/ravi-state.js";
+import { fakeCompactJws } from "../../test/app-gateway-tokens.js";
 import { CloudAuthError } from "../../cloud-auth/errors.js";
 import { ContractError } from "../agent-contract.js";
 import { runWithContext } from "../context.js";
@@ -2084,7 +2085,7 @@ function passwordResponse(overrides: Record<string, unknown> = {}) {
 describe("pages apps targets CLI commands", () => {
   const CONSOLE_INSTALLATION = "6f1c2b8e-1d2c-4b5a-9e8f-0a1b2c3d4e5f";
   const AUD = "https://apps.example.ravi.local/slides";
-  const planted = "eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl";
+  const planted = fakeCompactJws();
 
   function targetClient(
     handler: (method: string, path: string, body: unknown, accessToken: string) => Promise<unknown>,

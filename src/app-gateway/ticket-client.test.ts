@@ -2,9 +2,10 @@ import { describe, expect, it } from "bun:test";
 import { ConsoleApiClient } from "../cloud-auth/client.js";
 import { CloudAuthError } from "../cloud-auth/errors.js";
 import type { CloudCredentials } from "../cloud-auth/types.js";
+import { fakeCompactJws } from "../test/app-gateway-tokens.js";
 import { fetchRelayTicket, isAcceptedRelayUrl, parseRelayTicket } from "./ticket-client.js";
 
-const TICKET = "eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln";
+const TICKET = fakeCompactJws();
 
 function ticketResponse(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
