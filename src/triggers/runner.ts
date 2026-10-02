@@ -109,8 +109,8 @@ export class TriggerRunner {
   private recentEventFireOps = 0;
   private pendingFilterRejects = new Map<string, PendingFilterRejects>();
   private filterRejectFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  /** trigger id + filter already logged at info, so each filter logs its first reject once. */
-  private loggedFilterRejects = new Set<string>();
+  /** Last topic+filter logged at info per trigger, so each filter logs its first reject once. */
+  private loggedFilterRejects = new Map<string, string>();
 
   /**
    * Start the trigger runner.
@@ -502,9 +502,9 @@ export class TriggerRunner {
       });
     }
 
-    const logKey = `${trigger.id}\0${trigger.topic}\0${trigger.filter ?? ""}`;
-    if (!this.loggedFilterRejects.has(logKey)) {
-      this.loggedFilterRejects.add(logKey);
+    const logKey = `${trigger.topic}\0${trigger.filter ?? ""}`;
+    if (this.loggedFilterRejects.get(trigger.id) !== logKey) {
+      this.loggedFilterRejects.set(trigger.id, logKey);
       log.info("Trigger filter rejected an event; later rejects are counted in `ravi triggers show`", {
         triggerId: trigger.id,
         triggerName: trigger.name,
