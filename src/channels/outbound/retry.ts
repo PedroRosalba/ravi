@@ -1,5 +1,5 @@
 /**
- * Bounded retry for outbound transport calls (port of OmniSender.withRetry).
+ * Bounded retry for outbound transport calls (ported from the legacy bridge sender).
  *
  * Attempt n+1 waits `n * baseDelayMs` (1s, 2s with the defaults), or longer when the
  * error carries a `retryAfterMs`. Whether an error is retried is a per-call policy:

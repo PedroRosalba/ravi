@@ -60,10 +60,10 @@ describe("isRetryableTransportError", () => {
     expect(isRetryableTransportError(new TypeError("fetch failed"))).toBe(true);
   });
 
-  it("retries other errors with a 5xx status, like OmniApiError", () => {
-    const omniLike = Object.assign(new Error("server"), { status: 502 });
+  it("retries other errors with a 5xx status (legacy bridge HTTP errors)", () => {
+    const bridgeLike = Object.assign(new Error("server"), { status: 502 });
     const clientError = Object.assign(new Error("bad"), { status: 400 });
-    expect(isRetryableTransportError(omniLike)).toBe(true);
+    expect(isRetryableTransportError(bridgeLike)).toBe(true);
     expect(isRetryableTransportError(clientError)).toBe(false);
     expect(isRetryableTransportError({ status: "500" })).toBe(false);
   });

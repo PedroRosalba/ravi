@@ -1,119 +1,82 @@
 /**
- * Omni Sender
+ * Omni Sender (legacy bridge, Telegram/Discord only)
  *
- * Sends messages, typing indicators, reactions, and media through an Omni-shaped
- * client: the Omni REST API directly (`new OmniSender(apiUrl, apiKey)`), or the
- * routing transport client that also reaches native WhatsApp instances
- * (`new OmniSender(createChannelTransportClient(...))`).
+ * Sends messages, typing indicators, reactions, and media through the Omni REST API.
+ * WhatsApp never goes through here: the per-instance router
+ * (src/channels/outbound/router.ts) sends it through ravi's own runner.
+ *
+ * Retry: `send`, `sendReaction`, `deleteMessage` and `editMessage` retry network errors and
+ * 5xx (3 attempts, 1s/2s); `sendMedia`/`sendSticker` do not retry; `sendTyping`/`markRead`
+ * never throw. Media is always sent as base64 plus the absolute `filePath`.
  */
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ChannelTransportClient, NativeWhatsAppTransport } from "../channels/whatsapp/transport-client.js";
-import { createOmniClient, type OmniClient } from "./client.js";
+import { type TransportRetryOptions, withTransportRetry } from "../channels/outbound/retry.js";
+import type {
+  ChannelMediaType,
+  ChannelMessageSender,
+  ChannelSendOptions,
+  ChannelSendResult,
+} from "../channels/outbound/sender.js";
 import { logger } from "../utils/logger.js";
-import type { ChannelUserMention } from "../channels/outbound/sender.js";
+import { createOmniClient, type OmniClient } from "./client.js";
 
 const log = logger.child("omni:sender");
 
-const MAX_RETRIES = 3;
-
-/**
- * 5xx codes that retrying cannot fix. `OMNI_NOT_CONFIGURED` (503, from the routing
- * client, `OMNI_NOT_CONFIGURED_CODE` in channels/whatsapp/transport-client.ts) means the
- * instance is neither native nor reachable through a configured Omni.
- */
-const NON_RETRYABLE_CODES = new Set(["OMNI_NOT_CONFIGURED"]);
-
-/**
- * Determine if an error is retryable (network/server errors, not client errors).
- */
-function isRetryable(err: unknown): boolean {
-  if (err instanceof TypeError) return true; // fetch network error (ECONNREFUSED etc.)
-  if (err && typeof err === "object" && "code" in err && NON_RETRYABLE_CODES.has(String(err.code))) return false;
-  if (err && typeof err === "object" && "status" in err) {
-    const status = (err as { status: number }).status;
-    return status >= 500; // Only retry 5xx, not 4xx
-  }
-  return false; // Don't retry unknown errors (could be application bugs)
+export interface OmniSenderOptions {
+  /** Retry settings (attempts, delays, sleep seam). The default policy retries TypeError and 5xx. */
+  retry?: TransportRetryOptions;
 }
 
-function isChannelTransportClient(client: OmniClient | ChannelTransportClient): client is ChannelTransportClient {
-  return "native" in client && typeof client.native?.isNativeInstance === "function";
-}
+export class OmniSender implements ChannelMessageSender {
+  private client: OmniClient;
+  private retry: TransportRetryOptions;
 
-export class OmniSender {
-  private client: OmniClient | ChannelTransportClient;
-
-  /** Omni REST sender (legacy form). */
-  constructor(apiUrl: string, apiKey: string);
-  /** Sender over an existing Omni-shaped client (e.g. the routing transport client). */
-  constructor(client: OmniClient | ChannelTransportClient);
-  constructor(apiUrlOrClient: string | OmniClient | ChannelTransportClient, apiKey?: string) {
+  /** Omni REST sender. */
+  constructor(apiUrl: string, apiKey: string, options?: OmniSenderOptions);
+  /**
+   * Sender over an existing Omni client (test seam).
+   * @deprecated Also accepts the routing transport client for the callers that still pass it
+   * (`omni/channel-wiring.ts`, `cli/commands/group.ts`); both stop in this refactor and
+   * WP-Z removes this overload.
+   */
+  constructor(client: OmniClient, options?: OmniSenderOptions);
+  constructor(
+    apiUrlOrClient: string | OmniClient,
+    apiKeyOrOptions?: string | OmniSenderOptions,
+    maybe?: OmniSenderOptions,
+  ) {
     if (typeof apiUrlOrClient === "string") {
-      if (apiKey === undefined) throw new TypeError("OmniSender(apiUrl, apiKey) requires an apiKey");
-      this.client = createOmniClient({ baseUrl: apiUrlOrClient, apiKey });
+      if (typeof apiKeyOrOptions !== "string") throw new TypeError("OmniSender(apiUrl, apiKey) requires an apiKey");
+      this.client = createOmniClient({ baseUrl: apiUrlOrClient, apiKey: apiKeyOrOptions });
+      this.retry = { ...maybe?.retry };
     } else {
       this.client = apiUrlOrClient;
+      this.retry = { ...(typeof apiKeyOrOptions === "object" ? apiKeyOrOptions.retry : undefined) };
     }
   }
 
-  /**
-   * Native WhatsApp transport of the routing client, or null for a plain Omni client.
-   * Callers use it for calls with no Omni equivalent (e.g. `groups.metadata`).
-   */
-  getNativeWhatsApp(): NativeWhatsAppTransport | null {
-    return isChannelTransportClient(this.client) ? this.client.native : null;
+  private withRetry<T>(operation: () => Promise<T>, context: string): Promise<T> {
+    return withTransportRetry(operation, context, this.retry);
   }
 
-  /**
-   * Native WhatsApp runners read media straight from `filePath` (same host), so the
-   * file is only base64-encoded for Omni targets.
-   */
-  private needsBase64(instanceId: string): boolean {
-    return !(isChannelTransportClient(this.client) && this.client.native.isNativeInstance(instanceId));
-  }
-
-  private mediaSource(instanceId: string, localPath: string): { filePath: string; base64?: string } {
+  /** Absolute path (relative paths resolve against the daemon cwd) plus the file as base64. */
+  private mediaSource(localPath: string): { filePath: string; base64: string } {
     const filePath = resolve(localPath);
-    if (!this.needsBase64(instanceId)) return { filePath };
     return { filePath, base64: readFileSync(filePath).toString("base64") };
   }
 
   /**
-   * Retry wrapper with exponential backoff.
-   */
-  private async withRetry<T>(operation: () => Promise<T>, context: string): Promise<T> {
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        return await operation();
-      } catch (err) {
-        lastError = err;
-        if (attempt < MAX_RETRIES && isRetryable(err)) {
-          const delayMs = attempt * 1000;
-          log.warn(`${context} failed (attempt ${attempt}/${MAX_RETRIES}), retrying in ${delayMs}ms`, { error: err });
-          await new Promise((r) => setTimeout(r, delayMs));
-        } else {
-          break;
-        }
-      }
-    }
-    throw lastError;
-  }
-
-  /**
-   * Send a text message via omni.
+   * Send a text message via Omni.
    */
   async send(
     instanceId: string,
     to: string,
     text: string,
-    optionsOrThreadId?: string | { threadId?: string; mentions?: ChannelUserMention[] },
-  ): Promise<{ messageId?: string }> {
+    options: ChannelSendOptions = {},
+  ): Promise<ChannelSendResult> {
     try {
-      const options =
-        typeof optionsOrThreadId === "string" ? { threadId: optionsOrThreadId } : (optionsOrThreadId ?? {});
       const result = (await this.withRetry(
         () =>
           this.client.messages.send({
@@ -168,14 +131,14 @@ export class OmniSender {
   /**
    * Delete a channel message sent by the current instance.
    */
-  async deleteMessage(instanceId: string, to: string, messageId: string): Promise<void> {
+  async deleteMessage(instanceId: string, chatId: string, messageId: string): Promise<void> {
     try {
       await this.withRetry(
-        () => this.client.messages.deleteChannel({ instanceId, channelId: to, messageId }),
+        () => this.client.messages.deleteChannel({ instanceId, channelId: chatId, messageId }),
         `deleteMessage(${instanceId})`,
       );
     } catch (err) {
-      log.error("Failed to delete message", { instanceId, to, messageId, error: err });
+      log.error("Failed to delete message", { instanceId, to: chatId, messageId, error: err });
       throw err;
     }
   }
@@ -183,38 +146,37 @@ export class OmniSender {
   /**
    * Edit a channel message sent by the current instance.
    */
-  async editMessage(instanceId: string, to: string, messageId: string, text: string): Promise<void> {
+  async editMessage(instanceId: string, chatId: string, messageId: string, text: string): Promise<void> {
     try {
       await this.withRetry(
-        () => this.client.messages.editChannel({ instanceId, channelId: to, messageId, text }),
+        () => this.client.messages.editChannel({ instanceId, channelId: chatId, messageId, text }),
         `editMessage(${instanceId})`,
       );
     } catch (err) {
-      log.error("Failed to edit message", { instanceId, to, messageId, error: err });
+      log.error("Failed to edit message", { instanceId, to: chatId, messageId, error: err });
       throw err;
     }
   }
 
   /**
-   * Send a media file (image, video, document, audio).
-   * Always passes the absolute `filePath` (Omni ignores it); adds base64 unless the
-   * target is a native WhatsApp instance.
+   * Send a media file (image, video, document, audio) as base64 plus the absolute `filePath`.
+   * Not retried.
    */
   async sendMedia(
     instanceId: string,
     to: string,
     localPath: string,
-    type: "image" | "video" | "audio" | "document",
+    type: ChannelMediaType,
     filename: string,
     caption?: string,
     voiceNote?: boolean,
-  ): Promise<{ messageId?: string }> {
+  ): Promise<ChannelSendResult> {
     try {
       const result = await this.client.messages.sendMedia({
         instanceId,
         to,
         type,
-        ...this.mediaSource(instanceId, localPath),
+        ...this.mediaSource(localPath),
         filename,
         caption,
         ...(voiceNote ? { voiceNote: true } : {}),
@@ -227,17 +189,17 @@ export class OmniSender {
   }
 
   /**
-   * Send a WhatsApp sticker.
+   * Send a sticker.
    *
    * Omni exposes stickers as a dedicated contract instead of generic media.
-   * Using /messages/send/media with type=sticker returns 400 on WhatsApp.
+   * Using /messages/send/media with type=sticker returns 400. Not retried.
    */
-  async sendSticker(instanceId: string, to: string, localPath: string): Promise<{ messageId?: string }> {
+  async sendSticker(instanceId: string, to: string, localPath: string): Promise<ChannelSendResult> {
     try {
       const result = await this.client.messages.sendSticker({
         instanceId,
         to,
-        ...this.mediaSource(instanceId, localPath),
+        ...this.mediaSource(localPath),
       });
       return { messageId: result.messageId };
     } catch (err) {
@@ -263,9 +225,19 @@ export class OmniSender {
   }
 
   /**
-   * Get the underlying omni client for advanced operations (CLI commands).
+   * @deprecated Only `omni/channel-wiring.test.ts` (deleted by WP-A) reads it. WP-Z removes it.
    */
   getClient(): OmniClient {
     return this.client;
+  }
+
+  /**
+   * @deprecated Native WhatsApp transport of a routing client passed through the deprecated
+   * constructor overload, else null. Only `omni/channel-wiring.test.ts` (deleted by WP-A) reads
+   * it; nothing in production does. WP-Z removes it with the overload.
+   */
+  getNativeWhatsApp(): unknown {
+    const native = (this.client as OmniClient & { native?: unknown }).native;
+    return native ?? null;
   }
 }

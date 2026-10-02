@@ -60,7 +60,7 @@ export function classifyInstanceRoute(config: SenderRoutingConfig, instanceId: s
 
 export interface ChannelSenderRouterOptions {
   whatsapp: ChannelMessageSender;
-  /** Legacy Omni sender (Telegram/Discord). Null → bridge routes fail with LEGACY_BRIDGE_NOT_CONFIGURED. */
+  /** Legacy bridge sender (Telegram/Discord). Null → bridge routes fail with LEGACY_BRIDGE_NOT_CONFIGURED. */
   bridge?: ChannelMessageSender | null;
   /** Default configStore.getConfig(). */
   getConfig?: () => SenderRoutingConfig;

@@ -270,6 +270,28 @@ describe("createWhatsAppSender", () => {
     expect(sleeps).toEqual([1_000, 1_000, 1_000, 2_000]);
   });
 
+  it("treats a connection dropped mid-request as ambiguous: no text retry, reaction retried", async () => {
+    const dropped = () => rpcError(503, WHATSAPP_RPC_ERROR_CODES.runnerUnavailable, { details: "DISCONNECT" });
+    const { sender, calls, sleeps } = harness({
+      "messages.sendText": [dropped()],
+      "messages.react": [dropped(), { success: true }],
+    });
+    await expect(sender.send(NATIVE_ID, "x@g.us", "hi")).rejects.toMatchObject({
+      status: 503,
+      code: WHATSAPP_RPC_ERROR_CODES.runnerUnavailable,
+      details: "DISCONNECT",
+    });
+    await sender.sendReaction(NATIVE_ID, "x@g.us", "M1", "👍");
+    expect(calls.map((call) => call.method)).toEqual(["messages.sendText", "messages.react", "messages.react"]);
+    expect(sleeps).toEqual([1_000]);
+  });
+
+  it("honours retryAfterMs for idempotent operations too", async () => {
+    const { sender, sleeps } = harness({ "messages.delete": [rateLimited(7_500), {}] });
+    await sender.deleteMessage(NATIVE_ID, "x@g.us", "M1");
+    expect(sleeps).toEqual([7_500]);
+  });
+
   it("does not retry idempotent operations on 4xx", async () => {
     const { sender, calls } = harness({ "messages.edit": [rpcError(400, WHATSAPP_RPC_ERROR_CODES.invalidRequest)] });
     await expect(sender.editMessage(NATIVE_ID, "x@g.us", "M", "t")).rejects.toMatchObject({ status: 400 });
