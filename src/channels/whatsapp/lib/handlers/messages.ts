@@ -34,10 +34,12 @@ import {
   getWhatsAppMediaDownloadMaxBytes,
 } from "../utils/download.js";
 import { getDocumentMessage, getMessageContextInfo } from "../utils/message.js";
+import { guardListener } from "../utils/listener-guard.js";
 import { decryptMsgSecret, getMessageSecret, rememberMessageSecret } from "../utils/msg-secret.js";
 import { getMediaSize } from "./media.js";
 
 const log = createLogger("whatsapp:messages");
+const guarded = (event: string, instanceId: string) => ({ event, instanceId, log });
 
 /** Fallback dedupe cache — used when no per-instance cache is provided */
 const fallbackDedupeCache = createInboundDedupeCache();
@@ -1290,88 +1292,109 @@ export function setupMessageHandlers(
   // per JID per connection lifecycle.
   const presenceSubscribed = new Set<string>();
 
-  sock.ev.on("messages.upsert", async (upsert: { messages: WAMessage[]; type: MessageUpsertType }) => {
-    // Log all message types to diagnose missing messages
-    log.debug("messages.upsert received", {
-      instanceId,
-      type: upsert.type,
-      count: upsert.messages.length,
-      messageIds: upsert.messages.map((m) => m.key.id),
-    });
+  sock.ev.on(
+    "messages.upsert",
+    guardListener(
+      guarded("messages.upsert", instanceId),
+      async (upsert: { messages: WAMessage[]; type: MessageUpsertType }) => {
+        // Log all message types to diagnose missing messages
+        log.debug("messages.upsert received", {
+          instanceId,
+          type: upsert.type,
+          count: upsert.messages.length,
+          messageIds: upsert.messages.map((m) => m.key.id),
+        });
 
-    // Track decrypt failures for dynamic JID blocking (#70)
-    if (decryptTracker) {
-      trackDecryptFailures(decryptTracker, upsert.messages);
-    }
+        // Track decrypt failures for dynamic JID blocking (#70)
+        if (decryptTracker) {
+          trackDecryptFailures(decryptTracker, upsert.messages);
+        }
 
-    // Process all message types, not just 'notify'
-    // 'notify' = incoming messages
-    // 'append' = outgoing messages sent from this device
-    // We need both to capture all conversation activity
-    for (const msg of upsert.messages) {
-      // Subscribe to presence updates for DM chats so Baileys delivers
-      // typing indicators (composing/recording). Without this, the WA
-      // server never pushes chatstate nodes for 1-on-1 conversations.
-      const chatJid = msg.key.remoteJid;
-      if (chatJid && isUserJid(chatJid) && !presenceSubscribed.has(chatJid)) {
-        presenceSubscribed.add(chatJid);
-        sock
-          .presenceSubscribe(chatJid)
-          .catch((err) => log.debug("presenceSubscribe failed (non-fatal)", { chatJid, error: String(err) }));
+        // Process all message types, not just 'notify'
+        // 'notify' = incoming messages
+        // 'append' = outgoing messages sent from this device
+        // We need both to capture all conversation activity
+        for (const msg of upsert.messages) {
+          // Subscribe to presence updates for DM chats so Baileys delivers
+          // typing indicators (composing/recording). Without this, the WA
+          // server never pushes chatstate nodes for 1-on-1 conversations.
+          const chatJid = msg.key.remoteJid;
+          if (chatJid && isUserJid(chatJid) && !presenceSubscribed.has(chatJid)) {
+            presenceSubscribed.add(chatJid);
+            sock
+              .presenceSubscribe(chatJid)
+              .catch((err) => log.debug("presenceSubscribe failed (non-fatal)", { chatJid, error: String(err) }));
+          }
+
+          if (shouldProcessMessage(plugin, instanceId, msg)) {
+            await processMessage(plugin, instanceId, msg, cache, mediaContext);
+          }
+        }
+      },
+    ),
+  );
+
+  sock.ev.on(
+    "messages.update",
+    guardListener(guarded("messages.update", instanceId), async (updates) => {
+      for (const update of updates) {
+        // Handle delivery/read/error status updates.
+        // status === 0 (WAMessageStatus.ERROR) is the silent-PreKeyError path;
+        // a truthy check would drop it because 0 is falsy.
+        if (update.update.status !== undefined && update.update.status !== null) {
+          await processStatusUpdate(plugin, instanceId, update.key, update.update.status);
+        }
+
+        // Message edits: Baileys re-emits every MESSAGE_EDIT protocol message here as
+        // `{ editedMessage: { message: <new content> } }` keyed by the ORIGINAL message id,
+        // after normalizing whatever envelope the edit arrived in (omni#1061).
+        const newText = extractEditedText(baileys().normalizeMessageContent(update.update.message));
+        if (newText && rememberEdit(update.key.id || "", newText)) {
+          const { chatId } = resolveChatId(plugin, instanceId, { key: update.key } as WAMessage);
+          await plugin.handleMessageEdited(
+            instanceId,
+            update.key.id || "",
+            chatId,
+            newText,
+            update.key.fromMe || false,
+          );
+        }
       }
+    }),
+  );
 
-      if (shouldProcessMessage(plugin, instanceId, msg)) {
-        await processMessage(plugin, instanceId, msg, cache, mediaContext);
+  sock.ev.on(
+    "messages.delete",
+    guardListener(guarded("messages.delete", instanceId), async (deletion) => {
+      // Handle message deletions (revoke)
+      if ("keys" in deletion) {
+        // Batch deletion
+        for (const key of deletion.keys) {
+          await plugin.handleMessageDeleted(instanceId, key.id || "", key.remoteJid || "", key.fromMe || false);
+        }
       }
-    }
-  });
-
-  sock.ev.on("messages.update", async (updates) => {
-    for (const update of updates) {
-      // Handle delivery/read/error status updates.
-      // status === 0 (WAMessageStatus.ERROR) is the silent-PreKeyError path;
-      // a truthy check would drop it because 0 is falsy.
-      if (update.update.status !== undefined && update.update.status !== null) {
-        await processStatusUpdate(plugin, instanceId, update.key, update.update.status);
-      }
-
-      // Message edits: Baileys re-emits every MESSAGE_EDIT protocol message here as
-      // `{ editedMessage: { message: <new content> } }` keyed by the ORIGINAL message id,
-      // after normalizing whatever envelope the edit arrived in (omni#1061).
-      const newText = extractEditedText(baileys().normalizeMessageContent(update.update.message));
-      if (newText && rememberEdit(update.key.id || "", newText)) {
-        const { chatId } = resolveChatId(plugin, instanceId, { key: update.key } as WAMessage);
-        await plugin.handleMessageEdited(instanceId, update.key.id || "", chatId, newText, update.key.fromMe || false);
-      }
-    }
-  });
-
-  sock.ev.on("messages.delete", async (deletion) => {
-    // Handle message deletions (revoke)
-    if ("keys" in deletion) {
-      // Batch deletion
-      for (const key of deletion.keys) {
-        await plugin.handleMessageDeleted(instanceId, key.id || "", key.remoteJid || "", key.fromMe || false);
-      }
-    }
-  });
+    }),
+  );
 
   // Handle message reactions (separate from upsert for updates to existing reactions)
-  sock.ev.on("messages.reaction", async (reactions) => {
-    for (const { key, reaction } of reactions) {
-      const chatId = key.remoteJid || "";
-      const messageId = key.id || "";
-      const { id: senderId } = fromJid(reaction.key?.participant || reaction.key?.remoteJid || chatId);
+  sock.ev.on(
+    "messages.reaction",
+    guardListener(guarded("messages.reaction", instanceId), async (reactions) => {
+      for (const { key, reaction } of reactions) {
+        const chatId = key.remoteJid || "";
+        const messageId = key.id || "";
+        const { id: senderId } = fromJid(reaction.key?.participant || reaction.key?.remoteJid || chatId);
 
-      await plugin.handleReactionReceived(
-        instanceId,
-        reaction.key?.id || messageId,
-        chatId,
-        senderId,
-        reaction.text || "",
-        messageId,
-        reaction.key?.fromMe || false,
-      );
-    }
-  });
+        await plugin.handleReactionReceived(
+          instanceId,
+          reaction.key?.id || messageId,
+          chatId,
+          senderId,
+          reaction.text || "",
+          messageId,
+          reaction.key?.fromMe || false,
+        );
+      }
+    }),
+  );
 }

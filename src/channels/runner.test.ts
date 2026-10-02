@@ -6,6 +6,7 @@ import {
   CHANNEL_PROBE_SKIPPED_PROVIDERS,
   RAVI_CONFIG_CHANGED_SUBJECT,
   collectNativeRuntimeDeliveries,
+  installChannelRunnerCrashGuards,
   nativeChannelBindingKey,
   startNativeChannelConfigWatch,
   syncNativeRuntimeSurfaces,
@@ -31,6 +32,23 @@ import { createSlackNativeChannelDriver } from "./slack/driver.js";
 import { createWhatsAppChannelDriver, createWhatsAppNativeChannelDriver } from "./whatsapp/driver.js";
 import type { ChannelOutboundJob } from "./outbound-stream.js";
 import { buildRunnerPm2Env } from "./pm2-env.js";
+import { EventEmitter } from "node:events";
+
+describe("channel runner crash guards", () => {
+  it("logs unhandled rejections and uncaught exceptions instead of letting the process exit", () => {
+    const hooks = new EventEmitter();
+    const uninstall = installChannelRunnerCrashGuards(hooks);
+    expect(hooks.listenerCount("unhandledRejection")).toBe(1);
+    expect(hooks.listenerCount("uncaughtException")).toBe(1);
+    // With a listener registered, emitting does not throw (an EventEmitter "error"-style
+    // event without listeners is what makes Bun/Node exit).
+    expect(() => hooks.emit("unhandledRejection", new Error("QR cycle reset failed"))).not.toThrow();
+    expect(() => hooks.emit("uncaughtException", new Error("boom"))).not.toThrow();
+    uninstall();
+    expect(hooks.listenerCount("unhandledRejection")).toBe(0);
+    expect(hooks.listenerCount("uncaughtException")).toBe(0);
+  });
+});
 
 describe("channel runner PM2 environment", () => {
   it("does not use Slack connection env as runner configuration", () => {

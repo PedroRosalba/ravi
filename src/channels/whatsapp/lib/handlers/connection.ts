@@ -11,6 +11,7 @@ import type { Boom } from "@hapi/boom";
 import type { ConnectionState, WASocket } from "baileys";
 import { baileys } from "../../baileys-loader.js";
 import { createLogger } from "../foundation.js";
+import { guardListener } from "../utils/listener-guard.js";
 import type { WhatsAppConnectionHost } from "../types.js";
 
 const log = createLogger("whatsapp:connection");
@@ -390,39 +391,51 @@ export function setupConnectionHandlers(
   clearAuthAndReconnect: () => Promise<void>,
   config: ReconnectConfig = DEFAULT_RECONNECT_CONFIG,
 ): void {
-  sock.ev.on("connection.update", async (update: Partial<ConnectionState>) => {
-    const { connection, lastDisconnect, passkey, qr, isNewLogin } = update;
+  // Guarded: a rejection here (a host callback, the QR-cycle reset) would be unhandled
+  // and kill the runner. It is reported to the host as a connection error instead.
+  const guard = {
+    event: "connection.update",
+    instanceId,
+    log,
+    onError: (error: unknown) =>
+      plugin.handleConnectionError(instanceId, error instanceof Error ? error.message : String(error), false),
+  };
+  sock.ev.on(
+    "connection.update",
+    guardListener(guard, async (update: Partial<ConnectionState>) => {
+      const { connection, lastDisconnect, passkey, qr, isNewLogin } = update;
 
-    // Baileys flags isNewLogin right after pairing, then closes with
-    // restartRequired; the `open` arrives on the NEXT socket, so remember it.
-    if (isNewLogin) newLoginInstances.add(instanceId);
+      // Baileys flags isNewLogin right after pairing, then closes with
+      // restartRequired; the `open` arrives on the NEXT socket, so remember it.
+      if (isNewLogin) newLoginInstances.add(instanceId);
 
-    if (passkey) {
-      passkeyInstances.add(instanceId);
-      activeQrCodes.delete(instanceId);
-      qrCodeAttempts.delete(instanceId);
-      qrCycleAttempts.delete(instanceId);
-      clearConnectionTimeout(instanceId);
-      await plugin.handlePasskeyUpdate(instanceId, passkey);
-    }
-
-    if (qr && !passkey && !passkeyInstances.has(instanceId)) {
-      const shouldContinue = await handleQrCode(plugin, instanceId, qr, clearAuthAndReconnect);
-      if (!shouldContinue) {
-        // Auth was cleared and reconnect triggered, socket will be replaced
-        return;
+      if (passkey) {
+        passkeyInstances.add(instanceId);
+        activeQrCodes.delete(instanceId);
+        qrCodeAttempts.delete(instanceId);
+        qrCycleAttempts.delete(instanceId);
+        clearConnectionTimeout(instanceId);
+        await plugin.handlePasskeyUpdate(instanceId, passkey);
       }
-    }
 
-    if (connection === "close") {
-      clearConnectionTimeout(instanceId);
-      await handleConnectionClose(plugin, instanceId, lastDisconnect, config, onReconnect);
-    }
+      if (qr && !passkey && !passkeyInstances.has(instanceId)) {
+        const shouldContinue = await handleQrCode(plugin, instanceId, qr, clearAuthAndReconnect);
+        if (!shouldContinue) {
+          // Auth was cleared and reconnect triggered, socket will be replaced
+          return;
+        }
+      }
 
-    if (connection === "open") {
-      await handleConnectionOpen(plugin, instanceId, sock);
-    }
-  });
+      if (connection === "close") {
+        clearConnectionTimeout(instanceId);
+        await handleConnectionClose(plugin, instanceId, lastDisconnect, config, onReconnect);
+      }
+
+      if (connection === "open") {
+        await handleConnectionOpen(plugin, instanceId, sock);
+      }
+    }),
+  );
 }
 
 /**

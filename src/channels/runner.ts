@@ -587,7 +587,40 @@ export async function startChannelRunner(options: ChannelRunnerOptions = {}): Pr
   return runner;
 }
 
+/** The process-level hooks `installChannelRunnerCrashGuards` registers on. */
+export interface ChannelRunnerProcessHooks {
+  on(event: "unhandledRejection", listener: (reason: unknown) => void): unknown;
+  on(event: "uncaughtException", listener: (error: Error) => void): unknown;
+  off(event: "unhandledRejection", listener: (reason: unknown) => void): unknown;
+  off(event: "uncaughtException", listener: (error: Error) => void): unknown;
+}
+
+/**
+ * Keep the channel runner alive through a stray rejection or exception (a Baileys
+ * listener, a socket callback): log it instead of letting Bun exit, so the other
+ * channels keep running and the failing one reports its state through health. Mirrors
+ * the daemon's handlers. Returns an uninstaller.
+ */
+export function installChannelRunnerCrashGuards(hooks: ChannelRunnerProcessHooks = process): () => void {
+  const onRejection = (reason: unknown) => {
+    log.error("Unhandled rejection in channel runner", {
+      reason: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack : undefined,
+    });
+  };
+  const onException = (error: Error) => {
+    log.error("Uncaught exception in channel runner", { error: error.message, stack: error.stack });
+  };
+  hooks.on("unhandledRejection", onRejection);
+  hooks.on("uncaughtException", onException);
+  return () => {
+    hooks.off("unhandledRejection", onRejection);
+    hooks.off("uncaughtException", onException);
+  };
+}
+
 export async function runChannelRunnerFromEnv(): Promise<void> {
+  installChannelRunnerCrashGuards();
   const runner = await startChannelRunner({
     consumeOutbound: process.env.RAVI_CHANNELS_CONSUME_OUTBOUND !== "0",
   });
