@@ -4922,12 +4922,12 @@ describe("runtime session trace instrumentation", () => {
     expect(restartRequests).toEqual([{ sessionName: SESSION_NAME, reason: "runtime_event_loop_closed" }]);
   });
 
-  it("records exhausted recovery without publishing a user-facing response", async () => {
+  it("records exhausted recovery and publishes only a generic user-facing notice", async () => {
     const alerts: RuntimeRecoveryExhaustedAlertInput[] = [];
     const runtimeEvents: Array<{ topic: string; data: Record<string, unknown> }> = [];
-    const responseTopics: string[] = [];
-    const emitSpy = spyOn(nats, "emit").mockImplementation(async (topic: string) => {
-      if (topic.endsWith(".response")) responseTopics.push(topic);
+    const responses: Array<{ topic: string; data: Record<string, unknown> }> = [];
+    const emitSpy = spyOn(nats, "emit").mockImplementation(async (topic: string, data: Record<string, unknown>) => {
+      if (topic.endsWith(".response")) responses.push({ topic, data });
     });
     const dispatcher = new RuntimeSessionDispatcher({
       instanceId: "trace-test",
@@ -4971,7 +4971,10 @@ describe("runtime session trace instrumentation", () => {
       (event) => event.eventType === "dispatch.restart_suppressed",
     );
     expect(starts).toBe(2);
-    expect(responseTopics).toEqual([]);
+    expect(responses).toHaveLength(1);
+    expect(responses[0]?.data.response).toBe(
+      "Error: The agent could not respond right now. Send another message to try again.",
+    );
     expect(dispatcher.stashedMessages.has(SESSION_KEY)).toBe(true);
     expect(alerts).toHaveLength(1);
     expect(runtimeEvents).toHaveLength(1);
