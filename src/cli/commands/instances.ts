@@ -29,6 +29,7 @@ import "reflect-metadata";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import qrcode from "qrcode-terminal";
+import { z } from "zod";
 import { Group, Command, CommandAccess, CliOnly, Arg, Option } from "../decorators.js";
 import { CONTRACT_EXIT_USAGE, contractDryRun, contractFail, pickFields, suggestSimilar } from "../agent-contract.js";
 import { fail } from "../context.js";
@@ -2206,7 +2207,7 @@ export class InstancesCommands {
     }
     const payload = {
       status: "logged_out" as const,
-      instance: inst,
+      instance: name,
       instanceId,
       transport: "whatsapp" as const,
       logout: outcome,
@@ -2997,6 +2998,18 @@ export class InstancesPendingCommands {
   }
 }
 
+const instancesLogoutReturnSchema = z.object({
+  status: z.literal("logged_out"),
+  instance: z.string(),
+  instanceId: z.string(),
+  transport: z.literal("whatsapp"),
+  logout: z.discriminatedUnion("via", [
+    z.object({ via: z.literal("runner"), clearedKeys: z.null(), cause: z.null() }),
+    z.object({ via: z.literal("auth-store"), clearedKeys: z.number().int().nonnegative(), cause: z.string() }),
+  ]),
+  changedCount: z.number().int().nonnegative(),
+});
+
 declareCommandReturns(InstancesCommands, {
   create: commandEnvelopeReturnSchema,
   delete: commandEnvelopeReturnSchema,
@@ -3006,7 +3019,7 @@ declareCommandReturns(InstancesCommands, {
   enable: commandEnvelopeReturnSchema,
   get: commandEnvelopeReturnSchema,
   list: commandEnvelopeReturnSchema,
-  logout: commandEnvelopeReturnSchema,
+  logout: instancesLogoutReturnSchema,
   restore: commandEnvelopeReturnSchema,
   set: commandEnvelopeReturnSchema,
   show: commandEnvelopeReturnSchema,
