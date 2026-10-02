@@ -1,17 +1,16 @@
 /**
- * Client side of the native WhatsApp RPC.
+ * Client side of the WhatsApp RPC.
  *
  * The `ravi channels` runner owns the Baileys sockets and answers requests on
  * `_RAVI.channels.whatsapp.rpc.<instanceId>`. The daemon, gateway and CLI call it
- * through `requestWhatsAppRpc`, which turns every failure into an `OmniApiError` so
- * callers written against the Omni REST client (and OmniSender's 5xx retry policy)
- * keep working unchanged.
+ * through `requestWhatsAppRpc` (usually via `createWhatsAppClient`, client.ts), which
+ * turns every failure into a `WhatsAppRpcError` (errors.ts). Its HTTP-like `status` is
+ * ravi's retry contract: 5xx = retryable.
  */
 
 import { randomUUID } from "node:crypto";
 import { JSONCodec } from "nats";
 import { ensureConnected } from "../../nats.js";
-import { OmniApiError } from "../../omni/client.js";
 import {
   DEFAULT_WHATSAPP_RPC_TIMEOUT_MS,
   WHATSAPP_RPC_ERROR_CODES,
@@ -25,6 +24,7 @@ import {
   type WhatsAppRpcRequest,
   type WhatsAppRpcResult,
 } from "./contract.js";
+import { WhatsAppRpcError } from "./errors.js";
 
 const codec = JSONCodec<unknown>();
 
@@ -44,7 +44,7 @@ export interface WhatsAppRpcRequestOptions {
 }
 
 export const WHATSAPP_RUNNER_UNAVAILABLE_MESSAGE =
-  "The native WhatsApp runner is not answering. Start it with `ravi channels start` (or `ravi channels restart`) and retry.";
+  "The WhatsApp runner is not answering. Start it with `ravi channels start` (or `ravi channels restart`) and retry.";
 
 /** NATS client error codes that mean "no usable connection to the server". */
 const NATS_CONNECTION_ERROR_CODES = new Set([
@@ -65,51 +65,59 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function runnerUnavailable(instanceId: string, method: WhatsAppRpcMethod, details: string): OmniApiError {
-  return new OmniApiError(`${WHATSAPP_RUNNER_UNAVAILABLE_MESSAGE} (instance ${instanceId}, ${method})`, {
+function runnerUnavailable(instanceId: string, method: WhatsAppRpcMethod, details: string): WhatsAppRpcError {
+  return new WhatsAppRpcError(`${WHATSAPP_RUNNER_UNAVAILABLE_MESSAGE} (instance ${instanceId}, ${method})`, {
     status: 503,
     code: WHATSAPP_RPC_ERROR_CODES.runnerUnavailable,
     details,
+    method,
+    instanceId,
   });
 }
 
-/** Map a NATS request failure to the Omni-style error callers already handle. */
+/** Map a NATS request failure to a `WhatsAppRpcError`. A `WhatsAppRpcError` passes through unchanged. */
 export function mapWhatsAppRpcTransportError(
   err: unknown,
   context: { instanceId: string; method: WhatsAppRpcMethod; timeoutMs: number },
-): OmniApiError {
-  if (err instanceof OmniApiError) return err;
+): WhatsAppRpcError {
+  if (err instanceof WhatsAppRpcError) return err;
+  const { instanceId, method } = context;
   const code = natsErrorCode(err);
-  if (code === "503") return runnerUnavailable(context.instanceId, context.method, "no responders");
+  if (code === "503") return runnerUnavailable(instanceId, method, "no responders");
   if (code === "TIMEOUT") {
-    return new OmniApiError(
-      `Native WhatsApp runner did not answer ${context.method} for instance ${context.instanceId} within ${context.timeoutMs}ms`,
-      { status: 504, code: WHATSAPP_RPC_ERROR_CODES.timeout },
+    return new WhatsAppRpcError(
+      `WhatsApp runner did not answer ${method} for instance ${instanceId} within ${context.timeoutMs}ms`,
+      { status: 504, code: WHATSAPP_RPC_ERROR_CODES.timeout, method, instanceId, cause: err },
     );
   }
   if (code && NATS_CONNECTION_ERROR_CODES.has(code)) {
-    return new OmniApiError(
-      `NATS is not reachable, so the native WhatsApp runner cannot be called (is the ravi daemon running?): ${errorText(err)}`,
-      { status: 503, code: WHATSAPP_RPC_ERROR_CODES.runnerUnavailable, details: code },
+    return new WhatsAppRpcError(
+      `NATS is not reachable, so the WhatsApp runner cannot be called (is the ravi daemon running?): ${errorText(err)}`,
+      { status: 503, code: WHATSAPP_RPC_ERROR_CODES.runnerUnavailable, details: code, method, instanceId, cause: err },
     );
   }
-  return new OmniApiError(`Native WhatsApp RPC ${context.method} failed: ${errorText(err)}`, {
+  return new WhatsAppRpcError(`WhatsApp RPC ${method} failed: ${errorText(err)}`, {
     status: 502,
     code: WHATSAPP_RPC_ERROR_CODES.transportError,
     details: code,
+    method,
+    instanceId,
+    cause: err,
   });
 }
 
-function invalidResponse(method: WhatsAppRpcMethod, details: string): OmniApiError {
-  return new OmniApiError(`Native WhatsApp runner returned an invalid response for ${method}`, {
+function invalidResponse(instanceId: string, method: WhatsAppRpcMethod, details: string): WhatsAppRpcError {
+  return new WhatsAppRpcError(`WhatsApp runner returned an invalid response for ${method}`, {
     status: 502,
     code: WHATSAPP_RPC_INVALID_RESPONSE_CODE,
     details,
+    method,
+    instanceId,
   });
 }
 
 /**
- * Call one native WhatsApp RPC method on the runner that owns `instanceId` (the
+ * Call one WhatsApp RPC method on the runner that owns `instanceId` (the
  * instance UUID). Params are validated with the contract schema before sending
  * (400 INVALID_REQUEST on failure); the `data` of a successful response is returned
  * as the contract's `WhatsAppRpcResult<M>`.
@@ -124,9 +132,10 @@ export function requestWhatsAppRpc<M extends WhatsAppRpcMethod>(
 }
 
 /**
- * Same as `requestWhatsAppRpc` for params that are only known at runtime (e.g. an
- * Omni-style JSON body). The params are validated against the contract schema here,
- * exactly as for the typed variant.
+ * Same as `requestWhatsAppRpc` for params that are only known at runtime. The params
+ * are validated against the contract schema here, exactly as for the typed variant.
+ *
+ * @deprecated Untyped params; only for transport-client.ts, deleted with it.
  */
 export async function requestWhatsAppRpcRaw<M extends WhatsAppRpcMethod>(
   instanceId: string,
@@ -143,20 +152,27 @@ export async function requestWhatsAppRpcRaw<M extends WhatsAppRpcMethod>(
   try {
     subject = whatsappRpcSubject(instanceId);
   } catch (err) {
-    throw new OmniApiError(`Invalid WhatsApp instance id: ${instanceId}`, {
+    throw new WhatsAppRpcError(`Invalid WhatsApp instance id: ${instanceId}`, {
       status: 400,
       code: WHATSAPP_RPC_ERROR_CODES.invalidRequest,
       details: errorText(err),
+      method,
+      instanceId,
     });
   }
 
   const parsedParams = WhatsAppRpcParamsSchemas[method].safeParse(params);
   if (!parsedParams.success) {
-    throw new OmniApiError(`Invalid ${method} request: ${parsedParams.error.issues.map((i) => i.message).join("; ")}`, {
-      status: 400,
-      code: WHATSAPP_RPC_ERROR_CODES.invalidRequest,
-      details: parsedParams.error.issues,
-    });
+    throw new WhatsAppRpcError(
+      `Invalid ${method} request: ${parsedParams.error.issues.map((i) => i.message).join("; ")}`,
+      {
+        status: 400,
+        code: WHATSAPP_RPC_ERROR_CODES.invalidRequest,
+        details: parsedParams.error.issues,
+        method,
+        instanceId,
+      },
+    );
   }
 
   const request: WhatsAppRpcRequest = {
@@ -180,19 +196,29 @@ export async function requestWhatsAppRpcRaw<M extends WhatsAppRpcMethod>(
   try {
     decoded = codec.decode(reply.data);
   } catch (err) {
-    throw invalidResponse(method, `undecodable payload: ${errorText(err)}`);
+    throw invalidResponse(instanceId, method, `undecodable payload: ${errorText(err)}`);
   }
   const parsed = WhatsAppRpcResponseSchema.safeParse(decoded);
-  if (!parsed.success) throw invalidResponse(method, parsed.error.message);
+  if (!parsed.success) throw invalidResponse(instanceId, method, parsed.error.message);
   const response = parsed.data;
   if (response.requestId !== request.requestId) {
-    throw invalidResponse(method, `requestId mismatch: expected ${request.requestId}, got ${response.requestId}`);
+    throw invalidResponse(
+      instanceId,
+      method,
+      `requestId mismatch: expected ${request.requestId}, got ${response.requestId}`,
+    );
   }
   if (!response.ok) {
-    throw new OmniApiError(response.error.message, { status: response.error.status, code: response.error.code });
+    throw new WhatsAppRpcError(response.error.message, {
+      status: response.error.status,
+      code: response.error.code,
+      ...(response.error.retryAfterMs !== undefined ? { retryAfterMs: response.error.retryAfterMs } : {}),
+      method,
+      instanceId,
+    });
   }
   if (response.data === null || typeof response.data !== "object") {
-    throw invalidResponse(method, "data is not an object");
+    throw invalidResponse(instanceId, method, "data is not an object");
   }
   // The runner validates its own output against the contract; the client trusts the shape.
   return response.data as WhatsAppRpcResult<M>;

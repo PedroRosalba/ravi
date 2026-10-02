@@ -63,12 +63,12 @@ describe("RPC dispatcher", () => {
 
   it("rejects unknown methods and invalid params with 400 INVALID_REQUEST", async () => {
     const h = createHarness();
-    await expect(h.runtime.call("nope" as "instances.status", {})).rejects.toMatchObject({
+    await expect(h.runtime.call("nope" as "connection.status", {})).rejects.toMatchObject({
       status: 400,
       code: "INVALID_REQUEST",
     });
-    await expect(h.runtime.call("messages.send", { to: DM })).rejects.toMatchObject({ status: 400 });
-    const error = await h.runtime.call("messages.send", {}).catch((e: unknown) => e);
+    await expect(h.runtime.call("messages.sendText", { to: DM })).rejects.toMatchObject({ status: 400 });
+    const error = await h.runtime.call("messages.sendText", {}).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(WhatsAppRuntimeError);
     expect((error as WhatsAppRuntimeError).toRpcError()).toMatchObject({ status: 400, code: "INVALID_REQUEST" });
   });
@@ -76,12 +76,12 @@ describe("RPC dispatcher", () => {
   it("sends fail with 503 NOT_CONNECTED until the socket is open", async () => {
     const h = createHarness({ registered: false });
     h.runtime.start();
-    await expect(h.runtime.call("messages.send", { to: DM, text: "oi" })).rejects.toMatchObject({
+    await expect(h.runtime.call("messages.sendText", { to: DM, text: "oi" })).rejects.toMatchObject({
       status: 503,
       code: "NOT_CONNECTED",
     });
-    await expect(h.runtime.call("instances.listGroups", {})).rejects.toMatchObject({ status: 503 });
-    expect(await h.runtime.call("instances.status", {})).toEqual({
+    await expect(h.runtime.call("groups.list", {})).rejects.toMatchObject({ status: 503 });
+    expect(await h.runtime.call("connection.status", {})).toEqual({
       state: "disconnected",
       isConnected: false,
       profileName: null,
@@ -89,11 +89,11 @@ describe("RPC dispatcher", () => {
   });
 });
 
-describe("messages.send", () => {
+describe("messages.sendText", () => {
   it("sends text with markdown converted and returns the Baileys message id", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    const result = await h.runtime.call("messages.send", { to: "5511988887777", text: "**oi** _tudo_?" });
+    const result = await h.runtime.call("messages.sendText", { to: "5511988887777", text: "**oi** _tudo_?" });
     expect(result).toEqual({ messageId: "SENT-1", status: "sent" });
     const { jid, content } = lastSend(sock);
     expect(jid).toBe(DM);
@@ -105,14 +105,14 @@ describe("messages.send", () => {
   it("passthrough keeps the text verbatim", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    await h.runtime.call("messages.send", { to: DM, text: "**raw**", messageFormatMode: "passthrough" });
+    await h.runtime.call("messages.sendText", { to: DM, text: "**raw**", messageFormatMode: "passthrough" });
     expect(lastSend(sock).content).toEqual({ text: "**raw**" });
   });
 
   it("drops text made only of routing headers (Omni 'filtered')", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    const result = await h.runtime.call("messages.send", {
+    const result = await h.runtime.call("messages.sendText", {
       to: DM,
       text: "[channel:whatsapp-baileys instance:abc chat:x@s.whatsapp.net]\n⚡ REPLY NOW",
     });
@@ -124,7 +124,7 @@ describe("messages.send", () => {
     const h = createHarness();
     const sock = await h.connect();
     sock.fake.signalRepository.lidMapping.getLIDForPN.mockImplementation(async () => DM_LID);
-    await h.runtime.call("messages.send", { to: DM, text: "oi" });
+    await h.runtime.call("messages.sendText", { to: DM, text: "oi" });
     expect(lastSend(sock).jid).toBe(DM_LID);
     expect(h.runtime.getLidMappingCache().get(DM_LID)).toBe(DM);
   });
@@ -133,7 +133,7 @@ describe("messages.send", () => {
     const h = createHarness();
     const sock = await h.connect();
     await inboundGroupMessage(h, "IN-1", MEMBER);
-    await h.runtime.call("messages.send", {
+    await h.runtime.call("messages.sendText", {
       to: GROUP,
       text: "@5511777776666 respondendo",
       replyTo: "IN-1",
@@ -149,7 +149,7 @@ describe("messages.send", () => {
   it("falls back to a minimal quoted key for unknown replyTo ids", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    await h.runtime.call("messages.send", { to: DM, text: "x", replyTo: "UNKNOWN" });
+    await h.runtime.call("messages.sendText", { to: DM, text: "x", replyTo: "UNKNOWN" });
     expect((lastSend(sock).options.quoted as { key: unknown }).key).toEqual({
       id: "UNKNOWN",
       remoteJid: DM,
@@ -163,14 +163,14 @@ describe("messages.send", () => {
     sock.fake.sendMessage.mockImplementationOnce(async () => {
       throw Object.assign(new Error("rate-overlimit"), { output: { statusCode: 429 } });
     });
-    await expect(h.runtime.call("messages.send", { to: DM, text: "a" })).rejects.toMatchObject({
+    await expect(h.runtime.call("messages.sendText", { to: DM, text: "a" })).rejects.toMatchObject({
       status: 429,
       code: "RATE_LIMITED",
     });
     sock.fake.sendMessage.mockImplementationOnce(async () => {
       throw new Error("socket hang up");
     });
-    await expect(h.runtime.call("messages.send", { to: DM, text: "b" })).rejects.toMatchObject({
+    await expect(h.runtime.call("messages.sendText", { to: DM, text: "b" })).rejects.toMatchObject({
       status: 502,
       code: "TRANSPORT_ERROR",
     });
@@ -214,18 +214,22 @@ describe("messages.sendMedia / sendSticker", () => {
     });
   });
 
-  it("sends base64 documents as buffers", async () => {
+  it("has no base64 path: media and stickers without an absolute filePath are rejected", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    await h.runtime.call("messages.sendMedia", {
-      to: DM,
-      type: "document",
-      base64: Buffer.from("%PDF-1.4").toString("base64"),
-      filename: "report.pdf",
-    });
-    const content = lastSend(sock).content;
-    expect(Buffer.isBuffer(content.document)).toBe(true);
-    expect(content).toMatchObject({ fileName: "report.pdf", mimetype: "application/pdf" });
+    const sendsBefore = sock.fake.sendMessage.mock.calls.length;
+    await expect(
+      h.runtime.call("messages.sendMedia", {
+        to: DM,
+        type: "document",
+        base64: Buffer.from("%PDF-1.4").toString("base64"),
+        filename: "report.pdf",
+      }),
+    ).rejects.toMatchObject({ status: 400, code: "INVALID_REQUEST" });
+    await expect(
+      h.runtime.call("messages.sendSticker", { to: DM, base64: Buffer.from("RIFF0000WEBP").toString("base64") }),
+    ).rejects.toMatchObject({ status: 400, code: "INVALID_REQUEST" });
+    expect(sock.fake.sendMessage.mock.calls.length).toBe(sendsBefore);
   });
 
   it("converts voice notes to OGG/Opus and sends them as ptt", async () => {
@@ -266,7 +270,7 @@ describe("messages.sendMedia / sendSticker", () => {
     });
     await h.connect();
     await expect(
-      h.runtime.call("messages.sendSticker", { to: DM, base64: Buffer.from("not an image").toString("base64") }),
+      h.runtime.call("messages.sendSticker", { to: DM, filePath: join(dir, "photo.png") }),
     ).rejects.toMatchObject({ status: 400, code: "INVALID_REQUEST" });
   });
 });
@@ -276,7 +280,7 @@ describe("reactions, edits, deletes", () => {
     const h = createHarness();
     const sock = await h.connect();
     await inboundGroupMessage(h, "IN-R", MEMBER);
-    const result = await h.runtime.call("messages.sendReaction", { to: GROUP, messageId: "IN-R", emoji: "🔥" });
+    const result = await h.runtime.call("messages.react", { to: GROUP, messageId: "IN-R", emoji: "🔥" });
     expect(result).toEqual({ messageId: "SENT-1", success: true });
     expect(lastSend(sock)).toMatchObject({
       jid: GROUP,
@@ -287,8 +291,8 @@ describe("reactions, edits, deletes", () => {
   it("reacts to our own sent message with fromMe=true", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    const sent = await h.runtime.call("messages.send", { to: DM, text: "oi" });
-    await h.runtime.call("messages.sendReaction", { to: DM, messageId: sent.messageId, emoji: "" });
+    const sent = await h.runtime.call("messages.sendText", { to: DM, text: "oi" });
+    await h.runtime.call("messages.react", { to: DM, messageId: sent.messageId, emoji: "" });
     expect(lastSend(sock).content).toEqual({
       react: { text: "", key: { remoteJid: DM, id: sent.messageId, fromMe: true } },
     });
@@ -298,16 +302,14 @@ describe("reactions, edits, deletes", () => {
     const h = createHarness();
     await h.connect();
     await expect(
-      h.runtime.call("messages.sendReaction", { to: DM, messageId: "X", emoji: "123456789" }),
+      h.runtime.call("messages.react", { to: DM, messageId: "X", emoji: "123456789" }),
     ).rejects.toMatchObject({ status: 400 });
   });
 
   it("edits own group messages with the account JID as participant", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    expect(await h.runtime.call("messages.editChannel", { channelId: GROUP, messageId: "OWN-1", text: "fix" })).toEqual(
-      {},
-    );
+    expect(await h.runtime.call("messages.edit", { chatId: GROUP, messageId: "OWN-1", text: "fix" })).toEqual({});
     expect(lastSend(sock).content).toEqual({
       edit: { remoteJid: GROUP, id: "OWN-1", fromMe: true, participant: OWNER_JID },
       text: "fix",
@@ -319,7 +321,7 @@ describe("reactions, edits, deletes", () => {
     const h = createHarness();
     const sock = await h.connect();
     await inboundGroupMessage(h, "IN-D", MEMBER);
-    await h.runtime.call("messages.deleteChannel", { channelId: GROUP, messageId: "IN-D" });
+    await h.runtime.call("messages.delete", { chatId: GROUP, messageId: "IN-D" });
     expect(lastSend(sock).content).toEqual({
       delete: { remoteJid: GROUP, id: "IN-D", fromMe: false, participant: MEMBER },
     });
@@ -330,7 +332,7 @@ describe("presence and read receipts", () => {
   it("typing sends composing and auto-pauses after the duration", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    await h.runtime.call("messages.sendPresence", { to: DM, type: "typing" });
+    await h.runtime.call("presence.set", { to: DM, state: "typing" });
     expect(sock.fake.sendPresenceUpdate).toHaveBeenLastCalledWith("composing", DM);
     expect(h.manual.delays()).toEqual([5000]);
     h.manual.runAll();
@@ -340,12 +342,12 @@ describe("presence and read receipts", () => {
   it("recording, explicit pause, duration 0 and global availability", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    await h.runtime.call("messages.sendPresence", { to: DM, type: "recording", duration: 0 });
+    await h.runtime.call("presence.set", { to: DM, state: "recording", durationMs: 0 });
     expect(sock.fake.sendPresenceUpdate).toHaveBeenLastCalledWith("recording", DM);
     expect(h.manual.pending.size).toBe(0);
-    await h.runtime.call("messages.sendPresence", { to: DM, type: "paused" });
+    await h.runtime.call("presence.set", { to: DM, state: "paused" });
     expect(sock.fake.sendPresenceUpdate).toHaveBeenLastCalledWith("paused", DM);
-    await h.runtime.call("messages.sendPresence", { to: DM, type: "available" });
+    await h.runtime.call("presence.set", { to: DM, state: "available" });
     expect(sock.fake.sendPresenceUpdate).toHaveBeenLastCalledWith("available");
   });
 
@@ -354,7 +356,7 @@ describe("presence and read receipts", () => {
     const sock = await h.connect();
     h.runtime.storeLidMapping(h.instanceId, DM_LID, "555197285829@s.whatsapp.net");
     await inboundGroupMessage(h, "IN-READ-1", DM_LID);
-    await h.runtime.call("messages.batchMarkRead", { chatId: GROUP, messageIds: ["IN-READ-1"] });
+    await h.runtime.call("messages.markRead", { chatId: GROUP, messageIds: ["IN-READ-1"] });
     expect(sock.fake.readMessages).toHaveBeenCalledWith([
       { remoteJid: GROUP, id: "IN-READ-1", fromMe: false, participant: "555197285829@s.whatsapp.net" },
     ]);
@@ -363,12 +365,12 @@ describe("presence and read receipts", () => {
   it("'all' marks the whole chat read; readReceiptMode off sends nothing", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    await h.runtime.call("messages.batchMarkRead", { chatId: DM, messageIds: ["all"] });
+    await h.runtime.call("messages.markRead", { chatId: DM, messageIds: ["all"] });
     expect(sock.fake.readMessages).toHaveBeenCalledWith([{ remoteJid: DM, id: "all", fromMe: false }]);
 
     const off = createHarness({ readReceiptMode: "off" });
     const offSock = await off.connect();
-    await off.runtime.call("messages.batchMarkRead", { chatId: DM, messageIds: ["X"] });
+    await off.runtime.call("messages.markRead", { chatId: DM, messageIds: ["X"] });
     expect(offSock.fake.readMessages).not.toHaveBeenCalled();
   });
 });
@@ -394,9 +396,9 @@ describe("groups", () => {
   it("lists groups with search and limit (Omni record shape)", async () => {
     const h = createHarness({ socket: { groups } });
     await h.connect();
-    const all = await h.runtime.call("instances.listGroups", {});
+    const all = await h.runtime.call("groups.list", {});
     expect(all.items).toHaveLength(2);
-    const filtered = await h.runtime.call("instances.listGroups", { search: "ravi", limit: 5 });
+    const filtered = await h.runtime.call("groups.list", { search: "ravi", limit: 5 });
     expect(filtered.items).toEqual([
       {
         id: GROUP,
@@ -458,47 +460,47 @@ describe("groups", () => {
     const h = createHarness({ socket: { groups } });
     const sock = await h.connect();
 
-    const created = await h.runtime.call("instances.createGroup", { subject: "Novo", participants: ["5511777776666"] });
+    const created = await h.runtime.call("groups.create", { subject: "Novo", participants: ["5511777776666"] });
     expect(created).toMatchObject({ id: "120363999999999999@g.us", subject: "Novo", memberCount: 1 });
     expect(sock.fake.groupCreate).toHaveBeenCalledWith("Novo", [MEMBER]);
 
     expect(
-      await h.runtime.call("instances.addGroupParticipants", { groupJid: GROUP, participants: ["5511666665555"] }),
+      await h.runtime.call("groups.addParticipants", { groupJid: GROUP, participants: ["5511666665555"] }),
     ).toEqual({ groupJid: GROUP, results: [{ jid: "5511666665555@s.whatsapp.net", status: "200" }] });
-    await h.runtime.call("instances.updateGroupParticipants", {
+    await h.runtime.call("groups.updateParticipants", {
       groupJid: "group:120363000000000000",
       action: "promote",
       participants: [MEMBER],
     });
     expect(sock.fake.groupParticipantsUpdate).toHaveBeenLastCalledWith(GROUP, [MEMBER], "promote");
 
-    expect(await h.runtime.call("instances.getGroupInvite", { groupJid: GROUP })).toEqual({
+    expect(await h.runtime.call("groups.getInvite", { groupJid: GROUP })).toEqual({
       groupJid: GROUP,
       code: "INVITECODE",
       inviteLink: "https://chat.whatsapp.com/INVITECODE",
     });
-    expect((await h.runtime.call("instances.revokeGroupInvite", { groupJid: GROUP })).code).toBe("NEWCODE");
-    expect(await h.runtime.call("instances.joinGroup", { code: "https://chat.whatsapp.com/AbC123" })).toEqual({
+    expect((await h.runtime.call("groups.revokeInvite", { groupJid: GROUP })).code).toBe("NEWCODE");
+    expect(await h.runtime.call("groups.join", { code: "https://chat.whatsapp.com/AbC123" })).toEqual({
       groupJid: "120363555555555555@g.us",
       joined: true,
     });
     expect(sock.fake.groupAcceptInvite).toHaveBeenCalledWith("AbC123");
-    expect(await h.runtime.call("instances.leaveGroup", { groupJid: GROUP })).toEqual({ groupJid: GROUP, left: true });
-    expect(await h.runtime.call("instances.renameGroup", { groupJid: GROUP, subject: "Renomeado" })).toEqual({
+    expect(await h.runtime.call("groups.leave", { groupJid: GROUP })).toEqual({ groupJid: GROUP, left: true });
+    expect(await h.runtime.call("groups.rename", { groupJid: GROUP, subject: "Renomeado" })).toEqual({
       groupJid: GROUP,
       subject: "Renomeado",
     });
-    expect(await h.runtime.call("instances.setGroupDescription", { groupJid: GROUP, description: "" })).toEqual({
+    expect(await h.runtime.call("groups.setDescription", { groupJid: GROUP, description: "" })).toEqual({
       groupJid: GROUP,
       description: "",
     });
     expect(sock.fake.groupUpdateDescription).toHaveBeenCalledWith(GROUP, undefined);
-    expect(await h.runtime.call("instances.setGroupSettings", { groupJid: GROUP, setting: "announcement" })).toEqual({
+    expect(await h.runtime.call("groups.setSettings", { groupJid: GROUP, setting: "announcement" })).toEqual({
       groupJid: GROUP,
       setting: "announcement",
     });
     await expect(
-      h.runtime.call("instances.setGroupSettings", { groupJid: GROUP, setting: "everyone-can-edit" }),
+      h.runtime.call("groups.setSettings", { groupJid: GROUP, setting: "everyone-can-edit" }),
     ).rejects.toMatchObject({ status: 400 });
   });
 
@@ -506,7 +508,7 @@ describe("groups", () => {
     const h = createHarness({ socket: { groups } });
     const sock = await h.connect();
     sock.fake.getUSyncDevices.mockClear();
-    await h.runtime.call("messages.send", { to: GROUP, text: "oi grupo" });
+    await h.runtime.call("messages.sendText", { to: GROUP, text: "oi grupo" });
     expect(sock.fake.getUSyncDevices).toHaveBeenCalledWith([OWNER_JID, DM_LID, MEMBER], true, false);
   });
 });

@@ -217,7 +217,7 @@ export interface WhatsAppNativeRuntimeOptions {
   /** Inbound media root. Default `<RAVI_STATE_DIR>/media/whatsapp`. */
   mediaBaseDir?: string;
   logger?: Logger;
-  /** Socket options (instance defaults); `instances.connect` may override them. */
+  /** Socket options (instance defaults); `connection.connect` may override them. */
   socketOptions?: WhatsAppConnectionOptions;
   /** Reconnect policy of the ported connection handler (Omni default 5 retries, 1s..30s). */
   reconnect?: Partial<ReconnectConfig>;
@@ -454,48 +454,47 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     this.recentReactionEvents = cache<true>(REACTION_EVENT_TTL_MS, 5_000);
 
     this.rpcHandlers = {
-      "instances.status": async () => this.getStatus(),
-      "instances.connect": (params) => this.connect(params),
-      "instances.disconnect": async () => {
+      "connection.status": async () => this.getStatus(),
+      "connection.connect": (params) => this.connect(params),
+      "connection.disconnect": async () => {
         await this.disconnect();
         return {};
       },
-      "instances.logout": async () => {
+      "connection.logout": async () => {
         await this.logout();
         return {};
       },
-      "instances.pairingCode": async (params) => ({ code: await this.requestPairingCode(params.phoneNumber) }),
-      "instances.listGroups": (params) => this.listGroups(params),
-      "instances.createGroup": (params) => this.createGroup(params.subject, params.participants),
-      "instances.addGroupParticipants": (params) =>
-        this.updateGroupParticipants(params.groupJid, params.participants, "add"),
-      "instances.updateGroupParticipants": (params) =>
+      "connection.pairingCode": async (params) => ({ code: await this.requestPairingCode(params.phoneNumber) }),
+      "groups.list": (params) => this.listGroups(params),
+      "groups.create": (params) => this.createGroup(params.subject, params.participants),
+      "groups.addParticipants": (params) => this.updateGroupParticipants(params.groupJid, params.participants, "add"),
+      "groups.updateParticipants": (params) =>
         this.updateGroupParticipants(params.groupJid, params.participants, params.action),
-      "instances.getGroupInvite": (params) => this.getGroupInvite(params.groupJid),
-      "instances.revokeGroupInvite": (params) => this.revokeGroupInvite(params.groupJid),
-      "instances.joinGroup": (params) => this.joinGroup(params.code),
-      "instances.leaveGroup": (params) => this.leaveGroup(params.groupJid),
-      "instances.renameGroup": (params) => this.renameGroup(params.groupJid, params.subject),
-      "instances.setGroupDescription": (params) => this.setGroupDescription(params.groupJid, params.description),
-      "instances.setGroupSettings": (params) => this.setGroupSettings(params.groupJid, params.setting),
+      "groups.getInvite": (params) => this.getGroupInvite(params.groupJid),
+      "groups.revokeInvite": (params) => this.revokeGroupInvite(params.groupJid),
+      "groups.join": (params) => this.joinGroup(params.code),
+      "groups.leave": (params) => this.leaveGroup(params.groupJid),
+      "groups.rename": (params) => this.renameGroup(params.groupJid, params.subject),
+      "groups.setDescription": (params) => this.setGroupDescription(params.groupJid, params.description),
+      "groups.setSettings": (params) => this.setGroupSettings(params.groupJid, params.setting),
       "groups.metadata": (params) => this.getGroupMetadata(params.groupJid, params.maxAgeMs),
-      "messages.send": (params) => this.sendText(params),
-      "messages.sendPresence": async (params) => {
-        await this.sendPresence(params.to, params.type, params.duration);
+      "messages.sendText": (params) => this.sendText(params),
+      "presence.set": async (params) => {
+        await this.sendPresence(params.to, params.state, params.durationMs);
         return {};
       },
-      "messages.sendReaction": (params) => this.sendReaction(params),
-      "messages.deleteChannel": async (params) => {
-        await this.deleteMessage(params.channelId, params.messageId);
+      "messages.react": (params) => this.sendReaction(params),
+      "messages.delete": async (params) => {
+        await this.deleteMessage(params.chatId, params.messageId);
         return {};
       },
-      "messages.editChannel": async (params) => {
-        await this.editMessage(params.channelId, params.messageId, params.text);
+      "messages.edit": async (params) => {
+        await this.editMessage(params.chatId, params.messageId, params.text);
         return {};
       },
       "messages.sendMedia": (params) => this.sendMedia(params),
       "messages.sendSticker": (params) => this.sendSticker(params),
-      "messages.batchMarkRead": async (params) => {
+      "messages.markRead": async (params) => {
         await this.markRead(params.chatId, params.messageIds);
         return {};
       },
@@ -575,12 +574,12 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   }
 
   /**
-   * `instances.connect`: reconnect with stored creds, or open a socket that emits QR
+   * `connection.connect`: reconnect with stored creds, or open a socket that emits QR
    * codes. `forceNewQr` drops the socket and the stored auth first (Omni parity).
    */
   async connect(
     params: { forceNewQr?: boolean; whatsapp?: Record<string, unknown> } = {},
-  ): Promise<WhatsAppRpcResult<"instances.connect">> {
+  ): Promise<WhatsAppRpcResult<"connection.connect">> {
     this.assertNotStopped();
     if (params.whatsapp) this.applySocketOptions(params.whatsapp);
     this.started = true;
@@ -626,7 +625,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return { status: "connecting", message: "Connection initiated" };
   }
 
-  /** `instances.disconnect`: close the socket, keep the session (Omni `disconnect`). */
+  /** `connection.disconnect`: close the socket, keep the session (Omni `disconnect`). */
   async disconnect(): Promise<void> {
     this.manualDisconnect = true;
     this.generation++;
@@ -651,7 +650,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   }
 
   /**
-   * `instances.logout`: unlink the device on WhatsApp's side (when connected), close the
+   * `connection.logout`: unlink the device on WhatsApp's side (when connected), close the
    * socket and clear the stored auth state. (Omni only closed the socket and cleared auth.)
    */
   async logout(): Promise<void> {
@@ -676,7 +675,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   }
 
   /**
-   * `instances.pairingCode`: pair by phone number instead of QR. Opens a socket when
+   * `connection.pairingCode`: pair by phone number instead of QR. Opens a socket when
    * none is live and waits until it is ready (first QR) before asking WhatsApp.
    */
   async requestPairingCode(phoneNumber: string): Promise<string> {
@@ -772,8 +771,8 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     };
   }
 
-  /** `instances.status` (Omni REST `GET /instances/:id/status` shape). */
-  getStatus(): WhatsAppRpcResult<"instances.status"> {
+  /** `connection.status` (Omni REST `GET /instances/:id/status` shape). */
+  getStatus(): WhatsAppRpcResult<"connection.status"> {
     return {
       state: this.rpcConnectionState(),
       isConnected: this.state === "connected" && this.sock !== null,
@@ -2444,8 +2443,8 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   // Messages
   // ==========================================================================
 
-  /** `messages.send`. Text made only of routing headers is dropped (Omni "filtered"). */
-  async sendText(params: WhatsAppRpcParams<"messages.send">): Promise<WhatsAppRpcResult<"messages.send">> {
+  /** `messages.sendText`. Text made only of routing headers is dropped (Omni "filtered"). */
+  async sendText(params: WhatsAppRpcParams<"messages.sendText">): Promise<WhatsAppRpcResult<"messages.sendText">> {
     const text = sanitizeOutboundText(params.text);
     if (!text) {
       this.log.info("Outbound text filtered (only internal headers)", { instanceId: this.instanceId });
@@ -2474,14 +2473,13 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return { messageId, status: "sent" };
   }
 
-  /** `messages.sendMedia`: absolute `filePath` (streamed by Baileys) or base64. */
+  /** `messages.sendMedia`: absolute `filePath` (streamed by Baileys). */
   async sendMedia(params: WhatsAppRpcParams<"messages.sendMedia">): Promise<WhatsAppRpcResult<"messages.sendMedia">> {
     const sock = this.requireSocket();
-    const filePath = params.filePath?.trim() || undefined;
-    if (filePath) await this.assertReadableFile(filePath);
-    const base64 = filePath ? undefined : params.base64;
-    if (!filePath && !base64) throw invalidRequest("filePath or base64 is required");
-    const filename = params.filename ?? (filePath ? basename(filePath) : undefined);
+    const filePath = params.filePath.trim();
+    if (!filePath) throw invalidRequest("filePath is required");
+    await this.assertReadableFile(filePath);
+    const filename = params.filename ?? basename(filePath);
     const voiceNote = params.type === "audio" && params.voiceNote === true;
     const mimeType = normalizeSendMediaMimeType({ type: params.type, mimeType: params.mimeType, filename, voiceNote });
 
@@ -2491,14 +2489,15 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
       to: jid,
       content: {
         type: params.type,
-        ...(filePath ? { mediaUrl: filePath, localPath: filePath } : {}),
+        mediaUrl: filePath,
+        localPath: filePath,
         ...(params.caption ? { caption: params.caption } : {}),
         ...(filename ? { filename } : {}),
         mimeType,
       },
-      metadata: { ...(base64 ? { base64 } : {}), ...(voiceNote ? { ptt: true } : {}) },
+      metadata: { ...(voiceNote ? { ptt: true } : {}) },
     };
-    if (voiceNote) message = await this.processAudioForVoiceNote(message, filePath, base64);
+    if (voiceNote) message = await this.processAudioForVoiceNote(message, filePath);
 
     const processed = await this.preprocessOutgoing(sock, jid, message);
     const content = buildMessageContent(processed, buildVCard);
@@ -2507,15 +2506,11 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   }
 
   /** Voice notes go out as OGG/Opus: convert with ffmpeg when needed (Omni `processAudioForVoiceNote`). */
-  private async processAudioForVoiceNote(
-    message: OutgoingMessage,
-    filePath: string | undefined,
-    base64: string | undefined,
-  ): Promise<OutgoingMessage> {
+  private async processAudioForVoiceNote(message: OutgoingMessage, filePath: string): Promise<OutgoingMessage> {
     const lib = await this.library();
     let input: Buffer;
     try {
-      input = base64 ? Buffer.from(base64, "base64") : await readFile(filePath ?? "");
+      input = await readFile(filePath);
     } catch (error) {
       throw invalidRequest(`voice note audio is not readable: ${errorMessage(error)}`, error);
     }
@@ -2536,8 +2531,8 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
         metadata: { ...message.metadata, audioBuffer: converted.buffer },
       };
     }
-    // Already OGG/Opus (or no ffmpeg): base64 sends keep the raw buffer, file sends stream the path.
-    return base64 ? { ...message, metadata: { ...message.metadata, audioBuffer: input } } : message;
+    // Already OGG/Opus (or no ffmpeg): stream the file path as-is.
+    return message;
   }
 
   /** `messages.sendSticker`: non-webp input is converted to a 512px webp first. */
@@ -2545,12 +2540,10 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     params: WhatsAppRpcParams<"messages.sendSticker">,
   ): Promise<WhatsAppRpcResult<"messages.sendSticker">> {
     const sock = this.requireSocket();
-    const filePath = params.filePath?.trim() || undefined;
-    if (filePath) await this.assertReadableFile(filePath);
-    let buffer: Buffer;
-    if (filePath) buffer = await readFile(filePath);
-    else if (params.base64) buffer = Buffer.from(params.base64, "base64");
-    else throw invalidRequest("filePath or base64 is required");
+    const filePath = params.filePath.trim();
+    if (!filePath) throw invalidRequest("filePath is required");
+    await this.assertReadableFile(filePath);
+    let buffer: Buffer = await readFile(filePath);
     if (buffer.length === 0) throw invalidRequest("sticker is empty");
     if (!isWebp(buffer)) {
       try {
@@ -2566,10 +2559,8 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return { messageId, status: "sent" };
   }
 
-  /** `messages.sendReaction` (empty emoji removes). Target key fields come from caches. */
-  async sendReaction(
-    params: WhatsAppRpcParams<"messages.sendReaction">,
-  ): Promise<WhatsAppRpcResult<"messages.sendReaction">> {
+  /** `messages.react` (empty emoji removes). Target key fields come from caches. */
+  async sendReaction(params: WhatsAppRpcParams<"messages.react">): Promise<WhatsAppRpcResult<"messages.react">> {
     const emoji = params.emoji ?? "";
     if (emoji && /^\d+$/.test(emoji)) {
       throw invalidRequest(
@@ -2596,7 +2587,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     }
   }
 
-  /** `messages.editChannel`: edit one of our messages (Omni `editMessage`, fromMe). */
+  /** `messages.edit`: edit one of our messages (Omni `editMessage`, fromMe). */
   async editMessage(channelId: string, messageId: string, text: string): Promise<void> {
     const sock = this.requireSocket();
     await this.humanDelay();
@@ -2620,7 +2611,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     }
   }
 
-  /** `messages.deleteChannel`: delete for everyone. */
+  /** `messages.delete`: delete for everyone. */
   async deleteMessage(channelId: string, messageId: string): Promise<void> {
     const sock = this.requireSocket();
     await this.humanDelay();
@@ -2640,8 +2631,8 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   }
 
   /**
-   * `messages.sendPresence`: typing → composing, recording → recording, both auto-paused
-   * after `duration` (default 5000ms; 0 keeps it until paused); paused/available/unavailable
+   * `presence.set`: typing → composing, recording → recording, both auto-paused
+   * after `durationMs` (default 5000ms; 0 keeps it until paused); paused/available/unavailable
    * are sent as-is.
    */
   async sendPresence(
@@ -2674,7 +2665,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     this.presenceTimers.set(jid, timer);
   }
 
-  /** `messages.batchMarkRead` (Omni `markAsRead`, honoring the read receipt mode). */
+  /** `messages.markRead` (Omni `markAsRead`, honoring the read receipt mode). */
   async markRead(chatId: string, messageIds: string[]): Promise<void> {
     if (this.readReceiptMode === "off") return;
     const sock = this.requireSocket();
@@ -2719,9 +2710,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   // Groups
   // ==========================================================================
 
-  async listGroups(
-    params: WhatsAppRpcParams<"instances.listGroups">,
-  ): Promise<WhatsAppRpcResult<"instances.listGroups">> {
+  async listGroups(params: WhatsAppRpcParams<"groups.list">): Promise<WhatsAppRpcResult<"groups.list">> {
     const sock = this.requireSocket();
     const groups = await sock.groupFetchAllParticipating();
     const records = Object.entries(groups).map(([jid, metadata]) => {
@@ -2731,7 +2720,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return { items: filterGroupRecords(records, { search: params.search, limit: params.limit }) };
   }
 
-  async createGroup(subject: string, participants: string[]): Promise<WhatsAppRpcResult<"instances.createGroup">> {
+  async createGroup(subject: string, participants: string[]): Promise<WhatsAppRpcResult<"groups.create">> {
     const sock = this.requireSocket();
     await this.humanDelay();
     const participantJids = participants.map((participant) => normalizeChatTarget(participant));
@@ -2777,14 +2766,14 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return { groupJid: jid, code, inviteLink: code ? inviteLink(code) : "" };
   }
 
-  async joinGroup(codeOrLink: string): Promise<WhatsAppRpcResult<"instances.joinGroup">> {
+  async joinGroup(codeOrLink: string): Promise<WhatsAppRpcResult<"groups.join">> {
     const sock = this.requireSocket();
     await this.humanDelay();
     const groupJid = (await sock.groupAcceptInvite(extractInviteCode(codeOrLink))) ?? "";
     return { groupJid, joined: Boolean(groupJid) };
   }
 
-  async leaveGroup(groupJid: string): Promise<WhatsAppRpcResult<"instances.leaveGroup">> {
+  async leaveGroup(groupJid: string): Promise<WhatsAppRpcResult<"groups.leave">> {
     const sock = this.requireSocket();
     await this.humanDelay();
     const jid = normalizeGroupJid(groupJid);
@@ -2794,7 +2783,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return { groupJid: jid, left: true };
   }
 
-  async renameGroup(groupJid: string, subject: string): Promise<WhatsAppRpcResult<"instances.renameGroup">> {
+  async renameGroup(groupJid: string, subject: string): Promise<WhatsAppRpcResult<"groups.rename">> {
     const sock = this.requireSocket();
     await this.humanDelay();
     const jid = normalizeGroupJid(groupJid);
@@ -2808,7 +2797,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   async setGroupDescription(
     groupJid: string,
     description: string,
-  ): Promise<WhatsAppRpcResult<"instances.setGroupDescription">> {
+  ): Promise<WhatsAppRpcResult<"groups.setDescription">> {
     const sock = this.requireSocket();
     await this.humanDelay();
     const jid = normalizeGroupJid(groupJid);
@@ -2817,7 +2806,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return { groupJid: jid, description };
   }
 
-  async setGroupSettings(groupJid: string, setting: string): Promise<WhatsAppRpcResult<"instances.setGroupSettings">> {
+  async setGroupSettings(groupJid: string, setting: string): Promise<WhatsAppRpcResult<"groups.setSettings">> {
     if (!GROUP_SETTINGS.includes(setting as GroupSetting)) {
       throw invalidRequest(`Invalid group setting "${setting}"; expected one of ${GROUP_SETTINGS.join(", ")}`);
     }

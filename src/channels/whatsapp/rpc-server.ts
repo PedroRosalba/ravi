@@ -26,7 +26,7 @@ import {
   WhatsAppRpcParamsSchemas,
   WhatsAppRpcRequestSchema,
   whatsappRpcSubject,
-  type WhatsAppRpcError,
+  type WhatsAppRpcErrorBody,
   type WhatsAppRpcMethod,
   type WhatsAppRpcResponse,
   type WhatsAppRpcResult,
@@ -175,7 +175,7 @@ export async function handleWhatsAppRpcRequest(
  * `WhatsAppRuntimeError` (it carries `toRpcError()`, or `{status, code}`), which
  * passes through; anything untyped is a 502 `TRANSPORT_ERROR`.
  */
-export function toRpcError(error: unknown): WhatsAppRpcError {
+export function toRpcError(error: unknown): WhatsAppRpcErrorBody {
   if (isRecord(error)) {
     const typed = error as { toRpcError?: unknown };
     if (typeof typed.toRpcError === "function") {
@@ -253,11 +253,11 @@ function respond(message: WhatsAppRpcServerMessage, response: WhatsAppRpcRespons
   }
 }
 
-function failure(requestId: string, error: WhatsAppRpcError): WhatsAppRpcResponse {
+function failure(requestId: string, error: WhatsAppRpcErrorBody): WhatsAppRpcResponse {
   return { ok: false, requestId, error };
 }
 
-function invalidRequest(message: string): WhatsAppRpcError {
+function invalidRequest(message: string): WhatsAppRpcErrorBody {
   return { message, status: 400, code: WHATSAPP_RPC_ERROR_CODES.invalidRequest };
 }
 
@@ -275,7 +275,7 @@ function issuesText(error: { issues: ReadonlyArray<{ path: PropertyKey[]; messag
   );
 }
 
-function isRpcError(value: unknown): value is WhatsAppRpcError {
+function isRpcError(value: unknown): value is WhatsAppRpcErrorBody {
   return (
     isRecord(value) &&
     typeof value.message === "string" &&

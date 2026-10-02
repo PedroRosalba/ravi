@@ -216,7 +216,7 @@ describe("inbound dedup", () => {
   it("filters our own sends echoed back by Baileys", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    const sent = await h.runtime.call("messages.send", { to: PLAIN_DM, text: "oi" });
+    const sent = await h.runtime.call("messages.sendText", { to: PLAIN_DM, text: "oi" });
     sock.emit(
       "messages.upsert",
       upsert([
@@ -437,7 +437,7 @@ describe("reactions", () => {
   it("skips the echo of our own reaction (#336)", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    const sent = await h.runtime.call("messages.sendReaction", { to: PLAIN_DM, messageId: "MSG-5", emoji: "👍" });
+    const sent = await h.runtime.call("messages.react", { to: PLAIN_DM, messageId: "MSG-5", emoji: "👍" });
     sock.emit("messages.reaction", [
       {
         key: { id: "MSG-5", remoteJid: PLAIN_DM },
@@ -520,7 +520,7 @@ describe("edits and deletes", () => {
   it("our own delete echo is filtered; a revoke from the phone is published with isFromMe=true", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    await h.runtime.call("messages.deleteChannel", { channelId: PLAIN_DM, messageId: "MSG-OLD" });
+    await h.runtime.call("messages.delete", { chatId: PLAIN_DM, messageId: "MSG-OLD" });
     const deleteSend = sock.fake.sendMessage.mock.results[0]?.value as Promise<{ key: { id: string } }>;
     const echoId = (await deleteSend).key.id;
     const revoke = (id: string) => ({
@@ -640,7 +640,7 @@ describe("contacts, names and LID mappings", () => {
       ]),
     );
     await flush();
-    await h.runtime.call("messages.send", { to: GROUP, text: "@Ana tudo certo?" });
+    await h.runtime.call("messages.sendText", { to: GROUP, text: "@Ana tudo certo?" });
     const [, content] = sock.fake.sendMessage.mock.calls.at(-1) as [string, Record<string, unknown>];
     expect(content.mentions).toEqual([DM_LID]);
     expect(content.text).toBe("@217046273028329 tudo certo?");
@@ -669,7 +669,7 @@ describe("delivery status", () => {
   it("getMessage serves recently sent bodies for Baileys retries", async () => {
     const h = createHarness();
     await h.connect();
-    const sent = await h.runtime.call("messages.send", { to: PLAIN_DM, text: "retry me" });
+    const sent = await h.runtime.call("messages.sendText", { to: PLAIN_DM, text: "retry me" });
     const body = await h.socketConfigs[0]?.getMessage?.({ id: sent.messageId, remoteJid: PLAIN_DM });
     expect(body).toEqual({ conversation: "retry me" });
     expect(OWNER_JID).toContain("@s.whatsapp.net");

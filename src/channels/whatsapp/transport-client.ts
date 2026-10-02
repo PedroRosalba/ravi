@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { resolve } from "node:path";
 import { configStore } from "../../config-store.js";
 import { nats } from "../../nats.js";
 import { createOmniClient, OmniApiError, type OmniClient } from "../../omni/client.js";
@@ -139,23 +139,32 @@ function definedEntries(query: ListQuery): JsonObject {
 }
 
 /**
- * The runner reads `filePath` from disk (same host), so base64 is dropped for native
- * targets when an absolute path is present. A relative path is meaningless in the
- * runner's cwd: it is dropped when base64 is available, rejected otherwise.
+ * The runner reads `filePath` from disk (same host), so media always travels as an
+ * absolute path: a relative `filePath` is resolved against this process's cwd (the
+ * same as OmniSender's `resolve(localPath)`) and `base64` is dropped. A body without a
+ * `filePath` is rejected.
  */
 export function nativeMediaParams(body: JsonObject): JsonObject {
-  const params = withoutInstanceId(body);
+  const { base64: _base64, ...params } = withoutInstanceId(body);
   const filePath = typeof params.filePath === "string" ? params.filePath.trim() : "";
-  if (filePath && isAbsolute(filePath)) {
-    const { base64: _base64, ...rest } = params;
-    return { ...rest, filePath };
-  }
-  if (filePath) {
-    const { filePath: _filePath, ...rest } = params;
-    if (typeof rest.base64 === "string" && rest.base64) return rest;
-    throw invalidRequest(`filePath must be absolute for native WhatsApp media: ${filePath}`);
-  }
-  return params;
+  if (!filePath) throw invalidRequest("filePath is required for WhatsApp media");
+  return { ...params, filePath: resolve(filePath) };
+}
+
+/** Omni presence body `{to, type, duration}` → `presence.set` params `{to, state, durationMs}`. */
+export function nativePresenceParams(body: JsonObject): JsonObject {
+  const { type, duration, ...rest } = withoutInstanceId(body);
+  return {
+    ...rest,
+    ...(type !== undefined ? { state: type } : {}),
+    ...(duration !== undefined ? { durationMs: duration } : {}),
+  };
+}
+
+/** Omni `{channelId}` (delete/edit body) → v2 `{chatId}`. */
+export function nativeChatParams(body: JsonObject): JsonObject {
+  const { channelId, ...rest } = withoutInstanceId(body);
+  return { ...rest, chatId: channelId };
 }
 
 function isWhatsAppChannelFilter(channel: unknown): boolean {
@@ -165,7 +174,7 @@ function isWhatsAppChannelFilter(channel: unknown): boolean {
 
 function nativeInstanceRecord(
   binding: NativeWhatsAppBinding,
-  status: WhatsAppRpcResults["instances.status"],
+  status: WhatsAppRpcResults["connection.status"],
 ): InstanceListItem {
   return {
     id: binding.instanceId,
@@ -179,7 +188,7 @@ function nativeInstanceRecord(
   };
 }
 
-const OFFLINE_STATUS: WhatsAppRpcResults["instances.status"] = {
+const OFFLINE_STATUS: WhatsAppRpcResults["connection.status"] = {
   state: "disconnected",
   isConnected: false,
   profileName: null,
@@ -238,7 +247,7 @@ export function createChannelTransportClient(options: ChannelTransportClientOpti
     const nativeItems = await Promise.all(
       bindings.map(async (binding) => {
         try {
-          const status = await rpc(binding, "instances.status", {}, WHATSAPP_TRANSPORT_TIMEOUTS_MS.listStatus);
+          const status = await rpc(binding, "connection.status", {}, WHATSAPP_TRANSPORT_TIMEOUTS_MS.listStatus);
           return nativeInstanceRecord(binding, status);
         } catch (err) {
           log.debug("Native WhatsApp status unavailable while listing instances", {
@@ -277,34 +286,34 @@ export function createChannelTransportClient(options: ChannelTransportClientOpti
     async status(id: string) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.status(id);
-      return rpc(binding, "instances.status", {}, WHATSAPP_TRANSPORT_TIMEOUTS_MS.status);
+      return rpc(binding, "connection.status", {}, WHATSAPP_TRANSPORT_TIMEOUTS_MS.status);
     },
     async connect(id: string, body?: unknown) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.connect(id, body);
-      return rpc(binding, "instances.connect", body ?? {});
+      return rpc(binding, "connection.connect", body ?? {});
     },
     async disconnect(id: string) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.disconnect(id);
-      await rpc(binding, "instances.disconnect", {});
+      await rpc(binding, "connection.disconnect", {});
     },
     async listGroups(id: string, params?: ListQuery) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.listGroups(id, params);
-      const data = await rpc(binding, "instances.listGroups", definedEntries(params));
+      const data = await rpc(binding, "groups.list", definedEntries(params));
       return { items: data.items, meta: { transport: "native" } };
     },
     async createGroup(id: string, body: { subject: string; participants: string[] }) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.createGroup(id, body);
-      return { ...(await rpc(binding, "instances.createGroup", body)) };
+      return { ...(await rpc(binding, "groups.create", body)) };
     },
     async addGroupParticipants(id: string, groupJid: string, body: { participants: string[] }) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.addGroupParticipants(id, groupJid, body);
       return {
-        ...(await rpc(binding, "instances.addGroupParticipants", { groupJid, participants: body.participants })),
+        ...(await rpc(binding, "groups.addParticipants", { groupJid, participants: body.participants })),
       };
     },
     async updateGroupParticipants(
@@ -315,7 +324,7 @@ export function createChannelTransportClient(options: ChannelTransportClientOpti
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.updateGroupParticipants(id, groupJid, body);
       return {
-        ...(await rpc(binding, "instances.updateGroupParticipants", {
+        ...(await rpc(binding, "groups.updateParticipants", {
           groupJid,
           action: body.action,
           participants: body.participants,
@@ -325,37 +334,37 @@ export function createChannelTransportClient(options: ChannelTransportClientOpti
     async getGroupInvite(id: string, groupJid: string) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.getGroupInvite(id, groupJid);
-      return { ...(await rpc(binding, "instances.getGroupInvite", { groupJid })) };
+      return { ...(await rpc(binding, "groups.getInvite", { groupJid })) };
     },
     async revokeGroupInvite(id: string, groupJid: string) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.revokeGroupInvite(id, groupJid);
-      return { ...(await rpc(binding, "instances.revokeGroupInvite", { groupJid })) };
+      return { ...(await rpc(binding, "groups.revokeInvite", { groupJid })) };
     },
     async joinGroup(id: string, body: { code: string }) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.joinGroup(id, body);
-      return { ...(await rpc(binding, "instances.joinGroup", { code: body.code })) };
+      return { ...(await rpc(binding, "groups.join", { code: body.code })) };
     },
     async leaveGroup(id: string, groupJid: string) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.leaveGroup(id, groupJid);
-      return { ...(await rpc(binding, "instances.leaveGroup", { groupJid })) };
+      return { ...(await rpc(binding, "groups.leave", { groupJid })) };
     },
     async renameGroup(id: string, groupJid: string, body: { subject: string }) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.renameGroup(id, groupJid, body);
-      return { ...(await rpc(binding, "instances.renameGroup", { groupJid, subject: body.subject })) };
+      return { ...(await rpc(binding, "groups.rename", { groupJid, subject: body.subject })) };
     },
     async setGroupDescription(id: string, groupJid: string, body: { description: string }) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.setGroupDescription(id, groupJid, body);
-      return { ...(await rpc(binding, "instances.setGroupDescription", { groupJid, description: body.description })) };
+      return { ...(await rpc(binding, "groups.setDescription", { groupJid, description: body.description })) };
     },
     async setGroupSettings(id: string, groupJid: string, body: { setting: string }) {
       const binding = resolveBinding(id);
       if (!binding) return requireOmni(id).instances.setGroupSettings(id, groupJid, body);
-      return { ...(await rpc(binding, "instances.setGroupSettings", { groupJid, setting: body.setting })) };
+      return { ...(await rpc(binding, "groups.setSettings", { groupJid, setting: body.setting })) };
     },
   } satisfies InstancesApi;
 
@@ -378,32 +387,27 @@ export function createChannelTransportClient(options: ChannelTransportClientOpti
     async send(body: JsonObject) {
       const route = routeBody(body);
       if ("omni" in route) return route.omni.messages.send(body);
-      return rpc(route.binding, "messages.send", withoutInstanceId(body));
+      return rpc(route.binding, "messages.sendText", withoutInstanceId(body));
     },
     async sendPresence(body: JsonObject) {
       const route = routeBody(body);
       if ("omni" in route) return route.omni.messages.sendPresence(body);
-      await rpc(
-        route.binding,
-        "messages.sendPresence",
-        withoutInstanceId(body),
-        WHATSAPP_TRANSPORT_TIMEOUTS_MS.presence,
-      );
+      await rpc(route.binding, "presence.set", nativePresenceParams(body), WHATSAPP_TRANSPORT_TIMEOUTS_MS.presence);
     },
     async sendReaction(body: JsonObject) {
       const route = routeBody(body);
       if ("omni" in route) return route.omni.messages.sendReaction(body);
-      return rpc(route.binding, "messages.sendReaction", withoutInstanceId(body));
+      return rpc(route.binding, "messages.react", withoutInstanceId(body));
     },
     async deleteChannel(body: { instanceId: string; channelId: string; messageId: string }) {
       const route = routeBody(body);
       if ("omni" in route) return route.omni.messages.deleteChannel(body);
-      await rpc(route.binding, "messages.deleteChannel", withoutInstanceId(body));
+      await rpc(route.binding, "messages.delete", nativeChatParams(body));
     },
     async editChannel(body: { instanceId: string; channelId: string; messageId: string; text: string }) {
       const route = routeBody(body);
       if ("omni" in route) return route.omni.messages.editChannel(body);
-      await rpc(route.binding, "messages.editChannel", withoutInstanceId(body));
+      await rpc(route.binding, "messages.edit", nativeChatParams(body));
     },
     async sendMedia(body: JsonObject) {
       const route = routeBody(body);
@@ -418,12 +422,7 @@ export function createChannelTransportClient(options: ChannelTransportClientOpti
     async batchMarkRead(body: { instanceId: string; chatId: string; messageIds: string[] }) {
       const route = routeBody(body);
       if ("omni" in route) return route.omni.messages.batchMarkRead(body);
-      await rpc(
-        route.binding,
-        "messages.batchMarkRead",
-        withoutInstanceId(body),
-        WHATSAPP_TRANSPORT_TIMEOUTS_MS.markRead,
-      );
+      await rpc(route.binding, "messages.markRead", withoutInstanceId(body), WHATSAPP_TRANSPORT_TIMEOUTS_MS.markRead);
     },
   } satisfies OmniClient["messages"];
 

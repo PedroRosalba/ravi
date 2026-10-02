@@ -1,31 +1,27 @@
 /**
- * Native WhatsApp transport contract.
+ * WhatsApp channel contract.
  *
- * The native WhatsApp driver runs inside the `ravi channels` runner and owns the
- * Baileys socket. It is a drop-in replacement for the Omni WhatsApp bridge:
+ * WhatsApp is a first-class ravi channel. The `ravi channels` runner owns the Baileys
+ * sockets and publishes `WhatsAppInboundEvent` envelopes (events.ts) on the Ravi-owned
+ * `CHANNEL_INBOUND` JetStream stream; the daemon reads them with `WhatsAppInboundSource`.
+ * Outbound sends and connection/group control go through the RPC defined here: a NATS
+ * request on `_RAVI.channels.whatsapp.rpc.<instanceId>` that the runner answers
+ * (client side: rpc-client.ts, client.ts, sender.ts).
  *
- * - Inbound: the driver publishes the same event envelopes Omni publishes
- *   (`message.received`, `reaction.received`, `instance.*`) on the Ravi-owned
- *   `CHANNEL_INBOUND` JetStream stream, under `ravi.channel.inbound.<omni subject>`.
- *   The daemon's channel consumer (`src/omni/consumer.ts`) strips the prefix and
- *   runs the exact same pipeline it runs for Omni events, so session keys, chats,
- *   contacts and prompts stay identical.
- * - Outbound and control: callers keep using the Omni client surface. For an
- *   instance owned by a native WhatsApp channel, each client call becomes a NATS
- *   request on `_RAVI.channels.whatsapp.rpc.<instanceId>` that the runner answers.
- *
- * A native channel binds a Ravi instance by name: `ravi channels create <instance>
- * --provider whatsapp`. The instance keeps its `instances.instance_id` UUID, which
- * stays the transport instance id on every event and request.
+ * A WhatsApp channel binds a Ravi instance by name (`channels.name`, or
+ * `channels.defaults.instance` when they differ). The instance keeps its
+ * `instances.instance_id` UUID, which is the transport instance id on every event and
+ * request.
  */
 
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 import type { ChannelConfig, InstanceConfig } from "../../router/router-db.js";
 import type { RouterConfig } from "../../router/types.js";
 import { canonicalChannelId } from "../capabilities.js";
 
 export const WHATSAPP_PROVIDER = "whatsapp" as const;
-/** Channel type carried on transport subjects and `MessageTarget.channel`, as Omni does. */
+/** ravi's WhatsApp channel-type id (Baileys implementation); session keys strip `-baileys`. */
 export const WHATSAPP_CHANNEL_TYPE = "whatsapp-baileys" as const;
 export const WHATSAPP_DRIVER_ID = "ravi.whatsapp" as const;
 
@@ -34,7 +30,7 @@ export const CHANNEL_INBOUND_SUBJECT_PREFIX = "ravi.channel.inbound." as const;
 export const CHANNEL_INBOUND_SUBJECT_FILTER = "ravi.channel.inbound.>" as const;
 
 export const WHATSAPP_RPC_PROTOCOL = "ravi.channels.whatsapp.rpc" as const;
-export const WHATSAPP_RPC_SCHEMA_VERSION = 1 as const;
+export const WHATSAPP_RPC_SCHEMA_VERSION = 2 as const;
 export const WHATSAPP_RPC_SUBJECT_PREFIX = "_RAVI.channels.whatsapp.rpc." as const;
 export const WHATSAPP_RPC_QUEUE = "ravi-whatsapp-rpc" as const;
 export const DEFAULT_WHATSAPP_RPC_TIMEOUT_MS = 60_000;
@@ -95,34 +91,35 @@ export type WhatsAppTransportEvent = z.infer<typeof WhatsAppTransportEventSchema
 // ============================================================================
 
 export const WHATSAPP_RPC_METHODS = [
-  // Instance lifecycle
-  "instances.status",
-  "instances.connect",
-  "instances.disconnect",
-  "instances.logout",
-  "instances.pairingCode",
+  // Connection lifecycle
+  "connection.status",
+  "connection.connect",
+  "connection.disconnect",
+  "connection.logout",
+  "connection.pairingCode",
   // Groups
-  "instances.listGroups",
-  "instances.createGroup",
-  "instances.addGroupParticipants",
-  "instances.updateGroupParticipants",
-  "instances.getGroupInvite",
-  "instances.revokeGroupInvite",
-  "instances.joinGroup",
-  "instances.leaveGroup",
-  "instances.renameGroup",
-  "instances.setGroupDescription",
-  "instances.setGroupSettings",
+  "groups.list",
+  "groups.create",
+  "groups.addParticipants",
+  "groups.updateParticipants",
+  "groups.getInvite",
+  "groups.revokeInvite",
+  "groups.join",
+  "groups.leave",
+  "groups.rename",
+  "groups.setDescription",
+  "groups.setSettings",
   "groups.metadata",
   // Messages
-  "messages.send",
-  "messages.sendPresence",
-  "messages.sendReaction",
-  "messages.deleteChannel",
-  "messages.editChannel",
+  "messages.sendText",
+  "messages.react",
+  "messages.delete",
+  "messages.edit",
   "messages.sendMedia",
   "messages.sendSticker",
-  "messages.batchMarkRead",
+  "messages.markRead",
+  // Presence
+  "presence.set",
 ] as const;
 
 export const WhatsAppRpcMethodSchema = z.enum(WHATSAPP_RPC_METHODS);
@@ -130,44 +127,50 @@ export type WhatsAppRpcMethod = z.infer<typeof WhatsAppRpcMethodSchema>;
 
 const JidLikeSchema = z.string().trim().min(1).max(512);
 const MentionSchema = z.object({ id: z.string().min(1), type: z.literal("user") });
+/** Media is read by the runner from disk (same host), so the path must be absolute. */
+const AbsoluteFilePathSchema = z
+  .string({ error: "filePath is required" })
+  .trim()
+  .min(1, "filePath is required")
+  .refine((value) => isAbsolute(value), "filePath must be an absolute path");
 
 /** Params per method. `instanceId` is implied by the subject and never trusted from params. */
 export const WhatsAppRpcParamsSchemas = {
-  "instances.status": z.object({}).passthrough(),
-  "instances.connect": z
+  "connection.status": z.object({}).passthrough(),
+  "connection.connect": z
     .object({
       forceNewQr: z.boolean().optional(),
       whatsapp: z.record(z.string(), z.unknown()).optional(),
     })
     .passthrough(),
-  "instances.disconnect": z.object({}).passthrough(),
-  "instances.logout": z.object({}).passthrough(),
-  "instances.pairingCode": z.object({ phoneNumber: z.string().trim().min(8).max(32) }),
-  "instances.listGroups": z
+  "connection.disconnect": z.object({}).passthrough(),
+  "connection.logout": z.object({}).passthrough(),
+  "connection.pairingCode": z.object({ phoneNumber: z.string().trim().min(8).max(32) }),
+  "groups.list": z
     .object({ limit: z.coerce.number().int().positive().max(5000).optional(), search: z.string().optional() })
     .passthrough(),
-  "instances.createGroup": z.object({
+  "groups.create": z.object({
     subject: z.string().trim().min(1).max(512),
     participants: z.array(JidLikeSchema).max(1024),
   }),
-  "instances.addGroupParticipants": z.object({
+  "groups.addParticipants": z.object({
     groupJid: JidLikeSchema,
     participants: z.array(JidLikeSchema).min(1).max(1024),
   }),
-  "instances.updateGroupParticipants": z.object({
+  "groups.updateParticipants": z.object({
     groupJid: JidLikeSchema,
     action: z.enum(["remove", "promote", "demote"]),
     participants: z.array(JidLikeSchema).min(1).max(1024),
   }),
-  "instances.getGroupInvite": z.object({ groupJid: JidLikeSchema }),
-  "instances.revokeGroupInvite": z.object({ groupJid: JidLikeSchema }),
-  "instances.joinGroup": z.object({ code: z.string().trim().min(1).max(512) }),
-  "instances.leaveGroup": z.object({ groupJid: JidLikeSchema }),
-  "instances.renameGroup": z.object({ groupJid: JidLikeSchema, subject: z.string().trim().min(1).max(512) }),
-  "instances.setGroupDescription": z.object({ groupJid: JidLikeSchema, description: z.string().max(4096) }),
-  "instances.setGroupSettings": z.object({ groupJid: JidLikeSchema, setting: z.string().trim().min(1).max(64) }),
+  "groups.getInvite": z.object({ groupJid: JidLikeSchema }),
+  "groups.revokeInvite": z.object({ groupJid: JidLikeSchema }),
+  "groups.join": z.object({ code: z.string().trim().min(1).max(512) }),
+  "groups.leave": z.object({ groupJid: JidLikeSchema }),
+  "groups.rename": z.object({ groupJid: JidLikeSchema, subject: z.string().trim().min(1).max(512) }),
+  "groups.setDescription": z.object({ groupJid: JidLikeSchema, description: z.string().max(4096) }),
+  "groups.setSettings": z.object({ groupJid: JidLikeSchema, setting: z.string().trim().min(1).max(64) }),
   "groups.metadata": z.object({ groupJid: JidLikeSchema, maxAgeMs: z.number().int().nonnegative().optional() }),
-  "messages.send": z
+  "messages.sendText": z
     .object({
       to: JidLikeSchema,
       text: z.string(),
@@ -176,14 +179,15 @@ export const WhatsAppRpcParamsSchemas = {
       replyTo: z.string().optional(),
     })
     .passthrough(),
-  "messages.sendPresence": z
+  "presence.set": z
     .object({
       to: JidLikeSchema,
-      type: z.enum(["typing", "recording", "paused", "available", "unavailable"]),
-      duration: z.number().int().nonnegative().optional(),
+      state: z.enum(["typing", "recording", "paused", "available", "unavailable"]),
+      /** Auto-pause after this many ms (typing/recording). 0 keeps the state until paused. */
+      durationMs: z.number().int().nonnegative().optional(),
     })
     .passthrough(),
-  "messages.sendReaction": z
+  "messages.react": z
     .object({
       to: JidLikeSchema,
       messageId: z.string().min(1),
@@ -192,29 +196,23 @@ export const WhatsAppRpcParamsSchemas = {
       participant: z.string().optional(),
     })
     .passthrough(),
-  "messages.deleteChannel": z.object({ channelId: JidLikeSchema, messageId: z.string().min(1) }).passthrough(),
-  "messages.editChannel": z
-    .object({ channelId: JidLikeSchema, messageId: z.string().min(1), text: z.string().min(1) })
+  "messages.delete": z.object({ chatId: JidLikeSchema, messageId: z.string().min(1) }).passthrough(),
+  "messages.edit": z
+    .object({ chatId: JidLikeSchema, messageId: z.string().min(1), text: z.string().min(1) })
     .passthrough(),
   "messages.sendMedia": z
     .object({
       to: JidLikeSchema,
       type: z.enum(["image", "video", "audio", "document"]),
-      /** Absolute path readable by the runner (same host). Preferred over base64. */
-      filePath: z.string().optional(),
-      base64: z.string().optional(),
+      filePath: AbsoluteFilePathSchema,
       filename: z.string().optional(),
       mimeType: z.string().optional(),
       caption: z.string().optional(),
       voiceNote: z.boolean().optional(),
     })
-    .passthrough()
-    .refine((value) => Boolean(value.filePath || value.base64), "filePath or base64 is required"),
-  "messages.sendSticker": z
-    .object({ to: JidLikeSchema, filePath: z.string().optional(), base64: z.string().optional() })
-    .passthrough()
-    .refine((value) => Boolean(value.filePath || value.base64), "filePath or base64 is required"),
-  "messages.batchMarkRead": z
+    .passthrough(),
+  "messages.sendSticker": z.object({ to: JidLikeSchema, filePath: AbsoluteFilePathSchema }).passthrough(),
+  "messages.markRead": z
     .object({ chatId: JidLikeSchema, messageIds: z.array(z.string().min(1)).min(1).max(500) })
     .passthrough(),
 } satisfies Record<WhatsAppRpcMethod, z.ZodType>;
@@ -232,27 +230,24 @@ export const WhatsAppRpcRequestSchema = z.object({
 
 export type WhatsAppRpcRequest = z.infer<typeof WhatsAppRpcRequestSchema>;
 
-export const WhatsAppRpcErrorSchema = z.object({
+export const WhatsAppRpcErrorBodySchema = z.object({
   message: z.string(),
-  /** HTTP-like status so Omni-style retry logic keeps working (5xx = retryable). */
+  /** HTTP-like status; status is ravi's retry contract: 5xx = retryable. */
   status: z.number().int(),
   code: z.string(),
+  /** Optional minimum wait before a retry (e.g. RATE_LIMITED backoff). */
+  retryAfterMs: z.number().int().nonnegative().optional(),
 });
 
-export type WhatsAppRpcError = z.infer<typeof WhatsAppRpcErrorSchema>;
+export type WhatsAppRpcErrorBody = z.infer<typeof WhatsAppRpcErrorBodySchema>;
 
 export const WhatsAppRpcResponseSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true), requestId: z.string(), data: z.unknown() }),
-  z.object({ ok: z.literal(false), requestId: z.string(), error: WhatsAppRpcErrorSchema }),
+  z.object({ ok: z.literal(false), requestId: z.string(), error: WhatsAppRpcErrorBodySchema }),
 ]);
 
 export type WhatsAppRpcResponse = z.infer<typeof WhatsAppRpcResponseSchema>;
 
-/**
- * `data` returned per method. Shapes mirror what the Omni REST API returns for the
- * same `OmniClient` call (src/omni/client.ts), so the routing client can hand them
- * to existing callers unchanged.
- */
 export type WhatsAppConnectionState = "connected" | "connecting" | "qr" | "disconnected" | "logged_out" | "error";
 
 export interface WhatsAppRpcGroupRecord {
@@ -296,32 +291,33 @@ export interface WhatsAppRpcSendResult {
   status: "sent";
 }
 
+/** `data` returned per method. */
 export interface WhatsAppRpcResults {
-  "instances.status": { state: WhatsAppConnectionState; isConnected: boolean; profileName: string | null };
-  "instances.connect": { status: string; message: string };
-  "instances.disconnect": Record<string, never>;
-  "instances.logout": Record<string, never>;
-  "instances.pairingCode": { code: string };
-  "instances.listGroups": { items: WhatsAppRpcGroupRecord[] };
-  "instances.createGroup": WhatsAppRpcGroupRecord;
-  "instances.addGroupParticipants": { groupJid: string; results: Array<{ jid: string; status: string }> };
-  "instances.updateGroupParticipants": { groupJid: string; results: Array<{ jid: string; status: string }> };
-  "instances.getGroupInvite": WhatsAppRpcGroupInviteRecord;
-  "instances.revokeGroupInvite": WhatsAppRpcGroupInviteRecord;
-  "instances.joinGroup": { groupJid: string; joined: boolean };
-  "instances.leaveGroup": { groupJid: string; left: boolean };
-  "instances.renameGroup": { groupJid: string; subject: string };
-  "instances.setGroupDescription": { groupJid: string; description: string };
-  "instances.setGroupSettings": { groupJid: string; setting: string };
+  "connection.status": { state: WhatsAppConnectionState; isConnected: boolean; profileName: string | null };
+  "connection.connect": { status: string; message: string };
+  "connection.disconnect": Record<string, never>;
+  "connection.logout": Record<string, never>;
+  "connection.pairingCode": { code: string };
+  "groups.list": { items: WhatsAppRpcGroupRecord[] };
+  "groups.create": WhatsAppRpcGroupRecord;
+  "groups.addParticipants": { groupJid: string; results: Array<{ jid: string; status: string }> };
+  "groups.updateParticipants": { groupJid: string; results: Array<{ jid: string; status: string }> };
+  "groups.getInvite": WhatsAppRpcGroupInviteRecord;
+  "groups.revokeInvite": WhatsAppRpcGroupInviteRecord;
+  "groups.join": { groupJid: string; joined: boolean };
+  "groups.leave": { groupJid: string; left: boolean };
+  "groups.rename": { groupJid: string; subject: string };
+  "groups.setDescription": { groupJid: string; description: string };
+  "groups.setSettings": { groupJid: string; setting: string };
   "groups.metadata": WhatsAppRpcGroupMetadata;
-  "messages.send": WhatsAppRpcSendResult;
-  "messages.sendPresence": Record<string, never>;
-  "messages.sendReaction": { messageId: string; success: boolean };
-  "messages.deleteChannel": Record<string, never>;
-  "messages.editChannel": Record<string, never>;
+  "messages.sendText": WhatsAppRpcSendResult;
+  "presence.set": Record<string, never>;
+  "messages.react": { messageId: string; success: boolean };
+  "messages.delete": Record<string, never>;
+  "messages.edit": Record<string, never>;
   "messages.sendMedia": WhatsAppRpcSendResult;
   "messages.sendSticker": WhatsAppRpcSendResult;
-  "messages.batchMarkRead": Record<string, never>;
+  "messages.markRead": Record<string, never>;
 }
 
 export type WhatsAppRpcResult<M extends WhatsAppRpcMethod> = WhatsAppRpcResults[M];
@@ -336,6 +332,8 @@ export const WHATSAPP_RPC_ERROR_CODES = {
   transportError: "TRANSPORT_ERROR",
   runnerUnavailable: "WHATSAPP_RUNNER_UNAVAILABLE",
   timeout: "WHATSAPP_RPC_TIMEOUT",
+  /** Client-side, 404: the instance ref is not bound to an enabled WhatsApp channel. */
+  notBound: "WHATSAPP_NOT_BOUND",
 } as const;
 
 // ============================================================================

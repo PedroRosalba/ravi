@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { resolve } from "node:path";
 import { createOmniClient, OmniApiError, type OmniClient } from "../../omni/client.js";
 import { loadRouterConfig } from "../../router/config.js";
 import {
@@ -11,6 +12,7 @@ import {
 } from "../../router/router-db.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../../test/ravi-state.js";
 import { WhatsAppRpcRequestSchema, whatsappRpcSubject, type WhatsAppRpcRequest } from "./contract.js";
+import { WhatsAppRpcError } from "./errors.js";
 import type { WhatsAppRpcConnection } from "./rpc-client.js";
 import {
   OMNI_NOT_CONFIGURED_CODE,
@@ -105,12 +107,17 @@ function fakeOmni(routes: Record<string, unknown> = {}) {
   return { client: createOmniClient({ baseUrl: "http://omni.local", apiKey: "k" }), requests };
 }
 
-async function captureError(promise: Promise<unknown>): Promise<OmniApiError> {
+async function captureError<E extends Error = OmniApiError>(
+  promise: Promise<unknown>,
+  errorClass: abstract new (...args: never[]) => E = OmniApiError as unknown as abstract new (
+    ...args: never[]
+  ) => E,
+): Promise<E> {
   try {
     await promise;
   } catch (err) {
-    expect(err).toBeInstanceOf(OmniApiError);
-    return err as OmniApiError;
+    expect(err).toBeInstanceOf(errorClass);
+    return err as E;
   }
   throw new Error("expected the call to fail");
 }
@@ -121,7 +128,7 @@ afterEach(() => {
 
 describe("createChannelTransportClient dispatch", () => {
   it("sends native messages over RPC without the instanceId param", async () => {
-    const { connection, calls } = fakeNats({ "messages.send": () => ({ messageId: "BAE5", status: "sent" }) });
+    const { connection, calls } = fakeNats({ "messages.sendText": () => ({ messageId: "BAE5", status: "sent" }) });
     const { client: omni, requests } = fakeOmni();
     const client = createChannelTransportClient({ omni, getConfig: routerConfig, connection });
 
@@ -146,7 +153,7 @@ describe("createChannelTransportClient dispatch", () => {
 
   it("resolves account names to the native instance UUID", async () => {
     const { connection, calls } = fakeNats({
-      "instances.status": () => ({ state: "connected", isConnected: true, profileName: "Ravi" }),
+      "connection.status": () => ({ state: "connected", isConnected: true, profileName: "Ravi" }),
     });
     const client = createChannelTransportClient({ omni: null, getConfig: routerConfig, connection });
     expect(await client.instances.status("wa-native")).toEqual({
@@ -189,10 +196,13 @@ describe("createChannelTransportClient dispatch", () => {
     expect(client.hasOmni()).toBe(false);
   });
 
-  it("propagates runner unavailability as a 503 OmniApiError", async () => {
+  it("propagates runner unavailability as a 503 WhatsAppRpcError", async () => {
     const { connection } = fakeNats({});
     const client = createChannelTransportClient({ omni: null, getConfig: routerConfig, connection });
-    const err = await captureError(client.messages.send({ instanceId: NATIVE_OFFLINE_ID, to: "x@g.us", text: "hi" }));
+    const err = await captureError(
+      client.messages.send({ instanceId: NATIVE_OFFLINE_ID, to: "x@g.us", text: "hi" }),
+      WhatsAppRpcError,
+    );
     expect(err.status).toBe(503);
     expect(err.code).toBe("WHATSAPP_RUNNER_UNAVAILABLE");
     expect(err.message).toContain("ravi channels start");
@@ -200,13 +210,13 @@ describe("createChannelTransportClient dispatch", () => {
 
   it("maps every Omni message call to its RPC method", async () => {
     const { connection, calls } = fakeNats({
-      "messages.sendPresence": () => ({}),
-      "messages.sendReaction": () => ({ messageId: "r1", success: true }),
-      "messages.deleteChannel": () => ({}),
-      "messages.editChannel": () => ({}),
+      "presence.set": () => ({}),
+      "messages.react": () => ({ messageId: "r1", success: true }),
+      "messages.delete": () => ({}),
+      "messages.edit": () => ({}),
       "messages.sendMedia": () => ({ messageId: "m1", status: "sent" }),
       "messages.sendSticker": () => ({ messageId: "s1", status: "sent" }),
-      "messages.batchMarkRead": () => ({}),
+      "messages.markRead": () => ({}),
     });
     const client = createChannelTransportClient({ omni: null, getConfig: routerConfig, connection });
 
@@ -235,15 +245,19 @@ describe("createChannelTransportClient dispatch", () => {
     await client.messages.batchMarkRead({ instanceId: NATIVE_ID, chatId: "x@g.us", messageIds: ["m"] });
 
     expect(calls.map((call) => call.request.method)).toEqual([
-      "messages.sendPresence",
-      "messages.sendReaction",
-      "messages.deleteChannel",
-      "messages.editChannel",
+      "presence.set",
+      "messages.react",
+      "messages.delete",
+      "messages.edit",
       "messages.sendMedia",
       "messages.sendSticker",
-      "messages.batchMarkRead",
+      "messages.markRead",
     ]);
     for (const call of calls) expect(call.request.params).not.toHaveProperty("instanceId");
+    // Omni bodies are mapped to the v2 params.
+    expect(calls[0]!.request.params).toEqual({ to: "x@g.us", state: "typing", durationMs: 30_000 });
+    expect(calls[2]!.request.params).toEqual({ chatId: "x@g.us", messageId: "m" });
+    expect(calls[3]!.request.params).toEqual({ chatId: "x@g.us", messageId: "m", text: "t" });
     expect(calls[4]!.request.params).toEqual({
       to: "x@g.us",
       type: "image",
@@ -265,30 +279,30 @@ describe("createChannelTransportClient dispatch", () => {
       isCommunity: false,
     };
     const { connection, calls } = fakeNats({
-      "instances.listGroups": () => ({ items: [group] }),
-      "instances.createGroup": () => group,
-      "instances.addGroupParticipants": (req) => ({
+      "groups.list": () => ({ items: [group] }),
+      "groups.create": () => group,
+      "groups.addParticipants": (req) => ({
         groupJid: (req.params as { groupJid: string }).groupJid,
         results: [{ jid: "2@s.whatsapp.net", status: "200" }],
       }),
-      "instances.updateGroupParticipants": () => ({ groupJid: group.id, results: [] }),
-      "instances.getGroupInvite": () => ({
+      "groups.updateParticipants": () => ({ groupJid: group.id, results: [] }),
+      "groups.getInvite": () => ({
         groupJid: group.id,
         code: "abc",
         inviteLink: "https://chat.whatsapp.com/abc",
       }),
-      "instances.revokeGroupInvite": () => ({
+      "groups.revokeInvite": () => ({
         groupJid: group.id,
         code: "def",
         inviteLink: "https://chat.whatsapp.com/def",
       }),
-      "instances.joinGroup": () => ({ groupJid: group.id, joined: true }),
-      "instances.leaveGroup": () => ({ groupJid: group.id, left: true }),
-      "instances.renameGroup": () => ({ groupJid: group.id, subject: "New" }),
-      "instances.setGroupDescription": () => ({ groupJid: group.id, description: "d" }),
-      "instances.setGroupSettings": () => ({ groupJid: group.id, setting: "announcement" }),
-      "instances.connect": () => ({ status: "connecting", message: "Connection initiated" }),
-      "instances.disconnect": () => ({}),
+      "groups.join": () => ({ groupJid: group.id, joined: true }),
+      "groups.leave": () => ({ groupJid: group.id, left: true }),
+      "groups.rename": () => ({ groupJid: group.id, subject: "New" }),
+      "groups.setDescription": () => ({ groupJid: group.id, description: "d" }),
+      "groups.setSettings": () => ({ groupJid: group.id, setting: "announcement" }),
+      "connection.connect": () => ({ status: "connecting", message: "Connection initiated" }),
+      "connection.disconnect": () => ({}),
     });
     const client = createChannelTransportClient({ omni: null, getConfig: routerConfig, connection });
 
@@ -318,7 +332,7 @@ describe("createChannelTransportClient dispatch", () => {
     });
     expect(calls.at(-1)!.request.params).toEqual({ whatsapp: { syncFullHistory: false } });
     await client.instances.disconnect(NATIVE_ID);
-    expect(calls.at(-1)!.request.method).toBe("instances.disconnect");
+    expect(calls.at(-1)!.request.method).toBe("connection.disconnect");
   });
 
   it("keeps chats Omni-only and returns no Omni chats for native instances", async () => {
@@ -347,7 +361,7 @@ describe("createChannelTransportClient dispatch", () => {
 describe("instances.list", () => {
   it("merges native instances (offline as disconnected) with Omni's list", async () => {
     const { connection, calls } = fakeNats({
-      "instances.status": () => ({ state: "connected", isConnected: true, profileName: "Ravi" }),
+      "connection.status": () => ({ state: "connected", isConnected: true, profileName: "Ravi" }),
     });
     const { client: omni } = fakeOmni({
       "GET /instances": {
@@ -389,7 +403,7 @@ describe("instances.list", () => {
 
   it("lists native instances without Omni and when Omni fails", async () => {
     const { connection } = fakeNats({
-      "instances.status": () => ({ state: "qr", isConnected: false, profileName: null }),
+      "connection.status": () => ({ state: "qr", isConnected: false, profileName: null }),
     });
     const withoutOmni = createChannelTransportClient({ omni: null, getConfig: routerConfig, connection });
     expect((await withoutOmni.instances.list()).items.map((item) => item.id)).toEqual([NATIVE_ID, NATIVE_OFFLINE_ID]);
@@ -418,9 +432,12 @@ describe("nativeMediaParams", () => {
     });
   });
 
-  it("drops a relative filePath when base64 is available and rejects it otherwise", () => {
-    expect(nativeMediaParams({ to: "x", filePath: "b.png", base64: "AA" })).toEqual({ to: "x", base64: "AA" });
-    expect(() => nativeMediaParams({ to: "x", filePath: "b.png" })).toThrow(OmniApiError);
+  it("resolves a relative filePath against cwd, drops base64 and rejects a body without filePath", () => {
+    expect(nativeMediaParams({ to: "x", filePath: "b.png", base64: "AA" })).toEqual({
+      to: "x",
+      filePath: resolve("b.png"),
+    });
+    expect(() => nativeMediaParams({ to: "x", base64: "AA" })).toThrow(OmniApiError);
   });
 });
 

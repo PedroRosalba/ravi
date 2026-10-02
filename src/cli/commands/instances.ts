@@ -40,13 +40,14 @@ import {
   routesListReturnSchema,
 } from "./operational-return-schemas.js";
 import { ensureConnected, nats } from "../../nats.js";
-import { createOmniClient, OmniApiError } from "../../omni/client.js";
+import { createOmniClient } from "../../omni/client.js";
 import {
   createChannelTransportClient,
   createNativeWhatsAppInstance,
   type ChannelTransportClient,
 } from "../../channels/whatsapp/transport-client.js";
 import { WHATSAPP_RPC_ERROR_CODES } from "../../channels/whatsapp/contract.js";
+import { isWhatsAppRunnerUnavailable } from "../../channels/whatsapp/errors.js";
 import { WHATSAPP_RUNNER_UNAVAILABLE_MESSAGE } from "../../channels/whatsapp/rpc-client.js";
 import { canonicalChannelId } from "../../channels/capabilities.js";
 import {
@@ -794,7 +795,7 @@ function errorText(err: unknown): string {
 }
 
 function isRunnerUnavailable(err: unknown): boolean {
-  return err instanceof OmniApiError && err.code === WHATSAPP_RPC_ERROR_CODES.runnerUnavailable;
+  return isWhatsAppRunnerUnavailable(err);
 }
 
 function liveTransport(

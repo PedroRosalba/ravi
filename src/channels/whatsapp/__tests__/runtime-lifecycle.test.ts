@@ -143,7 +143,7 @@ describe("QR and pairing", () => {
   it("rejects invalid connect options at the boundary", async () => {
     const h = createHarness({ registered: false });
     h.runtime.start();
-    await expect(h.runtime.call("instances.connect", { whatsapp: { connectTimeoutMs: -1 } })).rejects.toMatchObject({
+    await expect(h.runtime.call("connection.connect", { whatsapp: { connectTimeoutMs: -1 } })).rejects.toMatchObject({
       status: 400,
       code: "INVALID_REQUEST",
     });
@@ -152,7 +152,7 @@ describe("QR and pairing", () => {
   it("requests a pairing code once the socket is ready", async () => {
     const h = createHarness({ registered: false });
     h.runtime.start();
-    const pending = h.runtime.call("instances.pairingCode", { phoneNumber: "+55 (11) 99999-0000" });
+    const pending = h.runtime.call("connection.pairingCode", { phoneNumber: "+55 (11) 99999-0000" });
     await flush();
     h.socket().emit("connection.update", { qr: "2@QR" });
     expect(await pending).toEqual({ code: "ABCD1234" });
@@ -170,7 +170,7 @@ describe("disconnect / logout", () => {
   it("disconnect closes the socket, publishes instance.disconnected and never reconnects (#1169)", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    await h.runtime.call("instances.disconnect", {});
+    await h.runtime.call("connection.disconnect", {});
 
     expect(h.runtime.getState()).toBe("disconnected");
     expect(h.runtime.health()).toEqual({ status: "disconnected", reason: "user_disconnect" });
@@ -202,7 +202,7 @@ describe("disconnect / logout", () => {
   it("logout unlinks the device, clears auth and reports logged_out", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    await h.runtime.call("instances.logout", {});
+    await h.runtime.call("connection.logout", {});
     expect(sock.fake.logout).toHaveBeenCalledTimes(1);
     expect(h.library.clearAuthState).toHaveBeenCalledTimes(1);
     expect(h.runtime.getState()).toBe("logged_out");
@@ -218,7 +218,10 @@ describe("disconnect / logout", () => {
     expect(sock.fake.end).toHaveBeenCalled();
     expect(h.runtime.getState()).toBe("stopped");
     expect(h.runtime.health()).toEqual({ status: "disconnected", reason: "stopped" });
-    await expect(h.runtime.call("instances.connect", {})).rejects.toMatchObject({ status: 503, code: "NOT_CONNECTED" });
+    await expect(h.runtime.call("connection.connect", {})).rejects.toMatchObject({
+      status: 503,
+      code: "NOT_CONNECTED",
+    });
   });
 });
 

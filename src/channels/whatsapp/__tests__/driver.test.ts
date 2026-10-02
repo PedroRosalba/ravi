@@ -77,7 +77,7 @@ const host = {} as NativeChannelDriverHost;
 
 function fakeRuntime(health: NativeChannelRuntimeHealth = { status: "starting", reason: "pairing_required" }) {
   const call = mock(async (method: WhatsAppRpcMethod, _params: unknown) =>
-    method === "instances.status" ? { state: "disconnected", isConnected: false, profileName: null } : {},
+    method === "connection.status" ? { state: "disconnected", isConnected: false, profileName: null } : {},
   );
   const runtime = {
     start: mock(() => {}),
@@ -263,12 +263,12 @@ describe("WhatsApp native channel driver: lifecycle, RPC and health", () => {
     expect(nats.subscriptions[0]?.subject).toBe(whatsappRpcSubject(UUID_A));
     expect(nats.subscriptions[0]?.options).toEqual({ queue: WHATSAPP_RPC_QUEUE });
 
-    await expect(nats.request(whatsappRpcSubject(UUID_A), rpcRequest(UUID_A, "instances.status"))).resolves.toEqual({
+    await expect(nats.request(whatsappRpcSubject(UUID_A), rpcRequest(UUID_A, "connection.status"))).resolves.toEqual({
       ok: true,
-      requestId: "req-instances.status",
+      requestId: "req-connection.status",
       data: { state: "disconnected", isConnected: false, profileName: null },
     });
-    expect(fake.call).toHaveBeenCalledWith("instances.status", {});
+    expect(fake.call).toHaveBeenCalledWith("connection.status", {});
 
     await runtime.stop();
     expect(fake.runtime.stop).toHaveBeenCalledTimes(1);
@@ -378,14 +378,14 @@ describe("WhatsApp native channel driver: real runtime", () => {
     await expect(
       nats.request(
         subject,
-        rpcRequest(instanceId, "messages.send", { to: "5511988887777@s.whatsapp.net", text: "oi" }),
+        rpcRequest(instanceId, "messages.sendText", { to: "5511988887777@s.whatsapp.net", text: "oi" }),
       ),
     ).resolves.toMatchObject({ ok: false, error: { status: 503, code: "NOT_CONNECTED" } });
 
     sockets[0]?.emit("connection.update", { connection: "open" });
     await flush();
     expect(runtime.health()).toMatchObject({ status: "connected" });
-    await expect(nats.request(subject, rpcRequest(instanceId, "instances.status"))).resolves.toMatchObject({
+    await expect(nats.request(subject, rpcRequest(instanceId, "connection.status"))).resolves.toMatchObject({
       ok: true,
       data: { state: "connected", isConnected: true },
     });
@@ -418,7 +418,7 @@ describe("WhatsApp native channel driver: real runtime", () => {
     expect(runtime.health()).toEqual({ status: "starting", reason: "pairing_required" });
     expect(sockets).toHaveLength(0);
     await expect(
-      nats.request(whatsappRpcSubject(instanceId), rpcRequest(instanceId, "instances.status")),
+      nats.request(whatsappRpcSubject(instanceId), rpcRequest(instanceId, "connection.status")),
     ).resolves.toMatchObject({ ok: true, data: { state: "disconnected", isConnected: false, profileName: null } });
     await runtime.stop();
   });

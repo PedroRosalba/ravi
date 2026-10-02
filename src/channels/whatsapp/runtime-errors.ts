@@ -8,7 +8,7 @@
  */
 
 import { ZodError } from "zod";
-import { WHATSAPP_RPC_ERROR_CODES, type WhatsAppRpcError } from "./contract.js";
+import { WHATSAPP_RPC_ERROR_CODES, type WhatsAppRpcErrorBody } from "./contract.js";
 import { ErrorCode as WhatsAppChannelErrorCode, type ErrorCodeType, mapBaileysError } from "./lib/utils/errors.js";
 import { isRateLimitError } from "./lib/utils/rate-limit.js";
 
@@ -18,6 +18,7 @@ export type WhatsAppRuntimeErrorCode = (typeof WHATSAPP_RPC_ERROR_CODES)[keyof t
 export const WHATSAPP_RUNTIME_ERROR_STATUS: Readonly<Record<WhatsAppRuntimeErrorCode, number>> = {
   [WHATSAPP_RPC_ERROR_CODES.invalidRequest]: 400,
   [WHATSAPP_RPC_ERROR_CODES.notFound]: 404,
+  [WHATSAPP_RPC_ERROR_CODES.notBound]: 404,
   [WHATSAPP_RPC_ERROR_CODES.pairingRequired]: 409,
   [WHATSAPP_RPC_ERROR_CODES.rateLimited]: 429,
   [WHATSAPP_RPC_ERROR_CODES.transportError]: 502,
@@ -47,7 +48,7 @@ export class WhatsAppRuntimeError extends Error {
   }
 
   /** The `error` member of a failed `WhatsAppRpcResponse`. */
-  toRpcError(): WhatsAppRpcError {
+  toRpcError(): WhatsAppRpcErrorBody {
     return { message: this.message, status: this.status, code: this.code };
   }
 }

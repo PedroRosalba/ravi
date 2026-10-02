@@ -272,8 +272,8 @@ describe("instances connect --transport native", () => {
   it("creates the native instance and channel, asks the runner to connect and returns the first QR", async () => {
     const bus = fakeBus();
     const runner = fakeRunner({
-      "instances.status": () => OFFLINE_STATUS,
-      "instances.connect": (request) => {
+      "connection.status": () => OFFLINE_STATUS,
+      "connection.connect": (request) => {
         // The runner starts a socket; the daemon relays the QR code it publishes.
         bus.push({ topic: `ravi.whatsapp.qr.${request.instanceId}`, data: { type: "qr", qr: "QR-DATA" } });
         return { status: "connecting", message: "Waiting for QR code" };
@@ -290,7 +290,7 @@ describe("instances connect --transport native", () => {
     expect(dbGetChannel("wa-test")?.provider).toBe("whatsapp");
     expect(configChanged).toBeGreaterThan(0);
 
-    expect(runner.methods()).toEqual(["instances.status", "instances.connect"]);
+    expect(runner.methods()).toEqual(["connection.status", "connection.connect"]);
     expect(runner.calls.every((call) => call.subject === `_RAVI.channels.whatsapp.rpc.${instanceId}`)).toBe(true);
     expect(runner.calls[1]?.request.params).toEqual({ whatsapp: { syncFullHistory: false } });
     expect(bus.subscriptions).toEqual([[`ravi.whatsapp.qr.${instanceId}`, `ravi.whatsapp.connected.${instanceId}`]]);
@@ -315,8 +315,8 @@ describe("instances connect --transport native", () => {
     dbUpsertInstance({ name: "wa-migrate", instanceId: existingId, channel: "whatsapp", agent: "main" });
     const bus = fakeBus();
     const runner = fakeRunner({
-      "instances.status": () => OFFLINE_STATUS,
-      "instances.connect": () => {
+      "connection.status": () => OFFLINE_STATUS,
+      "connection.connect": () => {
         bus.push({
           topic: `ravi.whatsapp.connected.${existingId}`,
           data: { type: "connected", profileName: "Ravi Bot", ownerIdentifier: "5511999@s.whatsapp.net" },
@@ -344,8 +344,8 @@ describe("instances connect --transport native", () => {
   it("prints QR codes in text mode and exits once the connected event arrives", async () => {
     const bus = fakeBus();
     const runner = fakeRunner({
-      "instances.status": () => OFFLINE_STATUS,
-      "instances.connect": (request) => {
+      "connection.status": () => OFFLINE_STATUS,
+      "connection.connect": (request) => {
         bus.push({ topic: `ravi.whatsapp.qr.${request.instanceId}`, data: { type: "qr", qr: "QR-1" } });
         bus.push({
           topic: `ravi.whatsapp.connected.${request.instanceId}`,
@@ -366,13 +366,13 @@ describe("instances connect --transport native", () => {
   it("reports an already connected instance without asking for a new socket", async () => {
     const instanceId = seedNativeInstance();
     const runner = fakeRunner({
-      "instances.status": () => ({ state: "connected", isConnected: true, profileName: "Ravi Bot" }),
+      "connection.status": () => ({ state: "connected", isConnected: true, profileName: "Ravi Bot" }),
     });
     const bus = useTransport({ runner });
 
     await new InstancesCommands().connect("wa-native", undefined, undefined, true);
 
-    expect(runner.methods()).toEqual(["instances.status"]);
+    expect(runner.methods()).toEqual(["connection.status"]);
     expect(bus.subscriptions).toEqual([]);
     expect(jsonOutput()).toMatchObject({
       status: "connected",
@@ -385,14 +385,14 @@ describe("instances connect --transport native", () => {
 
   it("retries while the runner hot-adds the new channel", async () => {
     const runner = fakeRunner({
-      "instances.status": () => ({ state: "connected", isConnected: true, profileName: null }),
+      "connection.status": () => ({ state: "connected", isConnected: true, profileName: null }),
     });
     runner.failNext(2);
     useTransport({ runner });
 
     await new InstancesCommands().connect("wa-hot", undefined, undefined, true, "native");
 
-    expect(runner.methods()).toEqual(["instances.status", "instances.status", "instances.status"]);
+    expect(runner.methods()).toEqual(["connection.status", "connection.status", "connection.status"]);
     expect(jsonOutput()).toMatchObject({ status: "connected", transport: "native" });
   });
 
@@ -439,7 +439,7 @@ describe("instances connect --transport native", () => {
   it("uses the whatsapp.transport setting when no flag is given", async () => {
     dbSetSetting("whatsapp.transport", "native");
     const runner = fakeRunner({
-      "instances.status": () => ({ state: "connected", isConnected: true, profileName: null }),
+      "connection.status": () => ({ state: "connected", isConnected: true, profileName: null }),
     });
     useTransport({ runner, omni: createOmniClient({ baseUrl: "http://omni.local", apiKey: "k" }) });
 
@@ -458,7 +458,7 @@ describe("instances live status through the routing client", () => {
   it("status reads the native runner", async () => {
     const instanceId = seedNativeInstance();
     const runner = fakeRunner({
-      "instances.status": () => ({ state: "connected", isConnected: true, profileName: "Ravi Bot" }),
+      "connection.status": () => ({ state: "connected", isConnected: true, profileName: "Ravi Bot" }),
     });
     useTransport({ runner });
 
@@ -490,7 +490,7 @@ describe("instances live status through the routing client", () => {
 
   it("show includes the native live status and transport", async () => {
     seedNativeInstance();
-    const runner = fakeRunner({ "instances.status": () => ({ state: "qr", isConnected: false, profileName: null }) });
+    const runner = fakeRunner({ "connection.status": () => ({ state: "qr", isConnected: false, profileName: null }) });
     useTransport({ runner });
 
     const payload = await new InstancesCommands().show("wa-native", true);
@@ -508,7 +508,7 @@ describe("instances live status through the routing client", () => {
       },
     });
     const runner = fakeRunner({
-      "instances.status": () => ({ state: "connected", isConnected: true, profileName: "Native Bot" }),
+      "connection.status": () => ({ state: "connected", isConnected: true, profileName: "Native Bot" }),
     });
     useTransport({ runner, omni: omni.client });
 
@@ -542,12 +542,12 @@ describe("instances live status through the routing client", () => {
 
   it("disconnect sends the native disconnect RPC", async () => {
     seedNativeInstance();
-    const runner = fakeRunner({ "instances.disconnect": () => ({}) });
+    const runner = fakeRunner({ "connection.disconnect": () => ({}) });
     useTransport({ runner });
 
     const payload = await new InstancesCommands().disconnect("wa-native", true);
 
-    expect(runner.methods()).toEqual(["instances.disconnect"]);
+    expect(runner.methods()).toEqual(["connection.disconnect"]);
     expect(payload).toMatchObject({ status: "disconnected", transport: "native" });
   });
 });

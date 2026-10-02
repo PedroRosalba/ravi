@@ -44,13 +44,13 @@ describe("WhatsApp RPC request handling", () => {
 
     const response = await handleWhatsAppRpcRequest(
       INSTANCE_ID,
-      request("messages.send", { to: "5511999990000@s.whatsapp.net", text: "oi" }),
+      request("messages.sendText", { to: "5511999990000@s.whatsapp.net", text: "oi" }),
       runtime,
     );
 
     expect(response).toEqual({ ok: true, requestId: "req-1", data });
     expect(WhatsAppRpcResponseSchema.parse(response)).toEqual(response);
-    expect(runtime.calls).toHaveBeenCalledWith("messages.send", {
+    expect(runtime.calls).toHaveBeenCalledWith("messages.sendText", {
       to: "5511999990000@s.whatsapp.net",
       text: "oi",
     });
@@ -60,10 +60,10 @@ describe("WhatsApp RPC request handling", () => {
     const status = { state: "connected", isConnected: true, profileName: "Ravi" };
     const runtime = dispatcher(() => status);
 
-    const response = await handleWhatsAppRpcRequest(INSTANCE_ID, request("instances.status", undefined), runtime);
+    const response = await handleWhatsAppRpcRequest(INSTANCE_ID, request("connection.status", undefined), runtime);
 
     expect(response).toEqual({ ok: true, requestId: "req-1", data: status });
-    expect(runtime.calls).toHaveBeenCalledWith("instances.status", {});
+    expect(runtime.calls).toHaveBeenCalledWith("connection.status", {});
   });
 
   it("rejects a malformed envelope with 400 INVALID_REQUEST and keeps a string requestId", async () => {
@@ -71,7 +71,7 @@ describe("WhatsApp RPC request handling", () => {
 
     const wrongProtocol = await handleWhatsAppRpcRequest(
       INSTANCE_ID,
-      request("instances.status", {}, { protocol: "omni" }),
+      request("connection.status", {}, { protocol: "omni" }),
       runtime,
     );
     expect(wrongProtocol).toMatchObject({
@@ -101,11 +101,11 @@ describe("WhatsApp RPC request handling", () => {
       runtime,
     );
     expect(response).toMatchObject({ ok: false, requestId: "req-1", error: { status: 400, code: "INVALID_REQUEST" } });
-    expect(response.ok ? "" : response.error.message).toContain("filePath or base64 is required");
+    expect(response.ok ? "" : response.error.message).toContain("filePath is required");
 
     const pairing = await handleWhatsAppRpcRequest(
       INSTANCE_ID,
-      request("instances.pairingCode", { phoneNumber: 5511 }),
+      request("connection.pairingCode", { phoneNumber: 5511 }),
       runtime,
     );
     expect(pairing.ok ? "" : pairing.error.message).toContain("phoneNumber");
@@ -116,7 +116,7 @@ describe("WhatsApp RPC request handling", () => {
     const runtime = dispatcher(() => ({}));
     const response = await handleWhatsAppRpcRequest(
       INSTANCE_ID,
-      request("instances.status", {}, { instanceId: "11111111-2222-3333-4444-555555555555" }),
+      request("connection.status", {}, { instanceId: "11111111-2222-3333-4444-555555555555" }),
       runtime,
     );
     expect(response).toMatchObject({ ok: false, requestId: "req-1", error: { status: 400, code: "INVALID_REQUEST" } });
@@ -130,7 +130,7 @@ describe("WhatsApp RPC request handling", () => {
     });
     const response = await handleWhatsAppRpcRequest(
       INSTANCE_ID,
-      request("messages.send", { to: "1@s.whatsapp.net", text: "x" }),
+      request("messages.sendText", { to: "1@s.whatsapp.net", text: "x" }),
       runtime,
     );
     expect(response).toEqual({
@@ -144,7 +144,7 @@ describe("WhatsApp RPC request handling", () => {
     const runtime = dispatcher(() => {
       throw new Error("socket exploded");
     });
-    const response = await handleWhatsAppRpcRequest(INSTANCE_ID, request("instances.status", {}), runtime);
+    const response = await handleWhatsAppRpcRequest(INSTANCE_ID, request("connection.status", {}), runtime);
     expect(response).toEqual({
       ok: false,
       requestId: "req-1",
@@ -174,7 +174,7 @@ describe("WhatsApp RPC server", () => {
   it("queue-subscribes the instance subject and answers requests", async () => {
     const nats = createFakeNats();
     const runtime = dispatcher((method) =>
-      method === "instances.status" ? { state: "qr", isConnected: false, profileName: null } : {},
+      method === "connection.status" ? { state: "qr", isConnected: false, profileName: null } : {},
     );
     const server = startWhatsAppRpcServer({ instanceId: INSTANCE_ID, connection: nats, dispatcher: runtime });
 
@@ -183,7 +183,7 @@ describe("WhatsApp RPC server", () => {
     expect(nats.subscriptions[0]?.subject).toBe(`_RAVI.channels.whatsapp.rpc.${INSTANCE_ID}`);
     expect(nats.subscriptions[0]?.options).toEqual({ queue: WHATSAPP_RPC_QUEUE });
 
-    await expect(nats.request(server.subject, request("instances.status", {}))).resolves.toEqual({
+    await expect(nats.request(server.subject, request("connection.status", {}))).resolves.toEqual({
       ok: true,
       requestId: "req-1",
       data: { state: "qr", isConnected: false, profileName: null },
@@ -215,7 +215,7 @@ describe("WhatsApp RPC server", () => {
       releaseSlow = resolve;
     });
     const runtime = dispatcher(async (method) => {
-      if (method === "instances.pairingCode") {
+      if (method === "connection.pairingCode") {
         await slow;
         return { code: "ABCD-EFGH" };
       }
@@ -225,9 +225,9 @@ describe("WhatsApp RPC server", () => {
 
     const pairing = nats.deliver(
       server.subject,
-      codec.encode(request("instances.pairingCode", { phoneNumber: "5511999990000" }, { requestId: "slow" })),
+      codec.encode(request("connection.pairingCode", { phoneNumber: "5511999990000" }, { requestId: "slow" })),
     );
-    const status = await nats.request(server.subject, request("instances.status", {}, { requestId: "fast" }));
+    const status = await nats.request(server.subject, request("connection.status", {}, { requestId: "fast" }));
     expect(status).toMatchObject({ ok: true, requestId: "fast" });
     expect(pairing.replies).toHaveLength(0);
     expect(server.inFlight()).toBe(1);
@@ -249,7 +249,7 @@ describe("WhatsApp RPC server", () => {
       return {};
     });
     const server = startWhatsAppRpcServer({ instanceId: INSTANCE_ID, connection: nats, dispatcher: runtime });
-    const inflight = nats.deliver(server.subject, codec.encode(request("instances.disconnect", {})));
+    const inflight = nats.deliver(server.subject, codec.encode(request("connection.disconnect", {})));
     await waitFor(() => server.inFlight() === 1);
 
     let stopped = false;
@@ -259,7 +259,7 @@ describe("WhatsApp RPC server", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(stopped).toBe(false);
     // New requests after stop are not consumed.
-    const late = nats.deliver(server.subject, codec.encode(request("instances.status", {})));
+    const late = nats.deliver(server.subject, codec.encode(request("connection.status", {})));
 
     release();
     await stopping;
@@ -273,7 +273,7 @@ describe("WhatsApp RPC server", () => {
     const nats = createFakeNats();
     const runtime = dispatcher(() => new Promise(() => {}));
     const server = startWhatsAppRpcServer({ instanceId: INSTANCE_ID, connection: nats, dispatcher: runtime });
-    nats.deliver(server.subject, codec.encode(request("instances.status", {})));
+    nats.deliver(server.subject, codec.encode(request("connection.status", {})));
     await waitFor(() => server.inFlight() === 1);
 
     const started = Date.now();
@@ -286,7 +286,7 @@ describe("WhatsApp RPC server", () => {
     const runtime = dispatcher(() => ({ items: [] }));
     const server = startWhatsAppRpcServer({ instanceId: INSTANCE_ID, connection: nats, dispatcher: runtime });
 
-    const delivery = nats.deliver(server.subject, codec.encode(request("instances.listGroups", {})));
+    const delivery = nats.deliver(server.subject, codec.encode(request("groups.list", {})));
     delivery.failNextRespond(new Error("MAX_PAYLOAD_EXCEEDED"));
     await waitFor(() => delivery.replies.length > 0);
     expect(delivery.decoded()[0]).toMatchObject({
@@ -301,11 +301,11 @@ describe("WhatsApp RPC server", () => {
     const nats = createFakeNats();
     const runtime = dispatcher(() => ({}));
     const server = startWhatsAppRpcServer({ instanceId: INSTANCE_ID, connection: nats, dispatcher: runtime });
-    const delivery = nats.deliver(server.subject, codec.encode(request("instances.status", {})), { reply: false });
+    const delivery = nats.deliver(server.subject, codec.encode(request("connection.status", {})), { reply: false });
     await waitFor(() => runtime.calls.mock.calls.length > 0);
     expect(delivery.replies).toHaveLength(0);
     // Still serving afterwards.
-    await expect(nats.request(server.subject, request("instances.status", {}))).resolves.toMatchObject({ ok: true });
+    await expect(nats.request(server.subject, request("connection.status", {}))).resolves.toMatchObject({ ok: true });
     await server.stop();
   });
 
