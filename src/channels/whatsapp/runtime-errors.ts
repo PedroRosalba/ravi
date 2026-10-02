@@ -1,5 +1,5 @@
 /**
- * Typed errors thrown by `WhatsAppNativeRuntime` methods.
+ * Typed errors thrown by `WhatsAppRuntime` methods.
  *
  * Every method the RPC server calls throws `WhatsAppRuntimeError`, which carries
  * the HTTP-like `status` and the stable `code` from `WHATSAPP_RPC_ERROR_CODES`,
@@ -14,7 +14,7 @@ import { isRateLimitError } from "./lib/utils/rate-limit.js";
 
 export type WhatsAppRuntimeErrorCode = (typeof WHATSAPP_RPC_ERROR_CODES)[keyof typeof WHATSAPP_RPC_ERROR_CODES];
 
-/** HTTP-like status per code (DESIGN.md: 5xx is what OmniSender retries). */
+/** HTTP-like status per code. The daemon's WhatsApp sender decides retries from status + code (sender.ts). */
 export const WHATSAPP_RUNTIME_ERROR_STATUS: Readonly<Record<WhatsAppRuntimeErrorCode, number>> = {
   [WHATSAPP_RPC_ERROR_CODES.invalidRequest]: 400,
   [WHATSAPP_RPC_ERROR_CODES.notFound]: 404,
@@ -29,7 +29,7 @@ export const WHATSAPP_RUNTIME_ERROR_STATUS: Readonly<Record<WhatsAppRuntimeError
 
 export interface WhatsAppRuntimeErrorOptions {
   cause?: unknown;
-  /** Omni WhatsApp channel code (`WHATSAPP_SEND_FAILED`, ...), kept for logs. */
+  /** WhatsApp channel error code (`WHATSAPP_SEND_FAILED`, ...), kept for logs. */
   channelCode?: ErrorCodeType;
 }
 
@@ -75,10 +75,10 @@ const CHANNEL_CODE_TO_RUNTIME: Partial<Record<ErrorCodeType, WhatsAppRuntimeErro
  *
  * - `WhatsAppRuntimeError` passes through.
  * - Zod validation failures are 400 `INVALID_REQUEST`.
- * - Baileys/Boom errors go through Omni's `mapBaileysError`; rate limits (429 or a
- *   rate-overlimit message) become 429 `RATE_LIMITED`, "not connected" becomes 503,
- *   invalid JID/phone becomes 400, everything else is 502 `TRANSPORT_ERROR` (Omni
- *   answered every failed send with 502 `CHANNEL_SEND_FAILED`).
+ * - Baileys/Boom errors go through `mapBaileysError` (lib/utils/errors.ts); rate limits
+ *   (429 or a rate-overlimit message) become 429 `RATE_LIMITED`, "not connected" becomes 503,
+ *   invalid JID/phone becomes 400, everything else is 502 `TRANSPORT_ERROR` (the
+ *   ported REST API answered every failed send with 502 `CHANNEL_SEND_FAILED`).
  */
 export function toWhatsAppRuntimeError(error: unknown): WhatsAppRuntimeError {
   if (error instanceof WhatsAppRuntimeError) return error;

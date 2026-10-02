@@ -1,8 +1,8 @@
 /**
- * Outbound helpers for `WhatsAppNativeRuntime` that lived in Omni's REST routes or
- * channel-sdk rather than in the WhatsApp plugin: outbound text sanitization, media
- * MIME inference, target normalization, the plugin's vCard builder, and sticker
- * conversion (new in ravi: Omni sent non-webp stickers as-is).
+ * Outbound helpers for `WhatsAppRuntime`, ported from the REST routes and channel SDK
+ * of omni (not from its WhatsApp plugin): outbound text sanitization, media MIME
+ * inference, target normalization, the plugin's vCard builder, and sticker conversion
+ * (new in ravi: the ported code sent non-webp stickers as-is).
  */
 
 import { extname } from "node:path";
@@ -10,7 +10,7 @@ import { computeWaid } from "./lib/senders/contact.js";
 import { toJid } from "./lib/jid.js";
 
 // ============================================================================
-// Outbound text (@omni/channel-sdk sanitizeOutboundText, GH #300)
+// Outbound text (ported channel-sdk sanitizeOutboundText, omni#300)
 // ============================================================================
 
 /** Routing header: [channel:whatsapp-baileys instance:abc chat:xyz@s.whatsapp.net ...] */
@@ -32,7 +32,7 @@ export function sanitizeOutboundText(text: string): string {
 }
 
 // ============================================================================
-// Media MIME inference (Omni routes/v2/messages.ts)
+// Media MIME inference (ported from omni packages/api routes/v2/messages.ts)
 // ============================================================================
 
 export type OutboundMediaType = "image" | "video" | "audio" | "document";
@@ -70,7 +70,7 @@ export function inferMediaMimeType(type: OutboundMediaType, filename?: string): 
   return DEFAULT_MIME_BY_MEDIA_TYPE[type];
 }
 
-/** Omni `normalizeSendMediaMimeType`: voice notes declared as plain ogg become ogg/opus. */
+/** Ported `normalizeSendMediaMimeType`: voice notes declared as plain ogg become ogg/opus. */
 export function normalizeSendMediaMimeType(input: {
   type: OutboundMediaType;
   mimeType?: string;
@@ -89,7 +89,7 @@ export function normalizeSendMediaMimeType(input: {
 // ============================================================================
 
 /**
- * Normalize a ravi/Omni chat reference to a WhatsApp JID:
+ * Normalize a ravi chat reference to a WhatsApp JID:
  * `group:<id>` → `<id>@g.us`, `lid:<id>` → `<id>@lid`, `<a>-<b>` (legacy group id) → `@g.us`,
  * full JIDs pass through, anything else is a phone number (`toJid`, BR 9th-digit rules).
  */
@@ -121,7 +121,7 @@ export function inviteLink(code: string): string {
   return `https://chat.whatsapp.com/${code}`;
 }
 
-/** Omni `WhatsAppPlugin.buildVCard`. */
+/** Ported plugin `buildVCard`. */
 export function buildVCard(contact: { name: string; phone?: string; email?: string }): string {
   const lines = ["BEGIN:VCARD", "VERSION:3.0", `FN:${contact.name}`];
   if (contact.phone) {

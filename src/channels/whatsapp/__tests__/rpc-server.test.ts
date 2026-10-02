@@ -71,7 +71,7 @@ describe("WhatsApp RPC request handling", () => {
 
     const wrongProtocol = await handleWhatsAppRpcRequest(
       INSTANCE_ID,
-      request("connection.status", {}, { protocol: "omni" }),
+      request("connection.status", {}, { protocol: "wrong.protocol" }),
       runtime,
     );
     expect(wrongProtocol).toMatchObject({

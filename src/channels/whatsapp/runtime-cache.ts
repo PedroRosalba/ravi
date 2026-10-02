@@ -1,7 +1,7 @@
 /**
- * Bounded, clock-driven TTL cache used by `WhatsAppNativeRuntime`.
+ * Bounded, clock-driven TTL cache used by `WhatsAppRuntime`.
  *
- * Omni expired its per-instance caches with one `setTimeout` per entry. The
+ * The ported plugin expired its per-instance caches with one `setTimeout` per entry. The
  * runtime instead stamps each entry with an expiry from the injected clock and
  * drops it lazily, so tests control time and no timers outlive the runtime.
  * Insertion order doubles as LRU order: `set` re-inserts, and the oldest entry

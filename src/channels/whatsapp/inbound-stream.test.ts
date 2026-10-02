@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { AckPolicy, DeliverPolicy, type JetStreamClient, type JetStreamManager } from "nats";
-import { CHANNEL_INBOUND_STREAM, CHANNEL_INBOUND_SUBJECT_FILTER, type WhatsAppTransportEvent } from "./contract.js";
-import { WHATSAPP_INBOUND_DURABLES } from "./events.js";
+import { CHANNEL_INBOUND_STREAM, CHANNEL_INBOUND_SUBJECT_FILTER } from "./contract.js";
+import { WHATSAPP_INBOUND_DURABLES, type WhatsAppInboundEvent } from "./events.js";
 import {
   ensureChannelInboundStream,
   ensureWhatsAppInboundDurables,
-  publishChannelInboundEvent,
+  publishWhatsAppInboundEvent,
 } from "./inbound-stream.js";
 
 interface FakeConsumersOptions {
@@ -163,8 +163,10 @@ describe("ensureWhatsAppInboundDurables", () => {
   });
 });
 
-describe("publishChannelInboundEvent", () => {
-  it("publishes on the prefixed Omni subject with the event id as msgID", async () => {
+describe("publishWhatsAppInboundEvent", () => {
+  const INSTANCE = "0b7c3d1e-1111-4222-8333-944455556666";
+
+  function fakeJs() {
     const published: Array<{ subject: string; data: string; msgID?: string }> = [];
     const js = {
       async publish(subject: string, data: Uint8Array, opts?: { msgID?: string }) {
@@ -172,27 +174,79 @@ describe("publishChannelInboundEvent", () => {
         return { seq: 1, duplicate: false };
       },
     } as unknown as JetStreamClient;
-    const event: WhatsAppTransportEvent = {
+    return { js, published };
+  }
+
+  it("publishes a message on ravi.channel.inbound.whatsapp.message.<instanceId> with the event id as msgID", async () => {
+    const { js, published } = fakeJs();
+    const event: WhatsAppInboundEvent = {
+      schemaVersion: 1,
       id: "evt-1",
-      type: "message.received",
-      payload: { externalId: "ABC" },
-      metadata: {
-        instanceId: "0b7c3d1e-1111-4222-8333-944455556666",
-        channelType: "whatsapp-baileys",
-        source: "ravi.whatsapp.native",
-        ingestMode: "realtime",
-      },
+      instanceId: INSTANCE,
       timestamp: 1,
+      receivedAt: 1,
+      type: "message.received",
+      ingestMode: "realtime",
+      payload: {
+        externalId: "ABC",
+        chatId: "5511988887777@s.whatsapp.net",
+        from: "5511988887777",
+        content: { type: "text" },
+      },
     };
 
-    await publishChannelInboundEvent(js, event);
+    await publishWhatsAppInboundEvent(js, event);
 
     expect(published).toEqual([
-      {
-        subject: "ravi.channel.inbound.message.received.whatsapp-baileys.0b7c3d1e-1111-4222-8333-944455556666",
-        data: JSON.stringify(event),
-        msgID: "evt-1",
-      },
+      { subject: `ravi.channel.inbound.whatsapp.message.${INSTANCE}`, data: JSON.stringify(event), msgID: "evt-1" },
     ]);
+  });
+
+  it("routes reactions and connection events to their kind subjects", async () => {
+    const { js, published } = fakeJs();
+    await publishWhatsAppInboundEvent(js, {
+      schemaVersion: 1,
+      id: "evt-r",
+      instanceId: INSTANCE,
+      timestamp: 2,
+      type: "reaction.received",
+      payload: { messageId: "M", chatId: "c@s.whatsapp.net", from: "c", emoji: "👍" },
+    });
+    for (const [id, type, payload] of [
+      ["evt-q", "connection.qr", { qrCode: "2@QR", expiresAt: 3 }],
+      ["evt-c", "connection.connected", { profileName: "Ravi" }],
+      ["evt-d", "connection.disconnected", { reason: "bye", willReconnect: false }],
+    ] as const) {
+      await publishWhatsAppInboundEvent(js, {
+        schemaVersion: 1,
+        id,
+        instanceId: INSTANCE,
+        timestamp: 3,
+        type,
+        payload,
+      } as WhatsAppInboundEvent);
+    }
+
+    expect(published.map((record) => [record.subject, record.msgID])).toEqual([
+      [`ravi.channel.inbound.whatsapp.reaction.${INSTANCE}`, "evt-r"],
+      [`ravi.channel.inbound.whatsapp.connection.${INSTANCE}`, "evt-q"],
+      [`ravi.channel.inbound.whatsapp.connection.${INSTANCE}`, "evt-c"],
+      [`ravi.channel.inbound.whatsapp.connection.${INSTANCE}`, "evt-d"],
+    ]);
+  });
+
+  it("rejects an instance id that is not a NATS-safe token", async () => {
+    const { js, published } = fakeJs();
+    await expect(
+      publishWhatsAppInboundEvent(js, {
+        schemaVersion: 1,
+        id: "evt-x",
+        instanceId: "bad.id with spaces",
+        timestamp: 1,
+        type: "connection.connected",
+        payload: {},
+      }),
+    ).rejects.toThrow();
+    expect(published).toHaveLength(0);
   });
 });

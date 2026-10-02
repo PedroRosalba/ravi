@@ -55,7 +55,7 @@ import type { SlackSocketModeStatus } from "./slack/index.js";
 import { canonicalChannelId } from "./capabilities.js";
 import type { ChannelConfig } from "../router/router-db.js";
 import { WHATSAPP_PROVIDER } from "./whatsapp/contract.js";
-import { createWhatsAppNativeChannelDriver, whatsappChannelBindingKey } from "./whatsapp/driver.js";
+import { createWhatsAppChannelDriver, whatsappChannelBindingKey } from "./whatsapp/driver.js";
 
 const log = logger.child("channels:runner");
 
@@ -402,7 +402,7 @@ export class ChannelRunner {
   private async startNativeChannels(env: NodeJS.ProcessEnv): Promise<void> {
     const registry = new NativeChannelDriverRegistry();
     registry.register(createSlackNativeChannelDriver(env));
-    registry.register(createWhatsAppNativeChannelDriver());
+    registry.register(createWhatsAppChannelDriver());
 
     try {
       const moduleConfigs = parseNativeChannelDriverModuleConfigs(env.RAVI_NATIVE_CHANNEL_DRIVERS);

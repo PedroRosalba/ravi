@@ -18,11 +18,11 @@ import {
   type WhatsAppRpcMethod,
 } from "../contract.js";
 import {
-  createWhatsAppNativeChannelDriver,
+  createWhatsAppChannelDriver,
   resolveWhatsAppChannelBinding,
   whatsappChannelBindingKey,
   type WhatsAppDriverRuntime,
-  type WhatsAppNativeChannelDriverOptions,
+  type WhatsAppChannelDriverOptions,
   type WhatsAppRuntimeFactoryOptions,
 } from "../driver.js";
 import { type WhatsAppLibrary, whatsappLibrary } from "../runtime-library.js";
@@ -88,14 +88,11 @@ function fakeRuntime(health: NativeChannelRuntimeHealth = { status: "starting", 
   return { runtime, call };
 }
 
-function driverWith(
-  routerConfig: ReturnType<typeof config>,
-  overrides: Partial<WhatsAppNativeChannelDriverOptions> = {},
-) {
+function driverWith(routerConfig: ReturnType<typeof config>, overrides: Partial<WhatsAppChannelDriverOptions> = {}) {
   const nats = createFakeNats();
   const created: WhatsAppRuntimeFactoryOptions[] = [];
   const runtimes: ReturnType<typeof fakeRuntime>[] = [];
-  const driver = createWhatsAppNativeChannelDriver({
+  const driver = createWhatsAppChannelDriver({
     getConfig: () => routerConfig,
     connection: () => nats,
     jetstream: () => createFakeJetStream().js,
@@ -352,7 +349,7 @@ describe("WhatsApp native channel driver: real runtime", () => {
     const library = fakeLibrary(sockets);
     const jetstream = createFakeJetStream();
     const nats = createFakeNats();
-    const driver = createWhatsAppNativeChannelDriver({
+    const driver = createWhatsAppChannelDriver({
       getConfig: () => config([channel("main")], [instance("main", instanceId)]),
       connection: () => nats,
       jetstream: () => jetstream.js,
@@ -374,7 +371,7 @@ describe("WhatsApp native channel driver: real runtime", () => {
     await flush();
     expect(sockets).toHaveLength(1);
 
-    // Not connected yet: sends are 503 NOT_CONNECTED (retryable for OmniSender).
+    // Not connected yet: sends are 503 NOT_CONNECTED (the sender retries it: certainly unsent).
     await expect(
       nats.request(
         subject,
@@ -389,7 +386,7 @@ describe("WhatsApp native channel driver: real runtime", () => {
       ok: true,
       data: { state: "connected", isConnected: true },
     });
-    expect(jetstream.published.map((record) => record.event.type)).toContain("instance.connected");
+    expect(jetstream.published.map((record) => record.event.type)).toContain("connection.connected");
 
     await runtime.stop();
     expect(runtime.health()).toEqual({ status: "disconnected", reason: "stopped" });
@@ -400,7 +397,7 @@ describe("WhatsApp native channel driver: real runtime", () => {
     const instanceId = uniqueInstanceId("drv");
     const sockets: FakeSocket[] = [];
     const nats = createFakeNats();
-    const driver = createWhatsAppNativeChannelDriver({
+    const driver = createWhatsAppChannelDriver({
       getConfig: () => config([channel("main")], [instance("main", instanceId)]),
       connection: () => nats,
       jetstream: () => createFakeJetStream().js,
@@ -425,7 +422,7 @@ describe("WhatsApp native channel driver: real runtime", () => {
 
   it("rejects invalid socket options from channel defaults", async () => {
     const wa = channel("main", { defaults: { whatsapp: { connectTimeoutMs: -1 } } });
-    const driver = createWhatsAppNativeChannelDriver({
+    const driver = createWhatsAppChannelDriver({
       getConfig: () => config([wa], [instance("main", UUID_A)]),
       connection: () => createFakeNats(),
       jetstream: () => createFakeJetStream().js,

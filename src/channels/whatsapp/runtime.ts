@@ -1,14 +1,15 @@
 /**
- * WhatsAppNativeRuntime: Omni's WhatsApp (Baileys) plugin rewritten for exactly one
- * instance, running inside the `ravi channels` runner.
+ * WhatsAppRuntime: ravi's WhatsApp (Baileys) channel runtime for exactly one instance,
+ * running inside the `ravi channels` runner. It was ported from the Baileys plugin in
+ * omni packages/channel-whatsapp; comments name the ported function where it helps.
  *
  * - It owns one Baileys socket (lifecycle, reconnect/backoff, QR, pairing code,
- *   passkey, logout) and the per-instance caches Omni kept in `WhatsAppPlugin`.
- * - It implements the step-1 handler host (`WhatsAppHandlerHost`), so the ported
- *   handlers in `lib/handlers/*` drive it exactly as they drove Omni's plugin.
- * - Inbound events are published as Omni-identical envelopes on the CHANNEL_INBOUND
- *   JetStream stream (`publishChannelInboundEvent`); the daemon consumer reads them
- *   like Omni events.
+ *   passkey, logout) and the per-instance caches the plugin kept per account.
+ * - It implements the handler host (`WhatsAppHandlerHost`), so the handlers in
+ *   `lib/handlers/*` drive it.
+ * - Inbound messages, reactions and connection changes are published as
+ *   `WhatsAppInboundEvent` (events.ts) on the CHANNEL_INBOUND JetStream stream
+ *   (`publishWhatsAppInboundEvent`); the daemon reads them with `WhatsAppInboundSource`.
  * - Outbound and control methods return the `WhatsAppRpcResults` shapes and throw
  *   `WhatsAppRuntimeError {status, code}`; `call(method, params)` is the typed
  *   dispatcher the RPC server uses.
@@ -45,9 +46,9 @@ import {
   type WhatsAppRpcParams,
   WhatsAppRpcParamsSchemas,
   type WhatsAppRpcResult,
-  type WhatsAppTransportEvent,
 } from "./contract.js";
-import { ensureChannelInboundStream, publishChannelInboundEvent } from "./inbound-stream.js";
+import type { WhatsAppInboundEvent, WhatsAppInboundEventType } from "./events.js";
+import { ensureChannelInboundStream, publishWhatsAppInboundEvent } from "./inbound-stream.js";
 import { createWhatsAppAuthStorage } from "./lib/auth-store.js";
 import {
   type DedupeCache,
@@ -86,14 +87,16 @@ import {
   DEFAULT_PUBLISHED_EVENT_TYPES,
   type MessageReceivedContent,
   type ReactionPayload,
-  buildTransportEvent,
+  type WhatsAppObservedEvent,
+  buildWhatsAppObservedEvent,
+  connectionConnectedPayload,
+  connectionDisconnectedPayload,
+  connectionQrPayload,
   deterministicEventId,
-  instanceConnectedPayload,
-  instanceDisconnectedPayload,
   messageIdempotencyKey,
   messageReceivedPayload,
-  qrCodePayload,
   reactionIdempotencyKey,
+  toWhatsAppInboundEvent,
 } from "./runtime-events.js";
 import { filterGroupRecords, toGroupMetadataResult, toGroupRecord } from "./runtime-groups.js";
 import type { WhatsAppLibrary } from "./runtime-library.js";
@@ -113,7 +116,7 @@ import {
 // Public types
 // ============================================================================
 
-/** Per-instance socket options (Omni `WhatsAppConnectionOptions`), validated at the RPC boundary. */
+/** Per-instance socket options (ported `WhatsAppConnectionOptions`), validated at the RPC boundary. */
 export const WhatsAppConnectionOptionsSchema = z.object({
   logLevel: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).optional(),
   browser: z.tuple([z.string(), z.string(), z.string()]).optional(),
@@ -126,7 +129,7 @@ export const WhatsAppConnectionOptionsSchema = z.object({
   supportGroupHistory: z.boolean().optional(),
   generateHighQualityLinkPreview: z.boolean().optional(),
   markOnlineOnConnect: z.boolean().optional(),
-  /** LID-first identity resolution (default true; false = Omni DEC-8 legacy phone-first). */
+  /** LID-first identity resolution (default true; false = legacy phone-first, omni DEC-8). */
   lidFirstEnabled: z.boolean().optional(),
 });
 
@@ -191,15 +194,15 @@ export interface WhatsAppRuntimeTimers {
 }
 
 export interface WhatsAppSupervisorOptions {
-  /** Re-arm a connect after the socket gave up (Omni's API InstanceMonitor). Default true. */
+  /** Re-arm a connect after the socket gave up (what the old API instance monitor did). Default true. */
   enabled?: boolean;
   /** First delay; doubles per attempt (default 1000). */
   baseDelayMs?: number;
-  /** Delay cap (default 300000, Omni monitor `backoffMaxMs`). */
+  /** Delay cap (default 300000, the old monitor `backoffMaxMs`). */
   maxDelayMs?: number;
 }
 
-export interface WhatsAppNativeRuntimeOptions {
+export interface WhatsAppRuntimeOptions {
   /** Transport instance id (the ravi instance UUID). */
   instanceId: string;
   /** Ravi account / instance name, for logs and snapshots. */
@@ -219,7 +222,7 @@ export interface WhatsAppNativeRuntimeOptions {
   logger?: Logger;
   /** Socket options (instance defaults); `connection.connect` may override them. */
   socketOptions?: WhatsAppConnectionOptions;
-  /** Reconnect policy of the ported connection handler (Omni default 5 retries, 1s..30s). */
+  /** Reconnect policy of the connection handler (default 5 retries, 1s..30s). */
   reconnect?: Partial<ReconnectConfig>;
   supervisor?: WhatsAppSupervisorOptions;
   /** Outbound humanization. Default: `getWhatsAppOutboundTimingConfig(env)`. */
@@ -229,11 +232,11 @@ export interface WhatsAppNativeRuntimeOptions {
   timers?: WhatsAppRuntimeTimers;
   sleep?: (ms: number) => Promise<void>;
   /** Observer for every event the runtime builds (published or not). */
-  onEvent?: (event: WhatsAppTransportEvent) => void;
+  onEvent?: (event: WhatsAppObservedEvent) => void;
   /** Observer for state transitions. */
   onStateChange?: (snapshot: WhatsAppRuntimeSnapshot) => void;
-  /** Event types published to CHANNEL_INBOUND. Default: the types the consumer reads. */
-  publishedEventTypes?: readonly string[];
+  /** Event types published to CHANNEL_INBOUND. Default: every `WHATSAPP_INBOUND_EVENT_TYPES` type. */
+  publishedEventTypes?: readonly WhatsAppInboundEventType[];
   /** ingestMode for messages Baileys delivered as offline backlog (`append`). Default "history-sync". */
   offlineIngestMode?: WhatsAppIngestMode;
   /** Download media of history-sync messages. Default false (they never reach agents). */
@@ -303,7 +306,7 @@ const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 
 const loadDefaultLibrary = async (): Promise<WhatsAppLibrary> => (await import("./runtime-library.js")).whatsappLibrary;
 
-/** Omni `isTransientConnectionClosedError` (prewarm noise during reconnects). */
+/** Ported `isTransientConnectionClosedError` (prewarm noise during reconnects). */
 export function isTransientConnectionClosedError(error: unknown): boolean {
   if (!error) return false;
   const message =
@@ -334,11 +337,11 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
 // Runtime
 // ============================================================================
 
-export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
+export class WhatsAppRuntime implements WhatsAppHandlerHost {
   readonly instanceId: string;
   readonly accountName: string;
 
-  private readonly options: WhatsAppNativeRuntimeOptions;
+  private readonly options: WhatsAppRuntimeOptions;
   private readonly log: Logger;
   private readonly now: () => number;
   private readonly timers: WhatsAppRuntimeTimers;
@@ -388,7 +391,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   private readonly stateWaiters = new Set<() => void>();
   private publishFailures = 0;
 
-  // ── caches (Omni WhatsAppPlugin, one instance) ─────────────────────
+  // ── caches (the ported plugin's per-account caches, one instance) ──
   private readonly groupMetadataCache = new Map<string, { metadata: GroupMetadata; cachedAt: number }>();
   private readonly groupsCache = new Map<string, { subject: string; desc?: string }>();
   private readonly contactsCache = new Map<string, SyncContact>();
@@ -413,7 +416,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
 
   private readonly rpcHandlers: RpcHandlers;
 
-  constructor(options: WhatsAppNativeRuntimeOptions) {
+  constructor(options: WhatsAppRuntimeOptions) {
     this.instanceId = options.instanceId;
     this.accountName = options.accountName ?? options.instanceId;
     this.options = options;
@@ -575,7 +578,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
 
   /**
    * `connection.connect`: reconnect with stored creds, or open a socket that emits QR
-   * codes. `forceNewQr` drops the socket and the stored auth first (Omni parity).
+   * codes. `forceNewQr` drops the socket and the stored auth first.
    */
   async connect(
     params: { forceNewQr?: boolean; whatsapp?: Record<string, unknown> } = {},
@@ -610,10 +613,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     if (this.sock || this.connecting) {
       if (this.state === "qr" && this.activeQr) {
         await this.emit(
-          this.envelope(
-            "instance.qr_code",
-            qrCodePayload(this.instanceId, this.activeQr.code, new Date(this.activeQr.expiresAt)),
-          ),
+          this.observed("connection.qr", connectionQrPayload(this.activeQr.code, new Date(this.activeQr.expiresAt))),
         );
         return { status: "qr", message: "QR code pending; it was republished" };
       }
@@ -625,14 +625,14 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return { status: "connecting", message: "Connection initiated" };
   }
 
-  /** `connection.disconnect`: close the socket, keep the session (Omni `disconnect`). */
+  /** `connection.disconnect`: close the socket, keep the session. */
   async disconnect(): Promise<void> {
     this.manualDisconnect = true;
     this.generation++;
     this.clearSupervisor();
     this.clearPresenceTimers();
     const lib = this.loadedLibrary;
-    // Reset tracking even when no socket is live: a reconnect loop drops the socket between attempts (#1169).
+    // Reset tracking even when no socket is live: a reconnect loop drops the socket between attempts (omni#1169).
     lib?.resetConnectionState(this.instanceId);
     this.setState("disconnected", "user_disconnect", "User requested disconnect");
     const hadSocket = this.sock !== null;
@@ -641,17 +641,14 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     this.clearInstanceCaches();
     if (hadSocket) {
       await this.emit(
-        this.envelope(
-          "instance.disconnected",
-          instanceDisconnectedPayload(this.instanceId, "User requested disconnect", false),
-        ),
+        this.observed("connection.disconnected", connectionDisconnectedPayload("User requested disconnect", false)),
       );
     }
   }
 
   /**
    * `connection.logout`: unlink the device on WhatsApp's side (when connected), close the
-   * socket and clear the stored auth state. (Omni only closed the socket and cleared auth.)
+   * socket and clear the stored auth state. (The ported plugin only closed the socket and cleared auth.)
    */
   async logout(): Promise<void> {
     this.manualDisconnect = true;
@@ -668,9 +665,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     this.setState("logged_out", "logged_out", "Logged out");
     this.log.info("Instance logged out and auth cleared", { instanceId: this.instanceId });
     if (hadSocket) {
-      await this.emit(
-        this.envelope("instance.disconnected", instanceDisconnectedPayload(this.instanceId, "Logged out", false)),
-      );
+      await this.emit(this.observed("connection.disconnected", connectionDisconnectedPayload("Logged out", false)));
     }
   }
 
@@ -771,7 +766,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     };
   }
 
-  /** `connection.status` (Omni REST `GET /instances/:id/status` shape). */
+  /** `connection.status` (`WhatsAppRpcResults["connection.status"]`). */
   getStatus(): WhatsAppRpcResult<"connection.status"> {
     return {
       state: this.rpcConnectionState(),
@@ -780,7 +775,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     };
   }
 
-  /** Native driver ABI health. */
+  /** Channel driver ABI health. */
   health(): NativeChannelRuntimeHealth {
     const extras = {
       ...(this.connectedAt !== undefined && this.state === "connected" ? { connectedAt: this.connectedAt } : {}),
@@ -859,7 +854,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   }
 
   // ==========================================================================
-  // Socket creation (Omni createConnection)
+  // Socket creation (ported createConnection)
   // ==========================================================================
 
   private spawnConnection(trigger: string): void {
@@ -903,7 +898,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     if (generation !== this.generation || this.stopped) return;
 
     // Paired creds → seed the handler's authenticated set so a drop auto-reconnects
-    // instead of falling into the QR path (Omni: critical after restarts).
+    // instead of falling into the QR path (critical after restarts).
     if (state.creds?.me?.id) lib.seedAuthenticated(this.instanceId);
 
     this.lidFirstEnabled = this.socketOptions.lidFirstEnabled ?? true;
@@ -972,7 +967,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     }
     if (statusCode === lib.disconnectReason.connectionReplaced && sock === this.sock) {
       // The handler returns silently on 440 (no reconnect). Drop the dead socket once the
-      // current emit finished, so it does not linger as "connected" (Omni left it in the map).
+      // current emit finished, so it does not linger as "connected".
       queueMicrotask(() => {
         void this.handleConnectionReplaced(lib, sock);
       });
@@ -989,9 +984,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
       instanceId: this.instanceId,
     });
     this.setState("disconnected", "connection_replaced", reason);
-    await this.emit(
-      this.envelope("instance.disconnected", instanceDisconnectedPayload(this.instanceId, reason, false)),
-    );
+    await this.emit(this.observed("connection.disconnected", connectionDisconnectedPayload(reason, false)));
   }
 
   private observeUpsert(upsert: BaileysEventMap["messages.upsert"]): void {
@@ -1063,7 +1056,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     if (this.stopped) throw notConnected(`WhatsApp runtime for ${this.accountName} is stopped`);
   }
 
-  // ── supervisor (Omni API InstanceMonitor, one instance) ─────────────
+  // ── supervisor (reconnect monitor, one instance) ───────────────────
 
   private scheduleSupervisorReconnect(trigger: string): void {
     if (!this.supervisor.enabled || this.stopped || this.manualDisconnect || this.replaced) return;
@@ -1099,7 +1092,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     this.presenceTimers.clear();
   }
 
-  /** Omni `clearInstanceCaches` (sent ids and LID maps survive: echoes may still arrive). */
+  /** Ported `clearInstanceCaches` (sent ids and LID maps survive: echoes may still arrive). */
   private clearInstanceCaches(): void {
     this.passkeyState = null;
     this.groupMetadataCache.clear();
@@ -1140,25 +1133,43 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return this.jetstreamClient;
   }
 
-  private envelope(
+  private observed(
     type: string,
     payload: unknown,
-    extra: { id?: string; ingestMode?: WhatsAppIngestMode; pluginReceivedAt?: number } = {},
-  ): WhatsAppTransportEvent {
-    return buildTransportEvent({ type, instanceId: this.instanceId, payload, now: this.now(), ...extra });
+    extra: { id?: string; ingestMode?: WhatsAppIngestMode; receivedAt?: number } = {},
+  ): WhatsAppObservedEvent {
+    return buildWhatsAppObservedEvent({ type, instanceId: this.instanceId, payload, now: this.now(), ...extra });
   }
 
-  /** Hand the event to the observer and, for consumer-read types, to CHANNEL_INBOUND. */
-  private async emit(event: WhatsAppTransportEvent): Promise<void> {
+  /**
+   * Hand the event to the observer and, for published types, publish its
+   * `WhatsAppInboundEvent` (events.ts) on CHANNEL_INBOUND.
+   */
+  private async emit(observed: WhatsAppObservedEvent): Promise<void> {
     try {
-      this.options.onEvent?.(event);
+      this.options.onEvent?.(observed);
     } catch (error) {
       this.log.warn("WhatsApp event observer failed", { instanceId: this.instanceId, error: errorMessage(error) });
     }
-    if (!this.publishedTypes.has(event.type)) return;
+    if (!this.publishedTypes.has(observed.type)) return;
+    let event: WhatsAppInboundEvent | null;
+    try {
+      event = toWhatsAppInboundEvent(observed);
+    } catch (error) {
+      this.publishFailures++;
+      this.log.error("Dropped WhatsApp inbound event: it does not match the inbound contract", {
+        instanceId: this.instanceId,
+        type: observed.type,
+        eventId: observed.id,
+        failures: this.publishFailures,
+        error: errorMessage(error),
+      });
+      return;
+    }
+    if (!event) return;
     if (this.streamReady) await this.streamReady;
     try {
-      await publishChannelInboundEvent(this.jetstream(), event);
+      await publishWhatsAppInboundEvent(this.jetstream(), event);
     } catch (firstError) {
       this.log.warn("CHANNEL_INBOUND publish failed; ensuring stream and retrying", {
         instanceId: this.instanceId,
@@ -1167,7 +1178,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
       });
       try {
         await this.ensureInboundStreamFn();
-        await publishChannelInboundEvent(this.jetstream(), event);
+        await publishWhatsAppInboundEvent(this.jetstream(), event);
       } catch (error) {
         this.publishFailures++;
         this.log.error("Dropped WhatsApp inbound event: CHANNEL_INBOUND publish failed", {
@@ -1182,7 +1193,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   }
 
   private emitObserved(type: string, payload: unknown): void {
-    void this.emit(this.envelope(type, payload));
+    void this.emit(this.observed(type, payload));
   }
 
   // ==========================================================================
@@ -1192,7 +1203,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   async handleQrCode(_instanceId: string, qrCode: string, expiresAt: Date): Promise<void> {
     this.activeQr = { code: qrCode, expiresAt: expiresAt.getTime() };
     this.setState("qr", "qr_pending");
-    await this.emit(this.envelope("instance.qr_code", qrCodePayload(this.instanceId, qrCode, expiresAt)));
+    await this.emit(this.observed("connection.qr", connectionQrPayload(qrCode, expiresAt)));
   }
 
   async handleConnected(_instanceId: string, sock: WASocket, isNewLogin = false): Promise<void> {
@@ -1221,9 +1232,9 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     this.profile.picUrl = profilePicUrl;
 
     await this.emit(
-      this.envelope(
-        "instance.connected",
-        instanceConnectedPayload(this.instanceId, { profileName, profilePicUrl, ownerIdentifier, isNewLogin }),
+      this.observed(
+        "connection.connected",
+        connectionConnectedPayload({ profileName, profilePicUrl, ownerIdentifier, isNewLogin }),
       ),
     );
     this.log.info("WhatsApp instance connected", { instanceId: this.instanceId, profileName, isNewLogin });
@@ -1261,9 +1272,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
       this.setState("disconnected", disconnectReasonKind(reason), reason);
     }
 
-    await this.emit(
-      this.envelope("instance.disconnected", instanceDisconnectedPayload(this.instanceId, reason, willReconnect)),
-    );
+    await this.emit(this.observed("connection.disconnected", connectionDisconnectedPayload(reason, willReconnect)));
     if (!loggedOut && !willReconnect) this.scheduleSupervisorReconnect("disconnected");
   }
 
@@ -1277,7 +1286,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     this.log.error("Connection error", { instanceId: this.instanceId, error, willRetry });
     if (this.stopped) return;
     // The handler never retries a reconnect that threw, whatever `willRetry` says: move to
-    // `disconnected` and let the supervisor re-arm (Omni relied on its API monitor, #408).
+    // `disconnected` and let the supervisor re-arm (omni#408).
     if (!this.sock || this.state !== "connected") {
       this.setState("disconnected", "connection_error", error);
       this.scheduleSupervisorReconnect("connection_error");
@@ -1436,10 +1445,10 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     });
 
     await this.emit(
-      this.envelope("message.received", payload, {
+      this.observed("message.received", payload, {
         id: deterministicEventId(messageIdempotencyKey(this.instanceId, externalId, content.type)),
         ingestMode,
-        pluginReceivedAt: subStages?.ingestedAt ?? this.now(),
+        receivedAt: subStages?.ingestedAt ?? this.now(),
       }),
     );
   }
@@ -1469,7 +1478,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     // Upsert and `messages.reaction` both report the same reaction: publish it once.
     if (this.recentReactionEvents.has(id)) return;
     this.recentReactionEvents.set(id, true);
-    await this.emit(this.envelope(kind, payload, { id }));
+    await this.emit(this.observed(kind, payload, { id }));
   }
 
   async handleMessageEdited(
@@ -1490,10 +1499,10 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
       rawPayload: { editedMessageId: externalId, newText, editedAt: now, isFromMe: fromMe },
     });
     await this.emit(
-      this.envelope("message.received", payload, {
+      this.observed("message.received", payload, {
         id: deterministicEventId(messageIdempotencyKey(this.instanceId, editExternalId, "edit")),
         ingestMode: "realtime",
-        pluginReceivedAt: now,
+        receivedAt: now,
       }),
     );
   }
@@ -1509,25 +1518,25 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
       rawPayload: { deletedMessageId: externalId, deletedAt: now, deletedByMe: fromMe, isFromMe: fromMe },
     });
     await this.emit(
-      this.envelope("message.received", payload, {
+      this.observed("message.received", payload, {
         id: deterministicEventId(messageIdempotencyKey(this.instanceId, deleteExternalId, "delete")),
         ingestMode: "realtime",
-        pluginReceivedAt: now,
+        receivedAt: now,
       }),
     );
   }
 
   async handleMessageDelivered(_instanceId: string, externalId: string, chatId: string): Promise<void> {
-    await this.emit(this.envelope("message.delivered", { externalId, chatId, deliveredAt: this.now() }));
+    await this.emit(this.observed("message.delivered", { externalId, chatId, deliveredAt: this.now() }));
   }
 
   async handleMessageRead(_instanceId: string, externalId: string, chatId: string): Promise<void> {
-    await this.emit(this.envelope("message.read", { externalId, chatId, readAt: this.now() }));
+    await this.emit(this.observed("message.read", { externalId, chatId, readAt: this.now() }));
   }
 
   async handleMessageFailed(_instanceId: string, externalId: string, chatId: string): Promise<void> {
     await this.emit(
-      this.envelope("message.failed", {
+      this.observed("message.failed", {
         externalId,
         chatId,
         error: "Delivery failed: recipient retry receipt not honored",
@@ -1811,15 +1820,15 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
       rawPayload,
     });
     await this.emit(
-      this.envelope("message.received", payload, {
+      this.observed("message.received", payload, {
         id: deterministicEventId(messageIdempotencyKey(this.instanceId, externalId, content.type)),
         ingestMode: "history-sync",
-        pluginReceivedAt: this.now(),
+        receivedAt: this.now(),
       }),
     );
   }
 
-  /** Omni's simplified history extractor (text, media, location/contact/poll). */
+  /** Simplified history extractor (text, media, location/contact/poll). */
   private extractHistoryMessageContent(msg: WAMessage): HistoryContent | null {
     const message = msg.message;
     if (!message) return null;
@@ -1894,7 +1903,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     }
   }
 
-  /** Only the delta since the last announcement (Omni #1040). */
+  /** Only the delta since the last announcement (omni#1040). */
   private publishContactNames(): void {
     const names: Array<{ jid: string; name: string }> = [];
     for (const [jid, contact] of this.contactsCache) {
@@ -1906,7 +1915,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     if (names.length > 0) this.emitObserved("custom.contacts.names", { names });
   }
 
-  /** Only new or changed lid→phone pairs (Omni #1040). */
+  /** Only new or changed lid→phone pairs (omni#1040). */
   private publishLidMappings(): void {
     const mappings: Array<{ lidJid: string; phoneJid: string }> = [];
     for (const [lidJid, phoneJid] of this.lidMappingCache) {
@@ -1928,7 +1937,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     });
   }
 
-  /** Single-instance Omni `resolveSenderInstanceId` (#1148): our own account → this instance. */
+  /** Single-instance `resolveSenderInstanceId` (omni#1148): our own account → this instance. */
   private resolveSenderInstanceId(from: string, isFromMe: boolean): string | undefined {
     if (isFromMe) return this.instanceId;
     const user = this.sock?.user as { id?: string; lid?: string } | undefined;
@@ -1972,7 +1981,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     if (contact?.name) payload.chatName = contact.name;
   }
 
-  /** Lift the quoted stanza to `rawPayload.quotedMessage` with the quoted sender's name (#1090). */
+  /** Lift the quoted stanza to `rawPayload.quotedMessage` with the quoted sender's name (omni#1090). */
   private async enrichPayloadWithQuotedMessage(
     rawPayload: Record<string, unknown>,
     chatId: string,
@@ -1987,7 +1996,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   }
 
   /**
-   * Omni `getContactInfo`: caches first, then (cache miss) group participants, business
+   * Ported `getContactInfo`: caches first, then (cache miss) group participants, business
    * profile and `onWhatsApp`. Never throws.
    */
   async getContactInfo(jid: string, groupJid?: string): Promise<{ name?: string; phone?: string } | null> {
@@ -2277,7 +2286,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return phoneJid;
   }
 
-  /** Omni `preprocessOutgoing`: delay, typing, markdown and `@Name` mentions. */
+  /** Ported `preprocessOutgoing`: delay, typing, markdown and `@Name` mentions. */
   private async preprocessOutgoing(sock: WASocket, jid: string, message: OutgoingMessage): Promise<OutgoingMessage> {
     await this.humanDelay();
     const textContent = message.content.text || message.content.caption || "";
@@ -2303,7 +2312,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return processed;
   }
 
-  /** `@Name` → JID from contacts, chat names and (groups) cached participants (GH#209). */
+  /** `@Name` → JID from contacts, chat names and (groups) cached participants (omni#209). */
   private resolveMentionsInText(chatJid: string, text: string): MentionResolution {
     const nameToJid = new Map<string, string>();
     const indexName = (name: string, jid: string) => {
@@ -2331,7 +2340,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     const resolved = resolveMentions(text, nameToJid);
     if (resolved.mentions.length === 0) return resolved;
     // resolveMentions keeps only the number; restore the full JID so LID participants are
-    // mentioned as `@lid` instead of a non-existent `<lid>@s.whatsapp.net` (Omni bug).
+    // mentioned as `@lid` instead of a non-existent `<lid>@s.whatsapp.net` (a bug in the ported code).
     const jidByNumber = new Map<string, string>();
     for (const jid of nameToJid.values()) {
       const number = jid.split("@")[0];
@@ -2343,7 +2352,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     };
   }
 
-  /** Quoted message for a reply: the cached inbound message, else Omni's minimal fallback. */
+  /** Quoted message for a reply: the cached inbound message, else a minimal fallback. */
   private buildQuoted(replyTo: string | undefined, jid: string): WAMessage | undefined {
     if (!replyTo) return undefined;
     const cached = this.quotable.get(replyTo);
@@ -2397,7 +2406,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     }
   }
 
-  /** Omni `buildSentEventPayload` (observer only: the daemon records its own sends). */
+  /** Ported `buildSentEventPayload` (observer only: the daemon records its own sends). */
   private emitMessageSent(externalId: string, chatId: string, original: OutgoingMessage, sent: OutgoingMessage): void {
     const mediaSource = sent.content.mediaUrl ? "url" : sent.metadata?.base64 ? "base64" : undefined;
     this.emitObserved("message.sent", {
@@ -2443,7 +2452,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   // Messages
   // ==========================================================================
 
-  /** `messages.sendText`. Text made only of routing headers is dropped (Omni "filtered"). */
+  /** `messages.sendText`. Text made only of routing headers is dropped ("filtered"). */
   async sendText(params: WhatsAppRpcParams<"messages.sendText">): Promise<WhatsAppRpcResult<"messages.sendText">> {
     const text = sanitizeOutboundText(params.text);
     if (!text) {
@@ -2505,7 +2514,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     return { messageId, status: "sent" };
   }
 
-  /** Voice notes go out as OGG/Opus: convert with ffmpeg when needed (Omni `processAudioForVoiceNote`). */
+  /** Voice notes go out as OGG/Opus: convert with ffmpeg when needed (ported `processAudioForVoiceNote`). */
   private async processAudioForVoiceNote(message: OutgoingMessage, filePath: string): Promise<OutgoingMessage> {
     const lib = await this.library();
     let input: Buffer;
@@ -2577,7 +2586,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     await this.humanDelay();
     try {
       const reactionId = await sendReactionMessage(sock, jid, params.messageId, emoji, fromMe, participant);
-      // Track the reaction id so its echo is filtered (#336).
+      // Track the reaction id so its echo is filtered (omni#336).
       if (reactionId) this.sentIds.set(reactionId, true);
       rateLimiter.reset();
       return { messageId: reactionId ?? "", success: true };
@@ -2587,7 +2596,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     }
   }
 
-  /** `messages.edit`: edit one of our messages (Omni `editMessage`, fromMe). */
+  /** `messages.edit`: edit one of our messages (ported `editMessage`, fromMe). */
   async editMessage(channelId: string, messageId: string, text: string): Promise<void> {
     const sock = this.requireSocket();
     await this.humanDelay();
@@ -2665,7 +2674,7 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
     this.presenceTimers.set(jid, timer);
   }
 
-  /** `messages.markRead` (Omni `markAsRead`, honoring the read receipt mode). */
+  /** `messages.markRead` (ported `markAsRead`, honoring the read receipt mode). */
   async markRead(chatId: string, messageIds: string[]): Promise<void> {
     if (this.readReceiptMode === "off") return;
     const sock = this.requireSocket();
@@ -2843,8 +2852,15 @@ export class WhatsAppNativeRuntime implements WhatsAppHandlerHost {
   // Test / diagnostics hooks
   // ==========================================================================
 
-  /** Echo set membership by message id (Omni `trackSentMessageId` counterpart). */
+  /** Echo set membership by message id (ported `trackSentMessageId` counterpart). */
   trackSentMessageId(messageId: string): void {
     this.sentIds.set(messageId, true);
   }
 }
+
+/** @deprecated Use `WhatsAppRuntime`. Deleted in WP-Z. */
+export const WhatsAppNativeRuntime = WhatsAppRuntime;
+/** @deprecated Use `WhatsAppRuntime`. Deleted in WP-Z. */
+export type WhatsAppNativeRuntime = WhatsAppRuntime;
+/** @deprecated Use `WhatsAppRuntimeOptions`. Deleted in WP-Z. */
+export type WhatsAppNativeRuntimeOptions = WhatsAppRuntimeOptions;

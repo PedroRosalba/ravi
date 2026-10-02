@@ -618,7 +618,7 @@ export class NativeChannelDriverManager {
     }
 
     // Exact provider first; then its canonical alias (`whatsapp-baileys` → `whatsapp`),
-    // so the runner owns exactly the channels `listNativeWhatsAppBindings` treats as native.
+    // so the runner owns exactly the channels `listWhatsAppBindings` binds.
     const aliased = this.options.registry.get(provider) ? undefined : canonicalChannelId(provider);
     const driver = this.options.registry.get(provider) ?? (aliased ? this.options.registry.get(aliased) : undefined);
     if (driver && aliased) provider = aliased;

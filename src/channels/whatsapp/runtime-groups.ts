@@ -10,7 +10,7 @@ import type {
 } from "./contract.js";
 import { isLidJid, isUserJid } from "./lib/jid.js";
 
-/** Omni `fetchGroups` / `groupCreate` shape, as the Omni REST API listed groups. */
+/** Group record shape of `groups.list` / `groups.create` (the ported `fetchGroups` / `groupCreate` shape). */
 export function toGroupRecord(metadata: GroupMetadata): WhatsAppRpcGroupRecord {
   const participants = (metadata.participants ?? []).map((participant) => ({
     id: participant.id,
@@ -29,7 +29,7 @@ export function toGroupRecord(metadata: GroupMetadata): WhatsAppRpcGroupRecord {
   };
 }
 
-/** Case-insensitive subject/JID filter plus limit (Omni `GET /instances/:id/groups`). */
+/** Case-insensitive subject/JID filter plus limit (`groups.list` `search`/`limit`). */
 export function filterGroupRecords(
   records: WhatsAppRpcGroupRecord[],
   options: { search?: string; limit?: number },
@@ -43,7 +43,7 @@ export function filterGroupRecords(
   return options.limit !== undefined ? filtered.slice(0, options.limit) : filtered;
 }
 
-/** Omni `fetchGroupMembers` role (`admin ?? 'member'`) with `superadmin` mapped to ravi's `owner`. */
+/** Ported `fetchGroupMembers` role (`admin ?? 'member'`) with `superadmin` mapped to ravi's `owner`. */
 export function participantRole(participant: Pick<GroupParticipant, "admin">): "owner" | "admin" | "member" {
   if (participant.admin === "superadmin") return "owner";
   if (participant.admin === "admin") return "admin";

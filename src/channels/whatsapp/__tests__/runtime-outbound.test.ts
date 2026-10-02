@@ -1,5 +1,5 @@
 /**
- * WhatsAppNativeRuntime outbound + RPC surface: every `WhatsAppRpcMethod` returns the
+ * WhatsAppRuntime outbound + RPC surface: every `WhatsAppRpcMethod` returns the
  * contract shape and fails with a typed `{status, code}` error.
  */
 
@@ -109,7 +109,7 @@ describe("messages.sendText", () => {
     expect(lastSend(sock).content).toEqual({ text: "**raw**" });
   });
 
-  it("drops text made only of routing headers (Omni 'filtered')", async () => {
+  it("drops text made only of routing headers ('filtered')", async () => {
     const h = createHarness();
     const sock = await h.connect();
     const result = await h.runtime.call("messages.sendText", {
@@ -177,7 +177,7 @@ describe("messages.sendText", () => {
     const failed = h.observedOfType("message.failed").map((event) => event.payload as Record<string, unknown>);
     expect(failed).toHaveLength(2);
     expect(failed[0]).toMatchObject({ chatId: DM, retryable: true });
-    expect(h.publishedOfType("message.failed")).toHaveLength(0);
+    expect(h.published.map((record) => record.event.type as string)).not.toContain("message.failed");
   });
 });
 
@@ -393,7 +393,7 @@ describe("groups", () => {
     "120363111111111111@g.us": { id: "120363111111111111@g.us", subject: "Outro", participants: [] },
   };
 
-  it("lists groups with search and limit (Omni record shape)", async () => {
+  it("lists groups with search and limit (group record shape)", async () => {
     const h = createHarness({ socket: { groups } });
     await h.connect();
     const all = await h.runtime.call("groups.list", {});

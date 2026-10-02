@@ -1,12 +1,12 @@
 /**
- * Native channel driver for WhatsApp (Baileys), registered in the `ravi channels`
- * runner next to Slack.
+ * Channel driver for WhatsApp (Baileys), registered in the `ravi channels` runner
+ * next to Slack.
  *
  * One runtime per enabled `channels` row with provider `whatsapp`. The row binds the
  * Ravi instance with the same name (or `defaults.instance`), whose
  * `instances.instance_id` UUID is the transport instance id
- * (`listNativeWhatsAppBindings`). The runtime publishes Omni-compatible inbound
- * envelopes on CHANNEL_INBOUND and answers the daemon/CLI over the NATS RPC
+ * (`listWhatsAppBindings`). The runtime publishes `WhatsAppInboundEvent`s (events.ts)
+ * on CHANNEL_INBOUND and answers the daemon/CLI over the NATS RPC
  * (`rpc-server.ts`); it does not use the Channel Backend, so the driver only
  * declares the `inbound` capability.
  *
@@ -33,13 +33,8 @@ import {
   type NativeChannelDriverRuntime,
   type NativeChannelRuntimeHealth,
 } from "../native/driver.js";
-import {
-  WHATSAPP_DRIVER_ID,
-  WHATSAPP_PROVIDER,
-  listNativeWhatsAppBindings,
-  type NativeWhatsAppBinding,
-} from "./contract.js";
-import type { WhatsAppNativeRuntimeOptions } from "./runtime.js";
+import { WHATSAPP_DRIVER_ID, WHATSAPP_PROVIDER, listWhatsAppBindings, type WhatsAppBinding } from "./contract.js";
+import type { WhatsAppRuntimeOptions } from "./runtime.js";
 import type { WhatsAppLibrary } from "./runtime-library.js";
 import {
   startWhatsAppRpcServer,
@@ -52,7 +47,7 @@ const log = logger.child("channels:whatsapp:driver");
 
 type BindingConfig = Pick<RouterConfig, "instances" | "channels" | "instanceToAccount">;
 
-/** The runtime surface the driver needs (`WhatsAppNativeRuntime` satisfies it). */
+/** The runtime surface the driver needs (`WhatsAppRuntime` satisfies it). */
 export interface WhatsAppDriverRuntime extends WhatsAppRpcDispatcher {
   start(): void;
   stop(): Promise<void>;
@@ -83,12 +78,12 @@ export const WhatsAppChannelDefaultsSchema = z
 
 export type WhatsAppChannelDefaults = z.infer<typeof WhatsAppChannelDefaultsSchema>;
 
-export type WhatsAppRuntimeFactoryOptions = Omit<WhatsAppNativeRuntimeOptions, "socketOptions"> & {
+export type WhatsAppRuntimeFactoryOptions = Omit<WhatsAppRuntimeOptions, "socketOptions"> & {
   /** Raw `defaults.whatsapp`; the default factory validates it with `WhatsAppConnectionOptionsSchema`. */
   socketOptions?: Record<string, unknown>;
 };
 
-export interface WhatsAppNativeChannelDriverOptions {
+export interface WhatsAppChannelDriverOptions {
   /** Live router config. Default: `configStore.getConfig()`. */
   readonly getConfig?: () => BindingConfig;
   /** NATS connection for the RPC server. Default: the runner's `getNats()`. */
@@ -97,7 +92,7 @@ export interface WhatsAppNativeChannelDriverOptions {
   readonly jetstream?: () => JetStreamClient;
   /**
    * Builds the runtime. Default: dynamic import of `runtime.ts` and
-   * `new WhatsAppNativeRuntime(options)` (socket options validated first).
+   * `new WhatsAppRuntime(options)` (socket options validated first).
    */
   readonly createRuntime?: (
     options: WhatsAppRuntimeFactoryOptions,
@@ -105,7 +100,7 @@ export interface WhatsAppNativeChannelDriverOptions {
   /** Loads the Baileys-backed library. Default: dynamic import of `runtime-library.ts`. */
   readonly loadLibrary?: () => Promise<WhatsAppLibrary>;
   /** Extra runtime options (tests: auth storage, timers, ...). */
-  readonly runtimeOptions?: Partial<Omit<WhatsAppNativeRuntimeOptions, "instanceId" | "jetstream" | "loadLibrary">>;
+  readonly runtimeOptions?: Partial<Omit<WhatsAppRuntimeOptions, "instanceId" | "jetstream" | "loadLibrary">>;
   /** Drain budget for in-flight RPCs on stop. */
   readonly rpcDrainTimeoutMs?: number;
 }
@@ -113,20 +108,17 @@ export interface WhatsAppNativeChannelDriverOptions {
 const defaultLoadLibrary = async (): Promise<WhatsAppLibrary> => (await import("./runtime-library.js")).whatsappLibrary;
 
 async function defaultCreateRuntime(options: WhatsAppRuntimeFactoryOptions): Promise<WhatsAppDriverRuntime> {
-  const { WhatsAppNativeRuntime, WhatsAppConnectionOptionsSchema } = await import("./runtime.js");
+  const { WhatsAppRuntime, WhatsAppConnectionOptionsSchema } = await import("./runtime.js");
   const socketOptions = WhatsAppConnectionOptionsSchema.safeParse(options.socketOptions ?? {});
   if (!socketOptions.success) {
     throw new NativeChannelDriverContractError("invalid_channel_configuration");
   }
-  return new WhatsAppNativeRuntime({ ...options, socketOptions: socketOptions.data });
+  return new WhatsAppRuntime({ ...options, socketOptions: socketOptions.data });
 }
 
-/** The binding a native WhatsApp channel resolves to in `config`, if any. */
-export function resolveWhatsAppChannelBinding(
-  config: BindingConfig,
-  channelName: string,
-): NativeWhatsAppBinding | undefined {
-  return listNativeWhatsAppBindings(config).find((binding) => binding.channel.name === channelName);
+/** The binding a WhatsApp channel resolves to in `config`, if any. */
+export function resolveWhatsAppChannelBinding(config: BindingConfig, channelName: string): WhatsAppBinding | undefined {
+  return listWhatsAppBindings(config).find((binding) => binding.channel.name === channelName);
 }
 
 /**
@@ -139,9 +131,7 @@ export function whatsappChannelBindingKey(config: BindingConfig, channelName: st
   return binding ? `${binding.accountName}:${binding.instanceId}` : "unbound";
 }
 
-export function createWhatsAppNativeChannelDriver(
-  options: WhatsAppNativeChannelDriverOptions = {},
-): NativeChannelDriver {
+export function createWhatsAppChannelDriver(options: WhatsAppChannelDriverOptions = {}): NativeChannelDriver {
   const descriptor = NativeChannelDriverDescriptorSchema.parse({
     protocol: NATIVE_CHANNEL_DRIVER_PROTOCOL,
     schemaVersion: NATIVE_CHANNEL_DRIVER_SCHEMA_VERSION,
@@ -271,11 +261,8 @@ export function createWhatsAppNativeChannelDriver(
   };
 }
 
-function resolveBinding(
-  getConfig: () => BindingConfig,
-  channel: NativeChannelDriverChannelConfig,
-): NativeWhatsAppBinding {
-  let binding: NativeWhatsAppBinding | undefined;
+function resolveBinding(getConfig: () => BindingConfig, channel: NativeChannelDriverChannelConfig): WhatsAppBinding {
+  let binding: WhatsAppBinding | undefined;
   try {
     binding = resolveWhatsAppChannelBinding(getConfig(), channel.name);
   } catch (error) {
@@ -293,3 +280,8 @@ function resolveBinding(
   }
   return binding;
 }
+
+/** @deprecated Use `createWhatsAppChannelDriver`. Deleted in WP-Z. */
+export const createWhatsAppNativeChannelDriver = createWhatsAppChannelDriver;
+/** @deprecated Use `WhatsAppChannelDriverOptions`. Deleted in WP-Z. */
+export type WhatsAppNativeChannelDriverOptions = WhatsAppChannelDriverOptions;
