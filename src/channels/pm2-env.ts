@@ -7,7 +7,7 @@ const RUNNER_ENV_KEYS = [
   "RAVI_SLACK_THREAD_REPLY_MODE",
   "RAVI_SLACK_ROOT_REPLY_MODE",
   "RAVI_SLACK_WORKING_REACTION",
-  // Native WhatsApp runtime tuning (src/channels/whatsapp/lib/env.ts and runtime.ts).
+  // WhatsApp runtime tuning (src/channels/whatsapp/lib/env.ts and runtime.ts).
   "WHATSAPP_HUMAN_DELAY_ENABLED",
   "WHATSAPP_HUMAN_DELAY_MIN_MS",
   "WHATSAPP_HUMAN_DELAY_MAX_MS",
@@ -23,7 +23,6 @@ const RUNNER_ENV_KEYS = [
   "WHATSAPP_PREWARM_SESSION_BATCH_SIZE",
   "WHATSAPP_AUTH_KEY_CACHE_MAX_ENTRIES",
   "WHATSAPP_MEDIA_MAX_DOWNLOAD_MB",
-  "OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB",
   "WHATSAPP_TRACK_GROUP_DECRYPT_FAILURES",
 ] as const;
 

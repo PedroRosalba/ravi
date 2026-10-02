@@ -6,6 +6,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promises as fs, createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,7 +114,7 @@ async function downloadToTemp(url: string): Promise<string> {
     throw new Error(`Failed to download audio: ${response.status} ${response.statusText}`);
   }
 
-  const tempPath = join(tmpdir(), `omni-audio-${Date.now()}-input`);
+  const tempPath = join(tmpdir(), `ravi-whatsapp-audio-${randomUUID()}-input`);
   const body = response.body;
   if (!body) {
     throw new Error("No response body");
@@ -134,7 +135,7 @@ async function downloadToTemp(url: string): Promise<string> {
  * @returns Path to converted OGG file
  */
 async function convertToOggOpus(inputPath: string): Promise<string> {
-  const outputPath = join(tmpdir(), `omni-audio-${Date.now()}-output.ogg`);
+  const outputPath = join(tmpdir(), `ravi-whatsapp-audio-${randomUUID()}-output.ogg`);
 
   return new Promise((resolve, reject) => {
     // ffmpeg command for WhatsApp-compatible voice note:
@@ -264,7 +265,7 @@ export async function convertBufferForVoiceNote(
 
   try {
     // Write buffer to temp file
-    inputPath = join(tmpdir(), `omni-audio-${Date.now()}-input`);
+    inputPath = join(tmpdir(), `ravi-whatsapp-audio-${randomUUID()}-input`);
     await fs.writeFile(inputPath, buffer);
 
     // Convert to OGG/OPUS

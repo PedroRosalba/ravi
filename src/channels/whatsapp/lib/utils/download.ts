@@ -27,10 +27,10 @@ const DEFAULT_WHATSAPP_MEDIA_MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2Gi
  * upload limits. We preserve what WhatsApp delivered; processors can
  * transcode/downsample before calling model providers.
  *
- * Override: `WHATSAPP_MEDIA_MAX_DOWNLOAD_MB` (ravi) or `OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB` (Omni name, still honoured).
+ * Override: `WHATSAPP_MEDIA_MAX_DOWNLOAD_MB` (MiB).
  */
 export function getWhatsAppMediaDownloadMaxBytes(): number {
-  const overrideMb = process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB || process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB;
+  const overrideMb = process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB;
   if (!overrideMb) return DEFAULT_WHATSAPP_MEDIA_MAX_DOWNLOAD_BYTES;
 
   const parsed = Number.parseInt(overrideMb, 10);
