@@ -1,5 +1,8 @@
-import { describe, expect, it } from "bun:test";
-import { consumerSourcesFor, createDaemonChannelWiring } from "./channel-wiring.js";
+import { describe, expect, it, spyOn } from "bun:test";
+import { ChannelInboundPipeline } from "../channels/inbound/pipeline.js";
+import { WhatsAppInboundSource } from "../channels/whatsapp/inbound-source.js";
+import { createDaemonChannelWiring } from "./channel-wiring.js";
+import { OmniLegacyInboundSource } from "./inbound-source.js";
 
 const NATIVE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
@@ -22,36 +25,60 @@ function nativeConfig() {
   };
 }
 
-describe("createDaemonChannelWiring", () => {
-  it("consumes only native transports and routes through the native client when Omni is not configured", () => {
+describe("createDaemonChannelWiring (interim)", () => {
+  it("wires only the WhatsApp source and routes through the native client when Omni is not configured", () => {
     const wiring = createDaemonChannelWiring({ omni: null, transport: { getConfig: nativeConfig } });
 
-    expect(wiring.sources).toEqual(["native"]);
+    expect(wiring.sources.map((source) => source.id)).toEqual(["whatsapp"]);
+    expect(wiring.sources[0]).toBeInstanceOf(WhatsAppInboundSource);
     expect(wiring.client.hasOmni()).toBe(false);
     expect(wiring.sender.getClient()).toBe(wiring.client);
     expect(wiring.sender.getNativeWhatsApp()).toBe(wiring.client.native);
     expect(wiring.client.native.isNativeInstance(NATIVE_ID)).toBe(true);
-    expect(wiring.consumer["omniApiUrl"]).toBeNull();
-    expect(wiring.consumer["options"].sources).toEqual(["native"]);
-    expect(wiring.consumer["options"].nativeWhatsApp).toBe(wiring.client.native);
+    expect(wiring.pipeline).toBeInstanceOf(ChannelInboundPipeline);
+    expect(wiring.pipeline["sender"]).toBe(wiring.sender);
   });
 
-  it("adds the Omni source and client when Omni is configured", () => {
+  it("adds the legacy bridge source when Omni is configured, sharing one pipeline", () => {
     const wiring = createDaemonChannelWiring({
       omni: { apiUrl: "http://omni.local", apiKey: "key", source: "env" },
       transport: { getConfig: nativeConfig },
-      consumer: { isRuntimeSessionActive: () => true },
+      pipeline: { isRuntimeSessionActive: () => true },
     });
 
-    expect(wiring.sources).toEqual(["native", "omni"]);
+    expect(wiring.sources.map((source) => source.id)).toEqual(["whatsapp", "omni"]);
+    expect(wiring.sources[1]).toBeInstanceOf(OmniLegacyInboundSource);
     expect(wiring.client.hasOmni()).toBe(true);
-    expect(wiring.consumer["omniApiUrl"]).toBe("http://omni.local");
-    expect(wiring.consumer["omniApiKey"]).toBe("key");
-    expect(wiring.consumer["options"].isRuntimeSessionActive?.("s")).toBe(true);
+    const [whatsapp, omni] = wiring.sources as [WhatsAppInboundSource, OmniLegacyInboundSource];
+    expect(whatsapp["handler"]).toBe(wiring.pipeline);
+    expect(omni["handler"]).toBe(wiring.pipeline);
+    expect(wiring.pipeline["options"].isRuntimeSessionActive?.("s")).toBe(true);
   });
 
-  it("derives sources from the Omni connection", () => {
-    expect(consumerSourcesFor(null)).toEqual(["native"]);
-    expect(consumerSourcesFor({ apiUrl: "u", apiKey: "k", source: "env" })).toEqual(["native", "omni"]);
+  it("starts every source even when one fails, and stops sources before the pipeline", async () => {
+    const wiring = createDaemonChannelWiring({ omni: { apiUrl: "u", apiKey: "k", source: "env" } });
+    const order: string[] = [];
+    const [whatsapp, omni] = wiring.sources;
+    if (!whatsapp || !omni) throw new Error("expected two sources");
+    spyOn(whatsapp, "start").mockImplementation(async () => {
+      throw new Error("nats down");
+    });
+    spyOn(omni, "start").mockImplementation(async () => {
+      order.push("omni.start");
+    });
+    spyOn(whatsapp, "stop").mockImplementation(async () => {
+      order.push("whatsapp.stop");
+    });
+    spyOn(omni, "stop").mockImplementation(async () => {
+      order.push("omni.stop");
+    });
+    spyOn(wiring.pipeline, "stop").mockImplementation(async () => {
+      order.push("pipeline.stop");
+    });
+
+    await wiring.start();
+    await wiring.stop();
+
+    expect(order).toEqual(["omni.start", "whatsapp.stop", "omni.stop", "pipeline.stop"]);
   });
 });

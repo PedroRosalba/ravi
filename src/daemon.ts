@@ -22,8 +22,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { RaviBot } from "./bot.js";
 import { createGateway } from "./gateway.js";
-import type { OmniConsumer } from "./omni/index.js";
-import { createDaemonChannelWiring } from "./omni/channel-wiring.js";
+import { createDaemonChannelWiring, type DaemonChannelWiring } from "./omni/channel-wiring.js";
 
 import { loadConfig } from "./utils/config.js";
 import { connectNats, closeNats } from "./nats.js";
@@ -200,7 +199,7 @@ let bot: RaviBot | null = null;
 let gateway: ReturnType<typeof createGateway> | null = null;
 let sessionAdapterBus: ReturnType<typeof createSessionAdapterBus> | null = null;
 let shuttingDown = false;
-let omniConsumer: OmniConsumer | null = null;
+let channelWiring: DaemonChannelWiring | null = null;
 let webhookHttpServer: WebhookHttpServerHandle | null = null;
 let hostCliGateway: HostCliGatewayHandle | null = null;
 let workObjectNatsService: WorkObjectNatsServiceHandle | null = null;
@@ -287,9 +286,9 @@ async function shutdown(signal: string, exitCode = 0) {
       hostCliGateway = null;
     }
 
-    // Stop omni consumer
-    if (omniConsumer) {
-      await omniConsumer.stop();
+    // Stop inbound sources and the channel pipeline
+    if (channelWiring) {
+      await channelWiring.stop();
     }
 
     // Stop config store refresh
@@ -360,28 +359,25 @@ export async function startDaemon() {
   await bot.start();
   log.info("Bot started");
 
-  // Step 6: Set up the channel transport client + sender + consumer + gateway.
-  // The consumer always reads native transports (CHANNEL_INBOUND); Omni streams only when configured.
-  const channelWiring = createDaemonChannelWiring({
+  // Step 6: Set up the channel sender, the shared inbound pipeline + sources, and the gateway.
+  // INTERIM (WP-A task 4 replaces this with createDaemonChannels): the WhatsApp runner source
+  // always runs; the legacy bridge source only when Omni is configured.
+  const wiring = createDaemonChannelWiring({
     omni: omniConn,
-    consumer: {
+    pipeline: {
       isRuntimeSessionActive: (sessionName) => bot?.isRuntimeSessionActive(sessionName) ?? false,
       abortRuntimeSession: (sessionName, provenance) => bot?.abortSession(sessionName, provenance) ?? false,
     },
   });
-  omniConsumer = channelWiring.consumer;
+  channelWiring = wiring;
 
-  try {
-    await omniConsumer.start();
-    log.info("Channel consumer started", { sources: channelWiring.sources });
-  } catch (err) {
-    log.error("Failed to start channel consumer", err);
-  }
+  await wiring.start();
+  log.info("Channel inbound sources started", { sources: wiring.sources.map((source) => source.id) });
 
   gateway = createGateway({
     logLevel: config.logLevel,
-    sender: channelWiring.sender,
-    presenceTargets: omniConsumer,
+    sender: wiring.sender,
+    presenceTargets: wiring.pipeline,
     groupMetadataFetcher: createWhatsAppGroupMetadataFetcher(createWhatsAppClient()),
   });
 

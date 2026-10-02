@@ -1,5 +1,5 @@
 /**
- * Tests for the resolvePolicy logic in consumer.ts.
+ * Tests for the resolvePolicy logic in pipeline.ts.
  *
  * Since resolvePolicy is a private inline function inside handleMessage,
  * we replicate its exact logic here and test the priority hierarchy:
@@ -13,8 +13,8 @@
  */
 
 import { describe, it, expect, beforeEach } from "bun:test";
-import type { RouterConfig } from "../router/types.js";
-import type { InstanceConfig } from "../router/router-db.js";
+import type { RouterConfig } from "../../router/types.js";
+import type { InstanceConfig } from "../../router/router-db.js";
 
 // ============================================================================
 // Local settings store (no DB needed — resolvePolicy accepts getSetting as param)
@@ -27,7 +27,7 @@ let settingsStore: Record<string, string> = {};
 // ============================================================================
 
 /**
- * Mirrors consumer.ts resolvePolicy exactly.
+ * Mirrors pipeline.ts resolvePolicy exactly.
  */
 function resolvePolicy(
   policyName: "groupPolicy" | "dmPolicy",

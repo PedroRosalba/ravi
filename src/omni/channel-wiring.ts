@@ -1,51 +1,90 @@
 /**
- * Daemon channel wiring: one routing transport client, one sender and one consumer
- * for every bridge-compatible channel transport.
+ * INTERIM daemon channel wiring (WP-A tasks 1-3). Replaced by `src/daemon-channels.ts`
+ * (`createDaemonChannels`, WP-A task 4), which also deletes this file.
  *
- * - The routing client sends calls for natively-owned WhatsApp instances to the
- *   `ravi channels` runner over NATS RPC and everything else to Omni (when configured).
- * - The consumer always reads the native CHANNEL_INBOUND source; the Omni streams are
- *   added only when Omni is configured. Native WhatsApp therefore works with no Omni.
+ * - Outbound is unchanged: one routing transport client (WhatsApp runner RPC for bound
+ *   WhatsApp instances, Omni otherwise) behind `OmniSender`.
+ * - Inbound is the new shape: one `ChannelInboundPipeline` shared by the WhatsApp runner
+ *   source and, when Omni is configured, the legacy bridge source. Sources start in parallel.
  */
 
+import { ChannelInboundPipeline, type ChannelInboundPipelineOptions } from "../channels/inbound/pipeline.js";
+import type { ChannelInboundSource } from "../channels/inbound/types.js";
+import { createWhatsAppClient, type CreateWhatsAppClientOptions } from "../channels/whatsapp/client.js";
+import { WhatsAppInboundSource, type WhatsAppInboundSourceOptions } from "../channels/whatsapp/inbound-source.js";
 import {
   createChannelTransportClient,
   type ChannelTransportClient,
   type ChannelTransportClientOptions,
 } from "../channels/whatsapp/transport-client.js";
 import type { OmniConnection } from "../omni-config.js";
+import { logger } from "../utils/logger.js";
 import { createOmniClient } from "./client.js";
-import { OmniConsumer, type OmniConsumerOptions, type OmniConsumerSource } from "./consumer.js";
+import { OmniLegacyInboundSource } from "./inbound-source.js";
 import { OmniSender } from "./sender.js";
+
+const log = logger.child("omni:channel-wiring");
 
 export interface DaemonChannelWiringInput {
   /** Resolved Omni connection, or null when Omni is not configured. */
   omni: OmniConnection | null;
-  consumer?: Pick<OmniConsumerOptions, "isRuntimeSessionActive" | "abortRuntimeSession">;
+  pipeline?: Pick<ChannelInboundPipelineOptions, "isRuntimeSessionActive" | "abortRuntimeSession">;
   /** Test seam: extra routing-client options (config source, NATS connection). */
   transport?: Omit<ChannelTransportClientOptions, "omni">;
+  /** Test seam: WhatsApp RPC client options (group metadata refresh). */
+  whatsappClient?: CreateWhatsAppClientOptions;
+  /** Test seam: NATS connection for both inbound sources. */
+  natsConnection?: WhatsAppInboundSourceOptions["natsConnection"];
 }
 
 export interface DaemonChannelWiring {
   client: ChannelTransportClient;
   sender: OmniSender;
-  consumer: OmniConsumer;
-  sources: OmniConsumerSource[];
-}
-
-export function consumerSourcesFor(omni: OmniConnection | null): OmniConsumerSource[] {
-  return omni ? ["native", "omni"] : ["native"];
+  pipeline: ChannelInboundPipeline;
+  sources: ChannelInboundSource[];
+  /** Starts every source in parallel; a failing source is logged and does not stop the others. */
+  start(): Promise<void>;
+  /** Stops the sources, then the pipeline. */
+  stop(): Promise<void>;
 }
 
 export function createDaemonChannelWiring(input: DaemonChannelWiringInput): DaemonChannelWiring {
   const omniClient = input.omni ? createOmniClient({ baseUrl: input.omni.apiUrl, apiKey: input.omni.apiKey }) : null;
   const client = createChannelTransportClient({ ...input.transport, omni: omniClient });
   const sender = new OmniSender(client);
-  const sources = consumerSourcesFor(input.omni);
-  const consumer = new OmniConsumer(sender, input.omni?.apiUrl ?? null, input.omni?.apiKey ?? null, {
-    ...input.consumer,
+  const pipeline = new ChannelInboundPipeline(sender, { ...input.pipeline });
+  const sources: ChannelInboundSource[] = [
+    new WhatsAppInboundSource(pipeline, {
+      client: createWhatsAppClient(input.whatsappClient),
+      natsConnection: input.natsConnection,
+    }),
+  ];
+  if (input.omni) {
+    sources.push(
+      new OmniLegacyInboundSource(pipeline, {
+        apiUrl: input.omni.apiUrl,
+        apiKey: input.omni.apiKey,
+        natsConnection: input.natsConnection,
+      }),
+    );
+  }
+
+  return {
+    client,
+    sender,
+    pipeline,
     sources,
-    nativeWhatsApp: client.native,
-  });
-  return { client, sender, consumer, sources };
+    async start() {
+      const results = await Promise.allSettled(sources.map((source) => source.start()));
+      results.forEach((result, index) => {
+        if (result.status === "rejected") {
+          log.error("Failed to start inbound source", { source: sources[index]?.id, error: result.reason });
+        }
+      });
+    },
+    async stop() {
+      await Promise.allSettled(sources.map((source) => source.stop()));
+      await pipeline.stop();
+    },
+  };
 }
