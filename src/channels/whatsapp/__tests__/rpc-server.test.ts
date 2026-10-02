@@ -158,6 +158,12 @@ describe("WhatsApp RPC request handling", () => {
       status: 429,
       code: "RATE_LIMITED",
     });
+    expect(toRpcError(new WhatsAppRuntimeError("RATE_LIMITED", "slow down", { retryAfterMs: 1500.2 }))).toEqual({
+      message: "slow down",
+      status: 429,
+      code: "RATE_LIMITED",
+      retryAfterMs: 1501,
+    });
     expect(toRpcError(Object.assign(new Error("gone"), { status: 404, code: "NOT_FOUND" }))).toEqual({
       message: "gone",
       status: 404,

@@ -2409,6 +2409,15 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     return this.rateLimiter;
   }
 
+  /**
+   * Feed a send failure to the rate limiter. For a rate-limit error, returns the backoff
+   * the caller should wait (sent as `retryAfterMs` on the RATE_LIMITED RPC error).
+   */
+  private recordRateLimit(limiter: RateLimitManager, error: unknown): number | undefined {
+    if (!isRateLimitError(error)) return undefined;
+    return limiter.handleRateLimit(error, 0);
+  }
+
   private async waitForRateLimitBackoff(): Promise<RateLimitManager> {
     const limiter = this.getRateLimiter();
     const remaining = limiter.getRemainingBackoff();
@@ -2570,8 +2579,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
       if (options.sent && options.original) this.emitMessageSent(messageId, jid, options.original, options.sent);
       return messageId;
     } catch (error) {
-      if (isRateLimitError(error)) rateLimiter.handleRateLimit(error, 0);
-      const mapped = toWhatsAppRuntimeError(error);
+      const mapped = toWhatsAppRuntimeError(error, { retryAfterMs: this.recordRateLimit(rateLimiter, error) });
       this.emitObserved("message.failed", {
         chatId: jid,
         error: mapped.message,
@@ -2767,17 +2775,16 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
       rateLimiter.reset();
       return { messageId: reactionId ?? "", success: true };
     } catch (error) {
-      if (isRateLimitError(error)) rateLimiter.handleRateLimit(error, 0);
-      throw toWhatsAppRuntimeError(error);
+      throw toWhatsAppRuntimeError(error, { retryAfterMs: this.recordRateLimit(rateLimiter, error) });
     }
   }
 
   /** `messages.edit`: edit one of our messages (ported `editMessage`, fromMe). */
-  async editMessage(channelId: string, messageId: string, text: string): Promise<void> {
+  async editMessage(chatId: string, messageId: string, text: string): Promise<void> {
     const sock = this.requireSocket();
     await this.humanDelay();
     const own = this.ownMessages.get(messageId);
-    const jid = own?.remoteJid ?? normalizeChatTarget(channelId);
+    const jid = own?.remoteJid ?? normalizeChatTarget(chatId);
     const editKey: proto.IMessageKey = { remoteJid: jid, id: messageId, fromMe: true };
     // Group chats need the participant to identify the sender.
     if (isGroupJid(jid)) editKey.participant = sock.user?.id;
@@ -2797,12 +2804,12 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
   }
 
   /** `messages.delete`: delete for everyone. */
-  async deleteMessage(channelId: string, messageId: string): Promise<void> {
+  async deleteMessage(chatId: string, messageId: string): Promise<void> {
     const sock = this.requireSocket();
     await this.humanDelay();
     const own = this.ownMessages.get(messageId);
     const known = this.messageKeys.get(messageId);
-    const jid = own?.remoteJid ?? known?.remoteJid ?? normalizeChatTarget(channelId);
+    const jid = own?.remoteJid ?? known?.remoteJid ?? normalizeChatTarget(chatId);
     const fromMe = own ? true : (known?.fromMe ?? true);
     const key: proto.IMessageKey = {
       remoteJid: jid,

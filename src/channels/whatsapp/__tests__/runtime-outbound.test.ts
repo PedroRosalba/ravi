@@ -157,6 +157,47 @@ describe("messages.sendText", () => {
     });
   });
 
+  it("RATE_LIMITED errors carry retryAfterMs (explicit retry_after or the runtime's backoff) to the RPC error", async () => {
+    const h = createHarness();
+    const sock = await h.connect();
+    sock.fake.sendMessage.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("rate-overlimit"), { output: { statusCode: 429 }, retryAfter: 7 });
+    });
+    const explicit = await h.runtime.call("messages.sendText", { to: DM, text: "a" }).catch((error: unknown) => error);
+    expect(explicit).toBeInstanceOf(WhatsAppRuntimeError);
+    expect((explicit as WhatsAppRuntimeError).toRpcError()).toEqual({
+      message: "rate-overlimit",
+      status: 429,
+      code: "RATE_LIMITED",
+      retryAfterMs: 7_000,
+    });
+
+    // No explicit delay: the exponential backoff the runtime itself waits before its next send.
+    sock.fake.sendMessage.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("rate-overlimit"), { output: { statusCode: 429 } });
+    });
+    const backoff = await h.runtime.call("messages.sendText", { to: DM, text: "b" }).catch((error: unknown) => error);
+    const body = (backoff as WhatsAppRuntimeError).toRpcError();
+    expect(body.code).toBe("RATE_LIMITED");
+    expect(body.retryAfterMs).toBeGreaterThan(0);
+
+    // Reactions report it too.
+    sock.fake.sendMessage.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("rate-overlimit"), { output: { statusCode: 429 }, retryAfter: 2 });
+    });
+    await expect(h.runtime.call("messages.react", { to: DM, messageId: "X", emoji: "👍" })).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+      retryAfterMs: 2_000,
+    });
+
+    // Other failures have none.
+    sock.fake.sendMessage.mockImplementationOnce(async () => {
+      throw new Error("socket hang up");
+    });
+    const other = await h.runtime.call("messages.sendText", { to: DM, text: "c" }).catch((error: unknown) => error);
+    expect((other as WhatsAppRuntimeError).toRpcError()).not.toHaveProperty("retryAfterMs");
+  });
+
   it("maps rate limits to 429 RATE_LIMITED and other failures to 502, observing message.failed", async () => {
     const h = createHarness();
     const sock = await h.connect();

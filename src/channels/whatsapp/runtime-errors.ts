@@ -31,12 +31,15 @@ export interface WhatsAppRuntimeErrorOptions {
   cause?: unknown;
   /** WhatsApp channel error code (`WHATSAPP_SEND_FAILED`, ...), kept for logs. */
   channelCode?: ErrorCodeType;
+  /** Minimum wait before a retry (RATE_LIMITED: the runtime's current backoff). */
+  retryAfterMs?: number;
 }
 
 export class WhatsAppRuntimeError extends Error {
   readonly status: number;
   readonly code: WhatsAppRuntimeErrorCode;
   readonly channelCode?: ErrorCodeType;
+  readonly retryAfterMs?: number;
 
   constructor(code: WhatsAppRuntimeErrorCode, message: string, options: WhatsAppRuntimeErrorOptions = {}) {
     super(message);
@@ -44,12 +47,20 @@ export class WhatsAppRuntimeError extends Error {
     this.code = code;
     this.status = WHATSAPP_RUNTIME_ERROR_STATUS[code];
     if (options.channelCode) this.channelCode = options.channelCode;
+    if (options.retryAfterMs !== undefined && Number.isFinite(options.retryAfterMs) && options.retryAfterMs >= 0) {
+      this.retryAfterMs = Math.ceil(options.retryAfterMs);
+    }
     if (options.cause !== undefined) this.cause = options.cause;
   }
 
   /** The `error` member of a failed `WhatsAppRpcResponse`. */
   toRpcError(): WhatsAppRpcErrorBody {
-    return { message: this.message, status: this.status, code: this.code };
+    return {
+      message: this.message,
+      status: this.status,
+      code: this.code,
+      ...(this.retryAfterMs !== undefined ? { retryAfterMs: this.retryAfterMs } : {}),
+    };
   }
 }
 
@@ -80,7 +91,7 @@ const CHANNEL_CODE_TO_RUNTIME: Partial<Record<ErrorCodeType, WhatsAppRuntimeErro
  *   invalid JID/phone becomes 400, everything else is 502 `TRANSPORT_ERROR` (the
  *   ported REST API answered every failed send with 502 `CHANNEL_SEND_FAILED`).
  */
-export function toWhatsAppRuntimeError(error: unknown): WhatsAppRuntimeError {
+export function toWhatsAppRuntimeError(error: unknown, options: { retryAfterMs?: number } = {}): WhatsAppRuntimeError {
   if (error instanceof WhatsAppRuntimeError) return error;
   if (error instanceof ZodError) {
     return invalidRequest(error.issues.map((issue) => issue.message).join("; ") || "invalid params", error);
@@ -89,11 +100,16 @@ export function toWhatsAppRuntimeError(error: unknown): WhatsAppRuntimeError {
     return new WhatsAppRuntimeError(WHATSAPP_RPC_ERROR_CODES.rateLimited, errorMessage(error), {
       cause: error,
       channelCode: WhatsAppChannelErrorCode.RATE_LIMITED,
+      retryAfterMs: options.retryAfterMs,
     });
   }
   const mapped = mapBaileysError(error);
   const code = CHANNEL_CODE_TO_RUNTIME[mapped.channelCode] ?? WHATSAPP_RPC_ERROR_CODES.transportError;
-  return new WhatsAppRuntimeError(code, mapped.message, { cause: error, channelCode: mapped.channelCode });
+  return new WhatsAppRuntimeError(code, mapped.message, {
+    cause: error,
+    channelCode: mapped.channelCode,
+    ...(code === WHATSAPP_RPC_ERROR_CODES.rateLimited ? { retryAfterMs: options.retryAfterMs } : {}),
+  });
 }
 
 export function errorMessage(error: unknown): string {
