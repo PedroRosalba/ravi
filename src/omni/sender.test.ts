@@ -2,45 +2,9 @@ import { afterEach, describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { WhatsAppRpcRequestSchema, type WhatsAppRpcRequest } from "../channels/whatsapp/contract.js";
-import type { WhatsAppRpcConnection } from "../channels/whatsapp/rpc-client.js";
-import { createChannelTransportClient } from "../channels/whatsapp/transport-client.js";
+import type { ChannelMessageSender } from "../channels/outbound/sender.js";
 import { createOmniClient } from "./client.js";
 import { OmniSender } from "./sender.js";
-
-const NATIVE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-
-function nativeConfig() {
-  return {
-    instances: {
-      "wa-native": {
-        name: "wa-native",
-        instanceId: NATIVE_ID,
-        channel: "whatsapp",
-        dmPolicy: "open" as const,
-        groupPolicy: "open" as const,
-        contactIntakeMode: "off" as const,
-        createdAt: 0,
-        updatedAt: 0,
-      },
-    },
-    channels: { "wa-native": { name: "wa-native", provider: "whatsapp", enabled: true, createdAt: 0, updatedAt: 0 } },
-    instanceToAccount: { [NATIVE_ID]: "wa-native" },
-  };
-}
-
-function fakeRunner(replies: Array<(request: WhatsAppRpcRequest) => unknown>) {
-  const requests: WhatsAppRpcRequest[] = [];
-  const connection: WhatsAppRpcConnection = {
-    async request(_subject, data) {
-      const request = WhatsAppRpcRequestSchema.parse(JSON.parse(new TextDecoder().decode(data)));
-      requests.push(request);
-      const reply = replies[Math.min(requests.length - 1, replies.length - 1)]!;
-      return { data: new TextEncoder().encode(JSON.stringify(reply(request))) };
-    },
-  };
-  return { connection, requests };
-}
 
 function withTempFile(name: string, contents: string, run: (path: string) => Promise<void>) {
   const dir = mkdtempSync(join(tmpdir(), "ravi-omni-sender-"));
@@ -51,20 +15,59 @@ function withTempFile(name: string, contents: string, run: (path: string) => Pro
 
 const originalFetch = globalThis.fetch;
 
-describe("OmniSender", () => {
+type FetchReply = () => Response | Promise<Response>;
+
+/** Fake Omni HTTP API: one reply per call (the last one repeats); records the JSON bodies. */
+function fakeOmni(replies: FetchReply[]) {
+  const bodies: Array<Record<string, unknown>> = [];
+  const urls: string[] = [];
+  globalThis.fetch = mock(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    urls.push(String(input));
+    bodies.push(init?.body ? JSON.parse(String(init.body)) : {});
+    const reply = replies[Math.min(bodies.length - 1, replies.length - 1)]!;
+    return reply();
+  }) as unknown as typeof fetch;
+  return { bodies, urls };
+}
+
+const ok =
+  (data: Record<string, unknown>): FetchReply =>
+  () =>
+    Response.json({ data });
+const fail =
+  (status: number): FetchReply =>
+  () =>
+    Response.json({ error: { message: `HTTP ${status}` } }, { status });
+const networkError: FetchReply = () => {
+  throw new TypeError("fetch failed");
+};
+
+function sender() {
+  const sleeps: number[] = [];
+  const instance = new OmniSender("http://omni.local", "test-key", {
+    retry: {
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    },
+  });
+  return { sender: instance, sleeps };
+}
+
+describe("OmniSender (legacy bridge)", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
   });
 
-  it("passes mentions through to Omni message send", async () => {
-    const bodies: unknown[] = [];
-    globalThis.fetch = mock(async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      return Response.json({ data: { messageId: "msg-1", status: "sent" } });
-    }) as unknown as typeof fetch;
+  it("is a ChannelMessageSender", () => {
+    const channelSender: ChannelMessageSender = new OmniSender("http://omni.local", "test-key");
+    expect(typeof channelSender.send).toBe("function");
+  });
 
-    const sender = new OmniSender("http://omni.local", "test-key");
-    const result = await sender.send("instance-1", "120363@g.us", "@91015272759397 oi", {
+  it("passes mentions through to Omni message send", async () => {
+    const { bodies } = fakeOmni([ok({ messageId: "msg-1", status: "sent" })]);
+
+    const result = await sender().sender.send("instance-1", "120363@g.us", "@91015272759397 oi", {
       threadId: "thread-1",
       mentions: [{ id: "91015272759397@lid", type: "user" }],
     });
@@ -79,16 +82,12 @@ describe("OmniSender", () => {
     });
   });
 
-  it("sends Omni media with base64 plus the absolute filePath", async () => {
-    const bodies: Array<Record<string, unknown>> = [];
-    globalThis.fetch = mock(async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      return Response.json({ data: { messageId: "media-1", status: "sent" } });
-    }) as unknown as typeof fetch;
+  it("always sends media and stickers as base64 plus the absolute filePath (relative paths resolve against cwd)", async () => {
+    const { bodies } = fakeOmni([ok({ messageId: "media-1", status: "sent" })]);
 
     await withTempFile("photo.png", "png-bytes", async (path) => {
-      const sender = new OmniSender("http://omni.local", "test-key");
-      const result = await sender.sendMedia(
+      const { sender: omni } = sender();
+      const result = await omni.sendMedia(
         "instance-1",
         "120363@g.us",
         relative(process.cwd(), path),
@@ -96,7 +95,7 @@ describe("OmniSender", () => {
         "photo.png",
       );
       expect(result).toEqual({ messageId: "media-1" });
-      await sender.sendSticker("instance-1", "120363@g.us", path);
+      await omni.sendSticker("instance-1", "120363@g.us", path);
       expect(bodies[0]).toMatchObject({
         instanceId: "instance-1",
         type: "image",
@@ -108,88 +107,64 @@ describe("OmniSender", () => {
     });
   });
 
-  it("can be built from an existing client", async () => {
-    const bodies: unknown[] = [];
-    globalThis.fetch = mock(async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      return Response.json({ data: { messageId: "msg-2", status: "sent" } });
-    }) as unknown as typeof fetch;
-    const client = createOmniClient({ baseUrl: "http://omni.local", apiKey: "k" });
-    const sender = new OmniSender(client);
-    expect(sender.getClient()).toBe(client);
-    expect(await sender.send("instance-1", "5511@s.whatsapp.net", "oi")).toEqual({ messageId: "msg-2" });
-    expect(bodies).toHaveLength(1);
+  it("retries 5xx and network errors on send/reaction/edit/delete (3 attempts, 1s then 2s)", async () => {
+    const { bodies } = fakeOmni([fail(503), networkError, ok({ messageId: "msg-3", status: "sent" })]);
+    const { sender: omni, sleeps } = sender();
+
+    expect(await omni.send("instance-1", "5511@s.whatsapp.net", "oi")).toEqual({ messageId: "msg-3" });
+    expect(bodies).toHaveLength(3);
+    expect(sleeps).toEqual([1000, 2000]);
+
+    for (const run of [
+      () => omni.sendReaction("instance-1", "chat", "m1", "👍"),
+      () => omni.editMessage("instance-1", "chat", "m1", "edited"),
+      () => omni.deleteMessage("instance-1", "chat", "m1"),
+    ]) {
+      const calls = fakeOmni([fail(502), ok({ success: true })]);
+      await run();
+      expect(calls.bodies).toHaveLength(2);
+    }
   });
 
-  it("sends native media by filePath only", async () => {
-    const { connection, requests } = fakeRunner([
-      (request) => ({ ok: true, requestId: request.requestId, data: { messageId: "BAE5", status: "sent" } }),
-    ]);
-    const sender = new OmniSender(createChannelTransportClient({ omni: null, getConfig: nativeConfig, connection }));
+  it("gives up after 3 attempts and does not retry 4xx", async () => {
+    const failing = fakeOmni([fail(500)]);
+    const { sender: omni } = sender();
+    await expect(omni.send("instance-1", "chat", "oi")).rejects.toMatchObject({ status: 500 });
+    expect(failing.bodies).toHaveLength(3);
 
-    await withTempFile("note.ogg", "audio-bytes", async (path) => {
-      expect(
-        await sender.sendMedia(NATIVE_ID, "5511@s.whatsapp.net", path, "audio", "note.ogg", undefined, true),
-      ).toEqual({
-        messageId: "BAE5",
+    const rejecting = fakeOmni([fail(404)]);
+    await expect(omni.deleteMessage("instance-1", "chat", "m1")).rejects.toMatchObject({ status: 404 });
+    expect(rejecting.bodies).toHaveLength(1);
+  });
+
+  it("does not retry media or stickers", async () => {
+    await withTempFile("clip.mp4", "video", async (path) => {
+      const calls = fakeOmni([fail(503)]);
+      const { sender: omni } = sender();
+      await expect(omni.sendMedia("instance-1", "chat", path, "video", "clip.mp4")).rejects.toMatchObject({
+        status: 503,
       });
-      await sender.sendSticker("wa-native", "5511@s.whatsapp.net", path);
+      await expect(omni.sendSticker("instance-1", "chat", path)).rejects.toMatchObject({ status: 503 });
+      expect(calls.bodies).toHaveLength(2);
     });
-
-    expect(requests[0]!.method).toBe("messages.sendMedia");
-    expect(requests[0]!.params).toMatchObject({ to: "5511@s.whatsapp.net", type: "audio", voiceNote: true });
-    expect(requests[0]!.params).not.toHaveProperty("base64");
-    expect(String((requests[0]!.params as { filePath: string }).filePath)).toEndWith("note.ogg");
-    expect(requests[1]!.method).toBe("messages.sendSticker");
-    expect(requests[1]!.params).not.toHaveProperty("base64");
   });
 
-  it("retries native 5xx runner errors and not 4xx ones", async () => {
-    const notConnected = (request: WhatsAppRpcRequest) => ({
-      ok: false,
-      requestId: request.requestId,
-      error: { status: 503, code: "NOT_CONNECTED", message: "socket down" },
-    });
-    const sent = (request: WhatsAppRpcRequest) => ({
-      ok: true,
-      requestId: request.requestId,
-      data: { messageId: "BAE6", status: "sent" },
-    });
-    const retrying = fakeRunner([notConnected, sent]);
-    const sender = new OmniSender(
-      createChannelTransportClient({ omni: null, getConfig: nativeConfig, connection: retrying.connection }),
-    );
-    expect(await sender.send(NATIVE_ID, "x@g.us", "hi")).toEqual({ messageId: "BAE6" });
-    expect(retrying.requests).toHaveLength(2);
+  it("never throws from sendTyping or markRead", async () => {
+    const calls = fakeOmni([fail(500)]);
+    const { sender: omni } = sender();
 
-    const rejecting = fakeRunner([
-      (request) => ({
-        ok: false,
-        requestId: request.requestId,
-        error: { status: 404, code: "NOT_FOUND", message: "unknown chat" },
-      }),
-    ]);
-    const strict = new OmniSender(
-      createChannelTransportClient({ omni: null, getConfig: nativeConfig, connection: rejecting.connection }),
-    );
-    await expect(strict.send(NATIVE_ID, "x@g.us", "hi")).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
-    expect(rejecting.requests).toHaveLength(1);
+    await expect(omni.sendTyping("instance-1", "chat", true)).resolves.toBeUndefined();
+    await expect(omni.sendTyping("instance-1", "chat", false)).resolves.toBeUndefined();
+    await expect(omni.markRead("instance-1", "chat", ["m1"])).resolves.toBeUndefined();
+    expect(calls.bodies[0]).toMatchObject({ type: "typing", duration: 30_000 });
+    expect(calls.bodies[1]).toMatchObject({ type: "paused", duration: 0 });
   });
 
-  it("exposes the native WhatsApp transport only for routing clients", () => {
-    const client = createChannelTransportClient({ omni: null, getConfig: nativeConfig });
-    expect(new OmniSender(client).getNativeWhatsApp()).toBe(client.native);
-    expect(new OmniSender("http://omni.local", "key").getNativeWhatsApp()).toBeNull();
-  });
-
-  it("does not retry sends that fail because Omni is not configured", async () => {
-    const client = createChannelTransportClient({ omni: null, getConfig: nativeConfig });
-    const started = Date.now();
-    await expect(new OmniSender(client).send("omni-only-instance", "5511@s.whatsapp.net", "oi")).rejects.toMatchObject({
-      status: 503,
-      code: "OMNI_NOT_CONFIGURED",
-    });
-    // A retry would wait at least 1s before the second attempt.
-    expect(Date.now() - started).toBeLessThan(900);
+  it("can be built from an existing Omni client", async () => {
+    const { bodies } = fakeOmni([ok({ messageId: "msg-2", status: "sent" })]);
+    const client = createOmniClient({ baseUrl: "http://omni.local", apiKey: "k" });
+    const omni = new OmniSender(client);
+    expect(await omni.send("instance-1", "5511@s.whatsapp.net", "oi")).toEqual({ messageId: "msg-2" });
+    expect(bodies).toHaveLength(1);
   });
 });
