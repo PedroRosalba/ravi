@@ -6,7 +6,7 @@
 
 import type { ChannelPresenceTargets } from "./types.js";
 
-/** Headless surface: no active targets, renew → false, clear → no-op (replaces createStubOmniConsumer). */
+/** Headless surface: no active targets, renew → false, clear → no-op (replaces the deprecated src/omni stub consumer). */
 export function createNoopPresenceTargets(): ChannelPresenceTargets {
   return {
     getActiveTarget: () => undefined,
