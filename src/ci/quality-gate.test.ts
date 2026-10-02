@@ -632,6 +632,59 @@ describe("runCoverageGate", () => {
     expect(result.triggeredPrefixes).toEqual(["src/devin/"]);
   });
 
+  it("requires a focused inbound test for neutral inbound channel changes", () => {
+    const missing = runCoverageGate(["src/channels/inbound/topics.ts"]);
+    const covered = runCoverageGate(["src/channels/inbound/topics.ts", "src/channels/inbound/topics.test.ts"]);
+
+    expect(missing.ok).toBe(false);
+    expect(missing.triggeredPrefixes).toEqual(["src/channels/", "src/channels/inbound/"]);
+    expect(missing.errors.map((error) => error.prefix)).toEqual(["src/channels/", "src/channels/inbound/"]);
+    expect(covered.ok).toBe(true);
+  });
+
+  it("requires a focused outbound test for neutral outbound channel changes", () => {
+    const missing = runCoverageGate(["src/channels/outbound/router.ts"]);
+    const covered = runCoverageGate(["src/channels/outbound/router.ts", "src/channels/outbound/router.test.ts"]);
+
+    expect(missing.ok).toBe(false);
+    expect(missing.triggeredPrefixes).toEqual(["src/channels/", "src/channels/outbound/"]);
+    expect(missing.errors.map((error) => error.prefix)).toEqual(["src/channels/", "src/channels/outbound/"]);
+    expect(covered.ok).toBe(true);
+  });
+
+  it("requires the group metadata cache test for group metadata changes", () => {
+    const missing = runCoverageGate(["src/channels/group-metadata/cache.ts"]);
+    const covered = runCoverageGate([
+      "src/channels/group-metadata/cache.ts",
+      "src/channels/group-metadata/cache.test.ts",
+    ]);
+
+    expect(missing.ok).toBe(false);
+    expect(missing.triggeredPrefixes).toEqual(["src/channels/", "src/channels/group-metadata/"]);
+    expect(missing.errors.map((error) => error.prefix)).toEqual(["src/channels/", "src/channels/group-metadata/"]);
+    expect(covered.ok).toBe(true);
+  });
+
+  it("requires the session prompt stream test for session prompt changes", () => {
+    const missing = runCoverageGate(["src/session-prompts/stream.ts"]);
+    const covered = runCoverageGate(["src/session-prompts/stream.ts", "src/session-prompts/stream.test.ts"]);
+
+    expect(missing.ok).toBe(false);
+    expect(missing.triggeredPrefixes).toEqual(["src/session-prompts/"]);
+    expect(missing.errors[0]!.message).toContain("src/session-prompts/stream.test.ts");
+    expect(covered.ok).toBe(true);
+  });
+
+  it("requires the daemon channels test for daemon channel wiring changes", () => {
+    const missing = runCoverageGate(["src/daemon-channels.ts"]);
+    const covered = runCoverageGate(["src/daemon-channels.ts", "src/daemon-channels.test.ts"]);
+
+    expect(missing.ok).toBe(false);
+    expect(missing.triggeredPrefixes).toEqual(["src/daemon-channels.ts"]);
+    expect(missing.errors[0]!.message).toContain("src/daemon-channels.test.ts");
+    expect(covered.ok).toBe(true);
+  });
+
   it("requires the Apps router contract test for Apps runtime changes", () => {
     const uncovered = runCoverageGate(["src/apps/router.ts"]);
     const covered = runCoverageGate(["src/apps/router.ts", "src/apps/router.test.ts"]);
