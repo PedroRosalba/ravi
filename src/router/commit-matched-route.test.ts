@@ -7,7 +7,7 @@
  *  - `commitMatchedRoute` — writes the session row (idempotent via
  *    `getOrCreateSession`) and assigns a canonical sessionName.
  *
- * These tests pin the contract that lets the omni consumer reject inbound
+ * These tests pin the contract that lets the channel inbound pipeline reject inbound
  * messages on policy without leaving orphan session rows behind: when the
  * caller never invokes `commitMatchedRoute`, no session row may exist.
  *

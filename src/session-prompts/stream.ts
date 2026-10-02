@@ -57,7 +57,7 @@ export function getConsumerName(): string {
 /**
  * Ensure the SESSION_PROMPTS JetStream stream exists.
  * Safe to call multiple times — idempotent.
- * Called once during daemon startup before bot and omni consumer start.
+ * Called once during daemon startup before the bot and the channel inbound sources start.
  */
 export async function ensureSessionPromptsStream(existingJsm?: JetStreamManager): Promise<void> {
   const jsm = existingJsm ?? (await getNats().jetstreamManager());
