@@ -6,13 +6,13 @@ import { Gateway } from "./gateway.js";
 import type { RouterConfig } from "./router/types.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "./test/ravi-state.js";
 
-const NATIVE_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const WA_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const GROUP = "120363400000000002@g.us";
 
 let stateDir: string | null = null;
 
 beforeEach(async () => {
-  stateDir = await createIsolatedRaviState("ravi-gateway-native-mentions-");
+  stateDir = await createIsolatedRaviState("ravi-gateway-whatsapp-mentions-");
 });
 
 afterEach(async () => {
@@ -20,14 +20,14 @@ afterEach(async () => {
   stateDir = null;
 });
 
-/** Router config with one WhatsApp channel bound to NATIVE_ID (account "wa-native"). */
+/** Router config with one WhatsApp channel bound to WA_ID (account "wa-main"). */
 function boundConfig(): Pick<RouterConfig, "instances" | "channels" | "instanceToAccount"> {
   return {
-    instances: { "wa-native": { name: "wa-native", instanceId: NATIVE_ID, channel: "whatsapp-baileys" } },
+    instances: { "wa-main": { name: "wa-main", instanceId: WA_ID, channel: "whatsapp-baileys" } },
     channels: {
-      "wa-native": { name: "wa-native", provider: "whatsapp", enabled: true },
+      "wa-main": { name: "wa-main", provider: "whatsapp", enabled: true },
     },
-    instanceToAccount: { [NATIVE_ID]: "wa-native" },
+    instanceToAccount: { [WA_ID]: "wa-main" },
   } as unknown as Pick<RouterConfig, "instances" | "channels" | "instanceToAccount">;
 }
 
@@ -51,7 +51,7 @@ type PrepareMentions = (input: {
   text: string;
 }) => Promise<{ text: string; mentions?: Array<{ id: string; type: string }> }>;
 
-describe("Gateway outbound mentions for native WhatsApp", () => {
+describe("Gateway outbound mentions for WhatsApp", () => {
   it("resolves @Name mentions from group metadata fetched over the runner RPC", async () => {
     const request = mock(async (_ref: string, _method: string, _params: unknown, _options?: unknown) => ({
       groupJid: GROUP,
@@ -71,15 +71,15 @@ describe("Gateway outbound mentions for native WhatsApp", () => {
       .prepareOutboundMentionMessage;
 
     const prepared = await prepare.call(gateway, {
-      accountId: "wa-native",
-      instanceId: NATIVE_ID,
+      accountId: "wa-main",
+      instanceId: WA_ID,
       chatId: GROUP,
       channel: "whatsapp-baileys",
       text: "oi @Luis Filipe",
     });
 
     expect(request).toHaveBeenCalledTimes(1);
-    expect(request.mock.calls[0]?.slice(0, 3)).toEqual([NATIVE_ID, "groups.metadata", { groupJid: GROUP }]);
+    expect(request.mock.calls[0]?.slice(0, 3)).toEqual([WA_ID, "groups.metadata", { groupJid: GROUP }]);
     expect(prepared.mentions).toEqual([{ id: "5511947879044@s.whatsapp.net", type: "user" }]);
     expect(prepared.text).not.toContain("@Luis Filipe");
   });
