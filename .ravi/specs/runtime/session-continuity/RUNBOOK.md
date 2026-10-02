@@ -31,7 +31,7 @@ ravi sessions read <session> -n 40
 
 ## Message Edit Rebase
 
-1. Detect edit event from Omni.
+1. Detect the edit event from the channel inbound pipeline (WhatsApp runner or legacy bridge).
 2. Resolve the target source message id to an existing prompt atom.
 3. Create a replacement atom with `supersedes_source_message_id`.
 4. Build a rebase plan:
