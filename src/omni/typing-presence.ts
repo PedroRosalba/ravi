@@ -57,6 +57,9 @@ export class TypingPresenceHeartbeat {
     string,
     { target: TypingPresenceTarget; timer: IntervalHandle; lastActivityAt: number }
   >();
+  // Latest start() per session; a stop or a newer start invalidates older ones still in flight.
+  private readonly pendingStarts = new Map<string, number>();
+  private startSeq = 0;
 
   constructor(
     private readonly sendPresence: (target: TypingPresenceTarget, active: boolean) => Promise<void>,
@@ -69,13 +72,20 @@ export class TypingPresenceHeartbeat {
   ) {}
 
   async start(sessionName: string, target: TypingPresenceTarget): Promise<void> {
+    const token = ++this.startSeq;
+    this.pendingStarts.set(sessionName, token);
+
     const previous = this.sessions.get(sessionName);
     if (previous) {
+      this.sessions.delete(sessionName);
       this.timers.clearInterval(previous.timer);
       if (!this.sameTarget(previous.target, target)) {
         await this.safeSend(sessionName, previous.target, false, "replace-stop");
       }
     }
+
+    // A stop or a newer start ran while the previous target was being stopped.
+    if (this.pendingStarts.get(sessionName) !== token) return;
 
     const lastActivityAt = this.clock.now();
     const timer = this.timers.setInterval(() => {
@@ -103,9 +113,11 @@ export class TypingPresenceHeartbeat {
 
     await this.safeSend(sessionName, target, true, "start");
 
-    // A stop that ran while the first send was in flight may have reached the
-    // channel before it; repeat the stop so the indicator does not stay on.
-    if (!this.sessions.has(sessionName)) {
+    // A stop or a replacement that ran while the first send was in flight may
+    // have reached the channel before it; stop this target again so the
+    // indicator does not stay on. A replacement on the same target keeps it.
+    const current = this.sessions.get(sessionName);
+    if (current !== entry && (!current || !this.sameTarget(current.target, target))) {
       await this.safeSend(sessionName, target, false, "stop");
     }
   }
@@ -120,6 +132,7 @@ export class TypingPresenceHeartbeat {
   }
 
   async stop(sessionName: string, reason: TypingPresenceReason = "stop"): Promise<void> {
+    this.pendingStarts.delete(sessionName);
     const current = this.sessions.get(sessionName);
     if (!current) return;
 

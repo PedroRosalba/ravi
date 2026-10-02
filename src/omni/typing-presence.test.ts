@@ -219,4 +219,60 @@ describe("TypingPresenceHeartbeat", () => {
       { to: "chat@g.us", active: false },
     ]);
   });
+
+  it("does not register a replacement when the session stops during the replace-stop", async () => {
+    const calls: Array<{ to: string; active: boolean }> = [];
+    const { handles, timers } = makeTimers();
+    let releaseReplaceStop: () => void = () => {};
+    const heartbeat = new TypingPresenceHeartbeat(
+      (target, active) => {
+        calls.push({ to: target.to, active });
+        if (calls.length === 2) return new Promise<void>((resolve) => (releaseReplaceStop = resolve));
+        return Promise.resolve();
+      },
+      20_000,
+      timers,
+    );
+
+    await heartbeat.start("session-a", { instanceId: "main", to: "old@g.us" });
+    const replacing = heartbeat.start("session-a", { instanceId: "main", to: "new@g.us" });
+    await heartbeat.stop("session-a");
+    releaseReplaceStop();
+    await replacing;
+
+    expect(heartbeat.has("session-a")).toBe(false);
+    expect(handles).toHaveLength(1);
+    expect(calls).toEqual([
+      { to: "old@g.us", active: true },
+      { to: "old@g.us", active: false },
+    ]);
+  });
+
+  it("stops the old target when a different target replaces it during the first send", async () => {
+    const calls: Array<{ to: string; active: boolean }> = [];
+    const { timers } = makeTimers();
+    let releaseStart: () => void = () => {};
+    const heartbeat = new TypingPresenceHeartbeat(
+      (target, active) => {
+        calls.push({ to: target.to, active });
+        if (calls.length === 1) return new Promise<void>((resolve) => (releaseStart = resolve));
+        return Promise.resolve();
+      },
+      20_000,
+      timers,
+    );
+
+    const first = heartbeat.start("session-a", { instanceId: "main", to: "old@g.us" });
+    await heartbeat.start("session-a", { instanceId: "main", to: "new@g.us" });
+    releaseStart();
+    await first;
+
+    expect(heartbeat.has("session-a")).toBe(true);
+    expect(calls).toEqual([
+      { to: "old@g.us", active: true },
+      { to: "old@g.us", active: false },
+      { to: "new@g.us", active: true },
+      { to: "old@g.us", active: false },
+    ]);
+  });
 });
