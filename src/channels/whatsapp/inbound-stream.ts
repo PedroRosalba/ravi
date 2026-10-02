@@ -6,7 +6,14 @@
  * with the same configuration.
  */
 
-import { RetentionPolicy, StringCodec, type JetStreamClient, type JetStreamManager } from "nats";
+import {
+  AckPolicy,
+  DeliverPolicy,
+  RetentionPolicy,
+  StringCodec,
+  type JetStreamClient,
+  type JetStreamManager,
+} from "nats";
 import { getNats } from "../../nats.js";
 import { logger } from "../../utils/logger.js";
 import {
@@ -16,6 +23,7 @@ import {
   whatsappTransportSubject,
   type WhatsAppTransportEvent,
 } from "./contract.js";
+import { WHATSAPP_INBOUND_DURABLES } from "./events.js";
 
 const log = logger.child("channels:inbound-stream");
 const sc = StringCodec();
@@ -25,9 +33,52 @@ const MAX_BYTES = 512 * 1024 * 1024;
 /** JetStream dedupe window for `msgID` (redelivered Baileys upserts collapse here). */
 const DUPLICATE_WINDOW_NS = 2 * 60 * 1_000_000_000;
 
+/**
+ * Ensure the CHANNEL_INBOUND stream and the WhatsApp inbound durables exist.
+ *
+ * The durables are created on every path (stream created here, by a concurrent
+ * creator, or already present), so events the runner publishes before the daemon's
+ * first start are kept for the daemon's consumers.
+ */
 export async function ensureChannelInboundStream(existingJsm?: JetStreamManager): Promise<void> {
   const jsm = existingJsm ?? (await getNats().jetstreamManager());
+  await ensureStream(jsm);
+  await ensureWhatsAppInboundDurables(jsm);
+}
 
+/**
+ * Create each WHATSAPP_INBOUND_DURABLES entry that does not exist yet. The config matches runDurablePullLoop
+ * exactly: { durable_name, filter_subject, ack_policy: AckPolicy.Explicit, deliver_policy: DeliverPolicy.New }.
+ * It never updates or deletes an existing consumer. Per-durable failures are logged at warn level and do not throw.
+ */
+export async function ensureWhatsAppInboundDurables(jsm: JetStreamManager): Promise<void> {
+  for (const { stream, durable, filterSubject } of Object.values(WHATSAPP_INBOUND_DURABLES)) {
+    try {
+      await jsm.consumers.info(stream, durable);
+      continue;
+    } catch {
+      // Not found: create it.
+    }
+    try {
+      await jsm.consumers.add(stream, {
+        durable_name: durable,
+        filter_subject: filterSubject,
+        ack_policy: AckPolicy.Explicit,
+        deliver_policy: DeliverPolicy.New,
+      });
+      log.info("Created WhatsApp inbound durable", { stream, durable, filter: filterSubject });
+    } catch (err) {
+      try {
+        // A concurrent creator (the daemon or the runner) won the race.
+        await jsm.consumers.info(stream, durable);
+      } catch {
+        log.warn("Could not create WhatsApp inbound durable", { stream, durable, error: err });
+      }
+    }
+  }
+}
+
+async function ensureStream(jsm: JetStreamManager): Promise<void> {
   try {
     await jsm.streams.info(CHANNEL_INBOUND_STREAM);
     return;

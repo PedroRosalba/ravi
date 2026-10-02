@@ -40,6 +40,7 @@ const WHATSAPP_FOCUSED_TESTS = [
   "src/channels/whatsapp/inbound-source.test.ts",
   "src/channels/whatsapp/channel-name.test.ts",
   "src/channels/whatsapp/provisioning.test.ts",
+  "src/channels/whatsapp/contract.test.ts",
 ];
 
 /**

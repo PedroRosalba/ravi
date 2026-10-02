@@ -41,7 +41,8 @@ export const DEFAULT_WHATSAPP_RPC_TIMEOUT_MS = 60_000;
 
 export type WhatsAppIngestMode = "realtime" | "history-sync";
 
-const InstanceIdSchema = z
+/** NATS-safe transport instance id (one subject token). */
+export const InstanceIdSchema = z
   .string()
   .trim()
   .min(1)
@@ -341,7 +342,7 @@ export const WHATSAPP_RPC_ERROR_CODES = {
 // Native ownership
 // ============================================================================
 
-export interface NativeWhatsAppBinding {
+export interface WhatsAppBinding {
   /** Ravi account / instance name. */
   readonly accountName: string;
   /** Transport instance id (the instance UUID). */
@@ -350,16 +351,19 @@ export interface NativeWhatsAppBinding {
   readonly instance: InstanceConfig;
 }
 
-type OwnershipConfig = Pick<RouterConfig, "instances" | "channels" | "instanceToAccount">;
+/** @deprecated Use `WhatsAppBinding`. Deleted in WP-Z. */
+export type NativeWhatsAppBinding = WhatsAppBinding;
+
+export type OwnershipConfig = Pick<RouterConfig, "instances" | "channels" | "instanceToAccount">;
 
 function boundInstanceName(channel: ChannelConfig): string {
   const override = channel.defaults?.instance;
   return typeof override === "string" && override.trim() ? override.trim() : channel.name;
 }
 
-/** Every enabled native WhatsApp channel that is bound to an instance with a transport id. */
-export function listNativeWhatsAppBindings(config: OwnershipConfig): NativeWhatsAppBinding[] {
-  const bindings: NativeWhatsAppBinding[] = [];
+/** Every enabled WhatsApp channel that is bound to a non-deleted instance with a transport id. */
+export function listWhatsAppBindings(config: OwnershipConfig): WhatsAppBinding[] {
+  const bindings: WhatsAppBinding[] = [];
   for (const channel of Object.values(config.channels ?? {})) {
     if (channel.enabled === false || channel.deletedAt) continue;
     if (canonicalChannelId(channel.provider) !== WHATSAPP_PROVIDER) continue;
@@ -372,21 +376,86 @@ export function listNativeWhatsAppBindings(config: OwnershipConfig): NativeWhats
   return bindings;
 }
 
-/** Resolve a native WhatsApp binding from an instance UUID or account name. */
-export function resolveNativeWhatsAppBinding(
+/** Resolve a WhatsApp binding from an instance UUID or account name. */
+export function resolveWhatsAppBinding(
   config: OwnershipConfig,
-  instanceIdOrAccount: string | undefined | null,
-): NativeWhatsAppBinding | null {
-  const ref = instanceIdOrAccount?.trim();
-  if (!ref) return null;
-  const accountName = config.instanceToAccount?.[ref] ?? ref;
+  ref: string | undefined | null,
+): WhatsAppBinding | null {
+  const trimmed = ref?.trim();
+  if (!trimmed) return null;
+  const accountName = config.instanceToAccount?.[trimmed] ?? trimmed;
   return (
-    listNativeWhatsAppBindings(config).find(
-      (binding) => binding.instanceId === ref || binding.accountName === accountName,
+    listWhatsAppBindings(config).find(
+      (binding) => binding.instanceId === trimmed || binding.accountName === accountName,
     ) ?? null
   );
 }
 
+export function isWhatsAppBound(config: OwnershipConfig, ref: string | undefined | null): boolean {
+  return resolveWhatsAppBinding(config, ref) !== null;
+}
+
+/**
+ * Natively served WhatsApp channel type: `canonicalChannelId(t) === "whatsapp"`, i.e. exactly
+ * `whatsapp`, `whatsapp-baileys` and `whatsapp baileys`.
+ */
+export function isWhatsAppChannelType(channelType: string | null | undefined): boolean {
+  if (typeof channelType !== "string" || !channelType.trim()) return false;
+  return canonicalChannelId(channelType) === WHATSAPP_PROVIDER;
+}
+
+/**
+ * Any WhatsApp-family channel type: canonical WhatsApp, any type mentioning `whatsapp`
+ * (`twilio-whatsapp`, `whatsapp-cloud`, …) or `gupshup`. Used only to DROP or REJECT:
+ * a family type that is not canonical is unsupported in every direction.
+ */
+export function isWhatsAppFamilyChannelType(channelType: string | null | undefined): boolean {
+  if (typeof channelType !== "string") return false;
+  return (
+    isWhatsAppChannelType(channelType) ||
+    /whatsapp/i.test(channelType) ||
+    channelType.trim().toLowerCase() === "gupshup"
+  );
+}
+
+/** Instance record whose `channel` satisfies isWhatsAppChannelType. */
+export function isWhatsAppInstanceConfig(instance: Pick<InstanceConfig, "channel"> | null | undefined): boolean {
+  return isWhatsAppChannelType(instance?.channel);
+}
+
+/**
+ * The non-deleted channel with canonical provider whatsapp whose bound instance name is
+ * `accountName`, including disabled ones (listWhatsAppBindings skips them). Used by
+ * `instances enable/disable` and by provisioning.
+ */
+export function findWhatsAppChannelForInstance(
+  config: Pick<RouterConfig, "channels">,
+  accountName: string,
+): ChannelConfig | null {
+  const name = accountName.trim();
+  if (!name) return null;
+  for (const channel of Object.values(config.channels ?? {})) {
+    if (channel.deletedAt) continue;
+    if (canonicalChannelId(channel.provider) !== WHATSAPP_PROVIDER) continue;
+    if (boundInstanceName(channel) === name) return channel;
+  }
+  return null;
+}
+
+/** @deprecated Use `listWhatsAppBindings`. Deleted in WP-Z. */
+export function listNativeWhatsAppBindings(config: OwnershipConfig): WhatsAppBinding[] {
+  return listWhatsAppBindings(config);
+}
+
+/** @deprecated Use `resolveWhatsAppBinding`. Deleted in WP-Z. */
+export function resolveNativeWhatsAppBinding(
+  config: OwnershipConfig,
+  instanceIdOrAccount: string | undefined | null,
+): WhatsAppBinding | null {
+  return resolveWhatsAppBinding(config, instanceIdOrAccount);
+}
+
+/** @deprecated Use `isWhatsAppBound`. Deleted in WP-Z. */
 export function isNativeWhatsAppInstance(config: OwnershipConfig, instanceIdOrAccount: string | undefined | null) {
-  return resolveNativeWhatsAppBinding(config, instanceIdOrAccount) !== null;
+  return isWhatsAppBound(config, instanceIdOrAccount);
 }
