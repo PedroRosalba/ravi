@@ -520,13 +520,16 @@ export class TriggerRunner {
       });
     }
 
-    if (!this.filterRejectFlushTimer) {
-      this.filterRejectFlushTimer = setTimeout(() => {
-        this.filterRejectFlushTimer = null;
-        this.flushFilterRejects();
-      }, FILTER_REJECT_FLUSH_MS);
-      this.filterRejectFlushTimer.unref?.();
-    }
+    this.scheduleFilterRejectFlush();
+  }
+
+  private scheduleFilterRejectFlush(): void {
+    if (this.filterRejectFlushTimer) return;
+    this.filterRejectFlushTimer = setTimeout(() => {
+      this.filterRejectFlushTimer = null;
+      this.flushFilterRejects();
+    }, FILTER_REJECT_FLUSH_MS);
+    this.filterRejectFlushTimer.unref?.();
   }
 
   private flushFilterRejects(): void {
@@ -540,9 +543,22 @@ export class TriggerRunner {
       try {
         dbRecordTriggerFilterRejects(triggerId, rejects);
       } catch (error) {
-        log.warn("Failed to record trigger filter rejects", { triggerId, error });
+        log.warn("Failed to record trigger filter rejects; retrying on the next flush", { triggerId, error });
+        this.restoreFilterRejects(triggerId, rejects);
       }
     }
+  }
+
+  /** Put a failed batch back. A newer batch for another topic/filter wins; the stale one is dropped. */
+  private restoreFilterRejects(triggerId: string, rejects: PendingFilterRejects): void {
+    const newer = this.pendingFilterRejects.get(triggerId);
+    if (!newer) {
+      this.pendingFilterRejects.set(triggerId, rejects);
+    } else if (newer.topic === rejects.topic && newer.filter === rejects.filter) {
+      newer.count += rejects.count;
+      newer.lastRejectAt = Math.max(newer.lastRejectAt, rejects.lastRejectAt);
+    }
+    if (this.running) this.scheduleFilterRejectFlush();
   }
 
   private truncateForPrompt(text: string, max = 4000): string {
