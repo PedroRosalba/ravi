@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
@@ -7,6 +7,7 @@ import {
   extractChangedSpecIds,
   findTriggeredPrefixes,
   isDocsOnlyDiff,
+  RUNTIME_PATH_MAP,
   runCoverageGate,
   runQualityGate,
   runSpecGate,
@@ -98,7 +99,7 @@ describe("extractChangedSpecIds", () => {
       ".ravi/specs/quality/ci-gates/SPEC.md",
       ".ravi/specs/quality/ci-gates/WHY.md",
       ".ravi/specs/channels/chats/reactions/SPEC.md",
-      "src/omni/consumer.ts",
+      "src/omni/inbound-source.ts",
       "README.md",
     ];
     expect(extractChangedSpecIds(files)).toEqual(["channels/chats/reactions", "quality/ci-gates"]);
@@ -129,13 +130,13 @@ describe("isDocsOnlyDiff", () => {
   });
 
   it("returns false when runtime source is present", () => {
-    expect(isDocsOnlyDiff(["docs/guide.md", "src/omni/consumer.ts"])).toBe(false);
+    expect(isDocsOnlyDiff(["docs/guide.md", "src/omni/inbound-source.ts"])).toBe(false);
   });
 });
 
 describe("findTriggeredPrefixes", () => {
   it("identifies triggered runtime path prefixes", () => {
-    const files = ["src/omni/consumer.ts", "src/devin/client.ts"];
+    const files = ["src/omni/inbound-source.ts", "src/devin/client.ts"];
     expect(findTriggeredPrefixes(files)).toEqual(["src/devin/", "src/omni/"]);
   });
 
@@ -156,7 +157,7 @@ describe("findTriggeredPrefixes", () => {
   });
 
   it("excludes test files from triggering", () => {
-    const files = ["src/omni/consumer-context.test.ts"];
+    const files = ["src/omni/inbound-source.test.ts"];
     expect(findTriggeredPrefixes(files)).toEqual([]);
   });
 
@@ -267,9 +268,9 @@ describe("runSpecGate", () => {
 describe("runCoverageGate", () => {
   it("fails when test file exists on disk but not in the diff", () => {
     const cwd = makeWorkspace();
-    writeTestFile(cwd, "src/omni/consumer-context.test.ts");
+    writeTestFile(cwd, "src/omni/inbound-source.test.ts");
 
-    const result = runCoverageGate(["src/omni/consumer.ts"], cwd);
+    const result = runCoverageGate(["src/omni/inbound-source.ts"], cwd);
 
     expect(result.ok).toBe(false);
     expect(result.triggeredPrefixes).toEqual(["src/omni/"]);
@@ -280,7 +281,7 @@ describe("runCoverageGate", () => {
   it("passes when test file is in the diff", () => {
     const cwd = makeWorkspace();
 
-    const result = runCoverageGate(["src/omni/consumer.ts", "src/omni/consumer-context.test.ts"], cwd);
+    const result = runCoverageGate(["src/omni/inbound-source.ts", "src/omni/inbound-source.test.ts"], cwd);
 
     expect(result.ok).toBe(true);
   });
@@ -390,7 +391,7 @@ describe("runCoverageGate", () => {
     expect(sessionPromptCovered.triggeredPrefixes).toEqual(["src/channels/"]);
   });
 
-  it("requires a focused native WhatsApp test for WhatsApp channel changes", () => {
+  it("requires a focused WhatsApp test for WhatsApp channel changes", () => {
     const missing = runCoverageGate(["src/channels/whatsapp/runtime.ts"]);
     const unrelatedChannelTest = runCoverageGate(["src/channels/whatsapp/runtime.ts", "src/channels/backend.test.ts"]);
     const runtimeCovered = runCoverageGate([
@@ -401,10 +402,7 @@ describe("runCoverageGate", () => {
       "src/channels/whatsapp/lib/handlers/messages.ts",
       "src/channels/whatsapp/lib/__tests__/messages-handler.test.ts",
     ]);
-    const clientCovered = runCoverageGate([
-      "src/channels/whatsapp/transport-client.ts",
-      "src/channels/whatsapp/transport-client.test.ts",
-    ]);
+    const clientCovered = runCoverageGate(["src/channels/whatsapp/client.ts", "src/channels/whatsapp/client.test.ts"]);
 
     expect(missing.ok).toBe(false);
     expect(missing.triggeredPrefixes).toEqual(["src/channels/", "src/channels/whatsapp/"]);
@@ -416,8 +414,8 @@ describe("runCoverageGate", () => {
     expect(clientCovered.ok).toBe(true);
   });
 
-  it("accepts the native WhatsApp consumer source test for Omni consumer changes", () => {
-    const result = runCoverageGate(["src/omni/consumer.ts", "src/omni/consumer-native-source.test.ts"]);
+  it("accepts any legacy bridge test for a legacy bridge change", () => {
+    const result = runCoverageGate(["src/omni/sender.ts", "src/omni/legacy-bridge.test.ts"]);
 
     expect(result.ok).toBe(true);
     expect(result.triggeredPrefixes).toEqual(["src/omni/"]);
@@ -426,17 +424,27 @@ describe("runCoverageGate", () => {
   it("passes when the session stream focused test is in the diff", () => {
     const cwd = makeWorkspace();
 
-    const result = runCoverageGate(["src/omni/session-stream.ts", "src/omni/session-stream.test.ts"], cwd);
+    const result = runCoverageGate(["src/session-prompts/stream.ts", "src/session-prompts/stream.test.ts"], cwd);
 
     expect(result.ok).toBe(true);
-    expect(result.triggeredPrefixes).toEqual(["src/omni/"]);
+    expect(result.triggeredPrefixes).toEqual(["src/session-prompts/"]);
   });
 
-  it("passes when the omni stub consumer focused test is in the diff", () => {
-    const result = runCoverageGate(["src/omni/stub-consumer.ts", "src/omni/stub-consumer.test.ts"]);
+  it("passes when the presence targets focused test is in the diff", () => {
+    const result = runCoverageGate([
+      "src/channels/inbound/presence-targets.ts",
+      "src/channels/inbound/presence-targets.test.ts",
+    ]);
 
     expect(result.ok).toBe(true);
-    expect(result.triggeredPrefixes).toEqual(["src/omni/"]);
+    expect(result.triggeredPrefixes).toEqual(["src/channels/", "src/channels/inbound/"]);
+  });
+
+  it("requires the nats-server test for a nats-server change", () => {
+    expect(runCoverageGate(["src/nats-server.ts"]).ok).toBe(false);
+    const covered = runCoverageGate(["src/nats-server.ts", "src/nats-server.test.ts"]);
+    expect(covered.ok).toBe(true);
+    expect(covered.triggeredPrefixes).toEqual(["src/nats-server.ts"]);
   });
 
   it("passes when runtime transport focused tests are in the diff", () => {
@@ -596,7 +604,7 @@ describe("runCoverageGate", () => {
   it("fails for runtime change without focused test", () => {
     const cwd = makeWorkspace();
 
-    const result = runCoverageGate(["src/omni/consumer.ts"], cwd);
+    const result = runCoverageGate(["src/omni/inbound-source.ts"], cwd);
 
     expect(result.ok).toBe(false);
     expect(result.errors).toHaveLength(1);
@@ -696,15 +704,31 @@ describe("runCoverageGate", () => {
   });
 });
 
+describe("RUNTIME_PATH_MAP", () => {
+  // A focused test that was renamed or deleted can never be "in the diff", so a stale
+  // entry silently narrows what covers its prefix.
+  it("names only prefixes and focused tests that exist", () => {
+    const repoRoot = join(import.meta.dir, "..", "..");
+    const missing: string[] = [];
+    for (const [prefix, tests] of Object.entries(RUNTIME_PATH_MAP)) {
+      if (!existsSync(join(repoRoot, prefix))) missing.push(prefix);
+      for (const test of tests) {
+        if (!existsSync(join(repoRoot, test))) missing.push(`${prefix} -> ${test}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+});
+
 describe("runQualityGate (combined)", () => {
   it("passes when both gates pass", () => {
     const cwd = makeWorkspace();
     writeSpec(cwd, "quality");
     writeSpec(cwd, "quality/ci-gates");
-    writeTestFile(cwd, "src/omni/consumer-context.test.ts");
+    writeTestFile(cwd, "src/omni/inbound-source.test.ts");
 
     const result = runQualityGate(
-      [".ravi/specs/quality/ci-gates/SPEC.md", "src/omni/consumer.ts", "src/omni/consumer-context.test.ts"],
+      [".ravi/specs/quality/ci-gates/SPEC.md", "src/omni/inbound-source.ts", "src/omni/inbound-source.test.ts"],
       cwd,
     );
 
@@ -728,7 +752,7 @@ describe("runQualityGate (combined)", () => {
   it("fails when coverage gate fails", () => {
     const cwd = makeWorkspace();
 
-    const result = runQualityGate(["src/omni/consumer.ts"], cwd);
+    const result = runQualityGate(["src/omni/inbound-source.ts"], cwd);
 
     expect(result.ok).toBe(false);
     expect(result.coverage.ok).toBe(false);

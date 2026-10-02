@@ -15,15 +15,15 @@ const SPECS_PREFIX = ".ravi/specs/";
 const REQUIRED_COMPANIONS = ["WHY.md", "RUNBOOK.md", "CHECKS.md"] as const;
 
 /**
- * Focused tests of the native WhatsApp (Baileys) channel: the runner-side runtime,
- * driver and RPC server, the ported Omni handlers, and the daemon-side RPC and
- * routing clients. Any one of them in the diff covers a `src/channels/whatsapp/` change.
+ * Focused tests of the WhatsApp (Baileys) channel: the runner-side runtime, driver,
+ * RPC server and Baileys handlers (`lib/`), and the daemon-side RPC client, typed
+ * client, sender, inbound source and provisioning. Any one of them in the diff covers a
+ * `src/channels/whatsapp/` change.
  */
 const WHATSAPP_FOCUSED_TESTS = [
   "src/channels/whatsapp/__tests__/driver.test.ts",
   "src/channels/whatsapp/__tests__/rpc-server.test.ts",
   "src/channels/whatsapp/rpc-client.test.ts",
-  "src/channels/whatsapp/transport-client.test.ts",
   "src/channels/whatsapp/inbound-stream.test.ts",
   "src/channels/whatsapp/__tests__/runtime-helpers.test.ts",
   "src/channels/whatsapp/__tests__/runtime-inbound.test.ts",
@@ -41,7 +41,7 @@ const WHATSAPP_FOCUSED_TESTS = [
   "src/channels/whatsapp/channel-name.test.ts",
   "src/channels/whatsapp/provisioning.test.ts",
   "src/channels/whatsapp/contract.test.ts",
-  // Moved from src/omni/local-media.test.ts (daemon-side reader of runner-downloaded media).
+  // Daemon-side reader of runner-downloaded media.
   "src/channels/whatsapp/local-media.test.ts",
 ];
 
@@ -104,16 +104,10 @@ export const RUNTIME_PATH_MAP: Record<string, string[]> = {
   "src/channels/group-metadata/": CHANNEL_GROUP_METADATA_FOCUSED_TESTS,
   "src/session-prompts/": ["src/session-prompts/stream.test.ts"],
   "src/daemon-channels.ts": ["src/daemon-channels.test.ts"],
+  "src/nats-server.ts": ["src/nats-server.test.ts"],
+  // Legacy Omni bridge (Telegram/Discord only; WhatsApp never goes through it).
   "src/omni/": [
-    "src/omni/consumer-context.test.ts",
-    "src/omni/consumer-policy.test.ts",
-    // Native WhatsApp source: CHANNEL_INBOUND durables, prefix strip, Omni events skipped for native instances.
-    "src/omni/consumer-native-source.test.ts",
-    "src/omni/session-stream.test.ts",
-    // Headless Omni stub: presence/renew no-ops when Omni is not installed.
-    "src/omni/stub-consumer.test.ts",
-    "src/omni/consumer-unregistered.test.ts",
-    // Legacy Omni bridge (Telegram/Discord) after the WhatsApp split.
+    // Omni inbound mapping; WhatsApp-family events are dropped.
     "src/omni/inbound-source.test.ts",
     "src/omni/legacy-bridge.test.ts",
     "src/omni/media.test.ts",
