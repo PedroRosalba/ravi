@@ -510,10 +510,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
         await this.disconnect();
         return {};
       },
-      "connection.logout": async () => {
-        await this.logout();
-        return {};
-      },
+      "connection.logout": () => this.logout(),
       "connection.pairingCode": async (params) => ({ code: await this.requestPairingCode(params.phoneNumber) }),
       "groups.list": (params) => this.listGroups(params),
       "groups.create": (params) => this.createGroup(params.subject, params.participants),
@@ -713,10 +710,12 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
   }
 
   /**
-   * `connection.logout`: unlink the device on WhatsApp's side (when connected), close the
+   * `connection.logout`: unlink the device on WhatsApp's side (only when connected), close the
    * socket and clear the stored auth state. (The ported plugin only closed the socket and cleared auth.)
+   * `unlinked` says whether WhatsApp accepted the unlink; when false the device stays listed on the
+   * phone (WhatsApp > Linked devices) until it is removed there.
    */
-  async logout(): Promise<void> {
+  async logout(): Promise<WhatsAppRpcResult<"connection.logout">> {
     this.manualDisconnect = true;
     this.generation++;
     this.connecting = null;
@@ -725,15 +724,16 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     const lib = await this.library();
     lib.resetConnectionState(this.instanceId);
     const hadSocket = this.sock !== null;
-    await this.dropSocket(lib, this.state === "connected");
+    const unlinked = await this.dropSocket(lib, this.state === "connected");
     this.clearInstanceCaches();
     await this.clearStoredAuth(lib);
     this.profile = {};
     this.setState("logged_out", "logged_out", "Logged out");
-    this.log.info("Instance logged out and auth cleared", { instanceId: this.instanceId });
+    this.log.info("Instance logged out and auth cleared", { instanceId: this.instanceId, unlinked });
     if (hadSocket) {
       await this.emit(this.observed("connection.disconnected", connectionDisconnectedPayload("Logged out", false)));
     }
+    return { unlinked };
   }
 
   /**
@@ -1149,17 +1149,34 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     }
   }
 
-  private async dropSocket(lib: WhatsAppLibrary, logout: boolean): Promise<void> {
+  /**
+   * Close the live socket (if any). With `logout`, first ask WhatsApp to unlink the device;
+   * returns whether that unlink was sent without error (false when there is no socket).
+   */
+  private async dropSocket(lib: WhatsAppLibrary, logout: boolean): Promise<boolean> {
     const sock = this.sock;
     this.sock = null;
-    if (!sock) return;
+    if (!sock) return false;
     // Remove listeners BEFORE closing so the close event cannot trigger a reconnect.
     sock.ev.removeAllListeners("connection.update");
+    let unlinked = false;
+    if (logout) {
+      try {
+        await sock.logout();
+        unlinked = true;
+      } catch (error) {
+        this.log.warn("WhatsApp logout failed; the device may still be linked", {
+          instanceId: this.instanceId,
+          error: errorMessage(error),
+        });
+      }
+    }
     try {
-      await lib.closeSocket(sock, logout);
+      await lib.closeSocket(sock, false);
     } catch (error) {
       this.log.debug("Socket close failed", { instanceId: this.instanceId, error: errorMessage(error) });
     }
+    return unlinked;
   }
 
   private library(): Promise<WhatsAppLibrary> {

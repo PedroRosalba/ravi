@@ -251,9 +251,13 @@ cite this exception.
   restart or config reconcile (health `disconnected` / `manual_disconnect`)
   until `connection.connect` (or a pairing-code request) clears it. A
   disconnect issued while Baileys is still loading MUST be honoured.
-- `ravi instances logout <name> --execute` sends `connection.logout` (unlinks
-  the device, wipes the creds); without `--execute` it is a dry-run (exit 3).
-  When the runner does not answer it wipes the creds locally.
+- `ravi instances logout <name> --execute` sends `connection.logout` (wipes
+  the creds; unlinks the device only when the runtime is connected); without
+  `--execute` it is a dry-run (exit 3). The result carries `unlinked` (true
+  only when the unlink request went out); the CLI MUST NOT claim an unlinked
+  device otherwise and MUST tell the operator to remove it on the phone
+  (WhatsApp > Linked devices). When the runner does not answer it wipes the
+  creds locally.
   `ravi instances delete <name>` also logs out (runner, else local wipe)
   before the soft delete, and MUST then disable the instance's WhatsApp
   channel (before `ravi.config.changed`) so the runner stops it instead of

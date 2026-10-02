@@ -205,13 +205,49 @@ describe("disconnect / logout", () => {
   it("logout unlinks the device, clears auth and reports logged_out", async () => {
     const h = createHarness();
     const sock = await h.connect();
-    await h.runtime.call("connection.logout", {});
+    expect(await h.runtime.call("connection.logout", {})).toEqual({ unlinked: true });
     expect(sock.fake.logout).toHaveBeenCalledTimes(1);
     expect(h.library.clearAuthState).toHaveBeenCalledTimes(1);
     expect(h.runtime.getState()).toBe("logged_out");
     expect(h.runtime.health()).toEqual({ status: "disconnected", reason: "logged_out" });
     expect(h.runtime.getStatus()).toEqual({ state: "logged_out", isConnected: false, profileName: null });
     expect(h.publishedOfType("connection.disconnected")[0]?.event.payload).toMatchObject({ reason: "Logged out" });
+  });
+
+  it("logout after a disconnect wipes the creds but reports unlinked:false (no socket to unlink with)", async () => {
+    const h = createHarness();
+    const sock = await h.connect();
+    await h.runtime.call("connection.disconnect", {});
+
+    expect(await h.runtime.call("connection.logout", {})).toEqual({ unlinked: false });
+    expect(sock.fake.logout).not.toHaveBeenCalled();
+    expect(h.library.clearAuthState).toHaveBeenCalledTimes(1);
+    expect(h.runtime.getState()).toBe("logged_out");
+  });
+
+  it("logout while the socket is still connecting reports unlinked:false", async () => {
+    const h = createHarness();
+    const sock = await h.startAndWaitForSocket();
+    expect(h.runtime.getState()).toBe("connecting");
+
+    expect(await h.runtime.call("connection.logout", {})).toEqual({ unlinked: false });
+    expect(sock.fake.logout).not.toHaveBeenCalled();
+    expect(sock.fake.end).toHaveBeenCalled();
+    expect(h.library.clearAuthState).toHaveBeenCalledTimes(1);
+  });
+
+  it("logout reports unlinked:false when WhatsApp rejects the unlink, and still wipes the creds", async () => {
+    const h = createHarness();
+    const sock = await h.connect();
+    sock.fake.logout.mockImplementation(async () => {
+      throw new Error("Connection Closed");
+    });
+
+    expect(await h.runtime.call("connection.logout", {})).toEqual({ unlinked: false });
+    expect(sock.fake.logout).toHaveBeenCalledTimes(1);
+    expect(sock.fake.end).toHaveBeenCalled();
+    expect(h.library.clearAuthState).toHaveBeenCalledTimes(1);
+    expect(h.runtime.getState()).toBe("logged_out");
   });
 
   it("stop() closes the socket and later calls fail with 503", async () => {

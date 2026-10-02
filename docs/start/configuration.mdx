@@ -165,7 +165,7 @@ ravi instances delete <name>
 ravi instances restore <name>
 ```
 
-`instances connect` for WhatsApp always uses the channel runner; start it first with `ravi channels start`. `instances disconnect` keeps the credentials and persists until the next `connect`. `instances logout` (WhatsApp only, dry-run without `--execute`) unlinks the device and wipes the credentials. `instances delete` performs a recoverable local soft-delete immediately; for WhatsApp it also logs out and disables the instance's channel, so a restored instance (whose channel `restore` re-enables) needs a new `connect`.
+`instances connect` for WhatsApp always uses the channel runner; start it first with `ravi channels start`. `instances disconnect` keeps the credentials and persists until the next `connect`. `instances logout` (WhatsApp only, dry-run without `--execute`) wipes the credentials and unlinks the device when the instance is connected; otherwise the CLI tells you to remove it on the phone (WhatsApp > Linked devices). `instances delete` performs a recoverable local soft-delete immediately; for WhatsApp it also logs out and disables the instance's channel, so a restored instance (whose channel `restore` re-enables) needs a new `connect`.
 
 ### Instance Fields
 

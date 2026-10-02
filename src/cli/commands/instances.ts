@@ -1049,15 +1049,21 @@ async function withRunnerRetry<T>(deps: InstancesTransportDependencies, call: ()
   }
 }
 
+/**
+ * `unlinked`: WhatsApp was asked to unlink the device. Only a connected runtime can do that; in
+ * every other case the device stays listed on the phone (WhatsApp > Linked devices).
+ */
 type WhatsAppLogoutOutcome =
-  | { via: "runner"; clearedKeys: null; cause: null }
-  | { via: "auth-store"; clearedKeys: number; cause: string };
+  | { via: "runner"; unlinked: boolean; clearedKeys: null; cause: null }
+  | { via: "auth-store"; unlinked: false; clearedKeys: number; cause: string };
+
+const REMOVE_LINKED_DEVICE_HINT = "Remove the linked device on the phone: WhatsApp > Linked devices.";
 
 /**
- * Ask the runner to log the instance out (unlinks the device, wipes its credentials). When the
- * runner cannot do it (not answering, channel not bound, or — with `fallbackOnAnyError` — any
- * other failure) the saved credentials are wiped locally; the linked device then has to be
- * removed on the phone.
+ * Ask the runner to log the instance out (wipes its credentials; unlinks the device when the
+ * instance is connected). When the runner cannot do it (not answering, channel not bound, or —
+ * with `fallbackOnAnyError` — any other failure) the saved credentials are wiped locally; the
+ * linked device then has to be removed on the phone.
  */
 async function logoutWhatsApp(
   deps: InstancesTransportDependencies,
@@ -1065,12 +1071,12 @@ async function logoutWhatsApp(
   fallbackOnAnyError: boolean,
 ): Promise<WhatsAppLogoutOutcome> {
   try {
-    await deps.whatsapp().connection.logout(instanceId, {});
-    return { via: "runner", clearedKeys: null, cause: null };
+    const result = await deps.whatsapp().connection.logout(instanceId, {});
+    return { via: "runner", unlinked: result?.unlinked === true, clearedKeys: null, cause: null };
   } catch (err) {
     if (!fallbackOnAnyError && !isWhatsAppRunnerUnavailable(err) && !isWhatsAppNotBound(err)) throw err;
     const clearedKeys = await deps.clearWhatsAppAuthState(instanceId);
-    return { via: "auth-store", clearedKeys, cause: errorText(err) };
+    return { via: "auth-store", unlinked: false, clearedKeys, cause: errorText(err) };
   }
 }
 
@@ -1988,12 +1994,15 @@ export class InstancesCommands {
     if (!inst) failInstanceNotFound("instances delete", name, asJson);
 
     // A deleted WhatsApp instance must not keep a linked device or credentials behind.
-    let whatsappLogout: WhatsAppLogoutOutcome | { via: "failed"; clearedKeys: null; cause: string } | null = null;
+    let whatsappLogout:
+      | WhatsAppLogoutOutcome
+      | { via: "failed"; unlinked: false; clearedKeys: null; cause: string }
+      | null = null;
     if (isWhatsAppInstanceConfig(inst) && inst.instanceId) {
       try {
         whatsappLogout = await logoutWhatsApp(transportDeps(), inst.instanceId, true);
       } catch (err) {
-        whatsappLogout = { via: "failed", clearedKeys: null, cause: errorText(err) };
+        whatsappLogout = { via: "failed", unlinked: false, clearedKeys: null, cause: errorText(err) };
       }
     }
 
@@ -2014,10 +2023,16 @@ export class InstancesCommands {
     } else {
       console.log(`✓ Instance deleted: ${name} (recoverable with: ravi instances restore ${name})`);
       if (channel?.changed) console.log(`  WhatsApp channel disabled: ${channel.name} (the channel runner stops it)`);
-      if (whatsappLogout?.via === "runner") console.log("  WhatsApp logged out: device unlinked, credentials wiped");
+      if (whatsappLogout?.via === "runner" && whatsappLogout.unlinked) {
+        console.log("  WhatsApp logged out: device unlinked, credentials wiped");
+      }
+      if (whatsappLogout?.via === "runner" && !whatsappLogout.unlinked) {
+        console.log("  WhatsApp credentials wiped (the instance was not connected, so the device was not unlinked).");
+        console.log(`  ${REMOVE_LINKED_DEVICE_HINT}`);
+      }
       if (whatsappLogout?.via === "auth-store") {
         console.log("  WhatsApp credentials wiped locally (the channel runner did not log out).");
-        console.log("  Remove the linked device on the phone: WhatsApp > Linked devices.");
+        console.log(`  ${REMOVE_LINKED_DEVICE_HINT}`);
       }
       if (whatsappLogout?.via === "failed") {
         console.log(`  Warning: WhatsApp credentials were not wiped: ${whatsappLogout.cause}`);
@@ -2171,7 +2186,7 @@ export class InstancesCommands {
   @Command({
     name: "logout",
     description:
-      "Log a WhatsApp instance out: unlink the device and wipe its saved credentials (dry-run without --execute)",
+      "Log a WhatsApp instance out: wipe its saved credentials and unlink the device when connected (dry-run without --execute)",
   })
   @CommandAccess({
     kind: "mutate",
@@ -2211,7 +2226,7 @@ export class InstancesCommands {
       });
     }
     if (execute !== true) {
-      // Write brake: logging out unlinks the device and wipes the credentials (a new QR pairing is needed).
+      // Write brake: logging out wipes the credentials and unlinks a connected device (a new QR pairing is needed).
       contractDryRun(
         "instances logout",
         {
@@ -2219,7 +2234,7 @@ export class InstancesCommands {
           instanceId,
           transport: "whatsapp",
           actions: [
-            "ask the channel runner to log out (unlinks the device, wipes the saved credentials)",
+            "ask the channel runner to log out (wipes the saved credentials; unlinks the device when connected)",
             "when the runner does not answer: wipe the saved credentials locally",
           ],
         },
@@ -2243,11 +2258,16 @@ export class InstancesCommands {
     };
     if (asJson) {
       printJson(payload);
-    } else if (outcome.via === "runner") {
+    } else if (outcome.via === "runner" && outcome.unlinked) {
       console.log(`✓ Logged out: ${name} (device unlinked, credentials wiped)`);
+    } else if (outcome.via === "runner") {
+      console.log(
+        `✓ Logged out: ${name} (credentials wiped; the instance was not connected, so the device was not unlinked)`,
+      );
+      console.log(`  ${REMOVE_LINKED_DEVICE_HINT}`);
     } else {
       console.log(`✓ Credentials wiped locally: ${name} (the channel runner did not answer: ${outcome.cause})`);
-      console.log("  Remove the linked device on the phone: WhatsApp > Linked devices.");
+      console.log(`  ${REMOVE_LINKED_DEVICE_HINT}`);
     }
     return payload;
   }

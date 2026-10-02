@@ -259,7 +259,12 @@ export interface WhatsAppRpcResults {
   "connection.status": { state: WhatsAppConnectionState; isConnected: boolean; profileName: string | null };
   "connection.connect": { status: string; message: string };
   "connection.disconnect": Record<string, never>;
-  "connection.logout": Record<string, never>;
+  /**
+   * `unlinked`: WhatsApp was asked to unlink the device (the runtime was connected and the
+   * request went out). False: only the stored creds were wiped, and the device stays listed on
+   * the phone. Absent from runners that predate the field: treat it as false.
+   */
+  "connection.logout": { unlinked?: boolean };
   "connection.pairingCode": { code: string };
   /**
    * `participantsTruncated`: the full list would not fit in one NATS message (~1 MB), so

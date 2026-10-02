@@ -62,7 +62,7 @@ ravi instances status <name> --json        # transport "whatsapp", status "conne
 ravi channels status                       # per-channel health
 ravi channels restart                      # after updating Ravi (restart the daemon first)
 ravi instances disconnect <name>           # close the socket, keep creds (stays disconnected until connect)
-ravi instances logout <name> --execute     # unlink the device, wipe creds (dry-run without --execute)
+ravi instances logout <name> --execute     # wipe creds, unlink the device when connected (dry-run without --execute)
 ```
 
 - `instances connect <name>` mints the instance UUID (or keeps an existing
@@ -635,7 +635,7 @@ ravi instances connect <name> --agent <id>   # Connect and route to an agent
 ravi instances connect <name> --channel telegram   # Telegram/Discord through the legacy bridge
 ravi instances status <name>         # Show connection status and transport
 ravi instances disconnect <name>     # Disconnect account (WhatsApp: persists until connect)
-ravi instances logout <name> --execute   # WhatsApp: unlink the device, wipe creds (dry-run without --execute)
+ravi instances logout <name> --execute   # WhatsApp: wipe creds, unlink the device when connected (dry-run without --execute)
 ravi channels start|restart|status   # Channel runner (holds the WhatsApp sockets)
 
 # Agents

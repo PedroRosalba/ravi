@@ -959,7 +959,7 @@ describe("instances logout", () => {
 
   it("asks the runner to log out with --execute", async () => {
     const instanceId = seedWhatsAppInstance();
-    const runner = fakeRunner({ "connection.logout": () => ({}) });
+    const runner = fakeRunner({ "connection.logout": () => ({ unlinked: true }) });
     useDeps({ runner });
 
     const payload = await new InstancesCommands().logout("wa-main", true, true);
@@ -968,10 +968,43 @@ describe("instances logout", () => {
     expect(payload).toMatchObject({
       status: "logged_out",
       instanceId,
-      logout: { via: "runner" },
+      logout: { via: "runner", unlinked: true },
       changedCount: 1,
     });
     expect(clearedAuth).toEqual([]);
+  });
+
+  it("says the device was unlinked only when the runner unlinked it", async () => {
+    seedWhatsAppInstance();
+    useDeps({ runner: fakeRunner({ "connection.logout": () => ({ unlinked: true }) }) });
+
+    await new InstancesCommands().logout("wa-main", false, true);
+
+    const text = output.join("\n");
+    expect(text).toContain("device unlinked, credentials wiped");
+    expect(text).not.toContain("Linked devices");
+  });
+
+  it("tells the user to remove the linked device when the runner was not connected", async () => {
+    seedWhatsAppInstance();
+    useDeps({ runner: fakeRunner({ "connection.logout": () => ({ unlinked: false }) }) });
+
+    const payload = await new InstancesCommands().logout("wa-main", false, true);
+
+    expect(payload).toMatchObject({ logout: { via: "runner", unlinked: false } });
+    const text = output.join("\n");
+    expect(text).not.toContain("device unlinked");
+    expect(text).toContain("the device was not unlinked");
+    expect(text).toContain("Remove the linked device on the phone: WhatsApp > Linked devices.");
+  });
+
+  it("treats a runner reply without `unlinked` (older runner) as not unlinked", async () => {
+    seedWhatsAppInstance();
+    useDeps({ runner: fakeRunner({ "connection.logout": () => ({}) }) });
+
+    const payload = await new InstancesCommands().logout("wa-main", true, true);
+
+    expect(payload).toMatchObject({ logout: { via: "runner", unlinked: false } });
   });
 
   it("wipes the saved credentials locally when the runner does not answer", async () => {
@@ -982,7 +1015,7 @@ describe("instances logout", () => {
 
     const payload = await new InstancesCommands().logout("wa-main", false, true);
 
-    expect(payload).toMatchObject({ logout: { via: "auth-store", clearedKeys: 3 } });
+    expect(payload).toMatchObject({ logout: { via: "auth-store", unlinked: false, clearedKeys: 3 } });
     expect(clearedAuth).toEqual([instanceId]);
     expect(output.join("\n")).toContain("Linked devices");
   });
@@ -1021,6 +1054,25 @@ describe("instances delete", () => {
     expect(payload).toMatchObject({ status: "deleted", whatsappLogout: { via: "runner" } });
     expect(dbGetInstance("wa-main")).toBeNull();
     expect(clearedAuth).toEqual([]);
+  });
+
+  it("text mode claims an unlinked device only when the runner unlinked it", async () => {
+    seedWhatsAppInstance("wa-main");
+    seedWhatsAppInstance("wa-idle", "22222222-2222-4222-8222-222222222222");
+    const runner = fakeRunner({
+      "connection.logout": (request) => ({ unlinked: request.instanceId === "11111111-1111-4111-8111-111111111111" }),
+    });
+    useDeps({ runner });
+
+    await new InstancesCommands().delete("wa-main", false);
+    expect(output.join("\n")).toContain("device unlinked, credentials wiped");
+    expect(output.join("\n")).not.toContain("Linked devices");
+
+    output = [];
+    const payload = await new InstancesCommands().delete("wa-idle", false);
+    expect(payload).toMatchObject({ whatsappLogout: { via: "runner", unlinked: false } });
+    expect(output.join("\n")).not.toContain("device unlinked");
+    expect(output.join("\n")).toContain("Remove the linked device on the phone: WhatsApp > Linked devices.");
   });
 
   it("disables the instance's WhatsApp channel so the runner stops it instead of failing an unbound start", async () => {

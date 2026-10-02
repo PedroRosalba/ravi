@@ -62,9 +62,10 @@ bundle/database.
    the write. For a WhatsApp instance, `delete` also logs it out and wipes its
    credentials; `restore` brings back the config, and a new
    `ravi instances connect` pairs it again. `instances logout` (WhatsApp only)
-   unlinks the device and wipes the credentials with no restore path, so it
-   MUST stay dry-run + `--execute`; its plan carries only the instance name,
-   instance UUID, transport and the planned actions. `instances pending reject` has no
+   wipes the credentials (and unlinks the device when connected) with no
+   restore path, so it MUST stay dry-run + `--execute`; its plan carries only
+   the instance name, instance UUID, transport and the planned actions.
+   `instances pending reject` has no
    restore path and MUST retain dry-run + `--execute`. Its plan uses
    `{instance,contactPresent,pendingFound,kind,phonePresent,chatIdPresent,namePresent}`;
    contact, phone, chat id, and name values MUST NOT appear.

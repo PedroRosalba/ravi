@@ -24,7 +24,7 @@
 - [ ] `ravi instances connect` MUST reject `--transport` as an unknown option, and `whatsapp.transport` MUST NOT be a valid setting.
 - [ ] `instances connect|create` MUST reject `twilio-whatsapp` / `gupshup` with `USAGE_ERROR` before any RPC or bridge call.
 - [ ] `connection.disconnect` MUST persist across runner restarts (health `disconnected` / `manual_disconnect`) until `connection.connect`; a disconnect during the Baileys load MUST be honoured.
-- [ ] `ravi instances logout` MUST be a dry-run (exit 3) without `--execute`, and with it MUST wipe the creds through the runner or, when the runner does not answer, locally.
+- [ ] `ravi instances logout` MUST be a dry-run (exit 3) without `--execute`, and with it MUST wipe the creds through the runner or, when the runner does not answer, locally. `connection.logout` MUST return `unlinked: true` only when the runtime was connected and the unlink request went out; `logout` and `delete` MUST print "device unlinked" only then, and the linked-device hint otherwise.
 - [ ] `instances enable|disable` MUST also toggle `channels.enabled` on the instance's WhatsApp channel.
 - [ ] `instances delete` MUST disable the instance's WhatsApp channel, and `instances restore` MUST set it back to the restored instance's `enabled` state.
 - [ ] Auth state MUST be stored in `<RAVI_STATE_DIR>/whatsapp/auth.db` with file mode 0600; one `keys.set` MUST be one transaction, and a failed write MUST stay dirty and be retried.

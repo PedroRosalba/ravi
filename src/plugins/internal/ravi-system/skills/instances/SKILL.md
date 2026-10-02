@@ -115,7 +115,7 @@ Com `--json`, `status`, `show`, `list` e `disconnect` trazem `transport` (`whats
 ```bash
 ravi instances disconnect <name>             # fecha o socket, mantém as credenciais
 ravi instances logout <name>                 # dry-run (exit 3): mostra o plano
-ravi instances logout <name> --execute       # desvincula o aparelho e apaga as credenciais
+ravi instances logout <name> --execute       # apaga as credenciais; desvincula o aparelho só se estiver conectado (senão: WhatsApp > Aparelhos conectados)
 ravi instances disable <name>                # desliga a instância e o canal WhatsApp dela
 ```
 

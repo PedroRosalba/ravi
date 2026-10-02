@@ -154,8 +154,11 @@ A code rollback (redeploying the previous bundle) is possible. Its effects:
 - `ravi instances disconnect <name>`: closes the socket and keeps the creds. It
   persists across runner restarts (health `disconnected` /
   `manual_disconnect`) until `ravi instances connect <name>`.
-- `ravi instances logout <name> --execute`: unlinks the device and wipes the
-  creds (dry-run without `--execute`, exit 3). A new QR pairing is needed.
+- `ravi instances logout <name> --execute`: wipes the creds and unlinks the
+  device when the instance is connected (dry-run without `--execute`, exit 3).
+  A new QR pairing is needed. When it was not connected (after `disconnect`,
+  while connecting, or when the runner did not answer) the CLI says so: remove
+  the linked device on the phone (WhatsApp > Linked devices).
 - `ravi instances disable|enable <name>`: also turns the WhatsApp channel off or
   on; disable keeps the creds.
 - `ravi instances delete <name>`: logs out (runner, else a local wipe of
