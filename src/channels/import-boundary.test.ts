@@ -9,9 +9,14 @@
  *
  * Edges: only relative specifiers count. `.js` resolves to `.ts`, then `/index.ts`, then
  * `.tsx`. A static clause that is type-only (`import type …`, or `{ … }` where every
- * specifier is `type X`) is skipped. Side-effect `import "x"` is a static edge. Dynamic
+ * specifier is `type X`) is skipped. Side-effect `import "x"` is a static edge, and so is a
+ * `require("x")` call (it loads the module synchronously wherever it runs). Dynamic
  * `import("x")` edges are recorded but never followed. `src/cli/media-send-auth.ts` is not a
  * target (shared media failure catalog, no imports).
+ *
+ * Roots: every non-test `src/channels/**` file, the processes that serve or reach WhatsApp
+ * (gateway, daemon, daemon-channels), the CLI entry `src/cli/index.ts` and the CLI modules
+ * that send through WhatsApp.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -24,11 +29,13 @@ const REPO_ROOT = resolve(import.meta.dir, "..", "..");
 const STATIC_EDGE = /^\s*(import|export)\s+([^;]*?)\s+from\s+["']([^"']+)["']/gms;
 const SIDE_EFFECT_EDGE = /^\s*import\s+["']([^"']+)["']/gm;
 const DYNAMIC_EDGE = /\bimport\(\s*["']([^"']+)["']\s*\)/g;
+const REQUIRE_EDGE = /\brequire\(\s*["']([^"']+)["']\s*\)/g;
 
 const ROOT_FILES = [
   "src/gateway.ts",
   "src/daemon.ts",
   "src/daemon-channels.ts",
+  "src/cli/index.ts",
   "src/cli/commands/group.ts",
   "src/cli/commands/instances.ts",
   "src/cli/commands/media.ts",
@@ -69,6 +76,7 @@ function parseImports(source: string): ParsedImports {
     staticSpecs.push(match[3]!);
   }
   for (const match of source.matchAll(SIDE_EFFECT_EDGE)) staticSpecs.push(match[1]!);
+  for (const match of source.matchAll(REQUIRE_EDGE)) staticSpecs.push(match[1]!);
   for (const match of source.matchAll(DYNAMIC_EDGE)) dynamicSpecs.push(match[1]!);
   return { static: staticSpecs, dynamic: dynamicSpecs };
 }
@@ -159,11 +167,25 @@ describe("import boundary parser", () => {
         'export * from "./reexport.js";',
         'import "./side-effect.js";',
         'const bridge = await import("../omni/legacy-bridge.js");',
+        'const { slugify } = require("./session-name.js");',
+        'const config = require.resolve("./not-loaded.js");',
       ].join("\n"),
     );
 
-    expect(parsed.static).toEqual(["./mixed.js", "./reexport.js", "./side-effect.js"]);
+    expect(parsed.static).toEqual(["./mixed.js", "./reexport.js", "./side-effect.js", "./session-name.js"]);
     expect(parsed.dynamic).toEqual(["../omni/legacy-bridge.js"]);
+  });
+
+  it("follows require() edges like static imports", () => {
+    const parsed = parseImports('const allCommands = require("./commands/index.js");');
+    const graph: Record<string, FileEdges> = {
+      root: { static: parsed.static, dynamic: [] },
+      "./commands/index.js": { static: ["omni"], dynamic: [] },
+      omni: { static: [], dynamic: [] },
+    };
+    const closure = staticClosure(["root"], (file) => graph[file]!);
+
+    expect([...closure.keys()].sort()).toEqual(["./commands/index.js", "omni", "root"]);
   });
 
   it("records dynamic edges without following them", () => {
@@ -188,6 +210,15 @@ describe("WhatsApp import boundary (D14)", () => {
     expect(roots.length).toBeGreaterThan(ROOT_FILES.length);
     expect(reached.length).toBeGreaterThan(roots.length);
     expect(parentOf.has(join(REPO_ROOT, "src/channels/inbound/pipeline.ts"))).toBe(true);
+    // The CLI entry reaches every command module, through the commands barrel.
+    expect(parentOf.has(join(REPO_ROOT, "src/cli/commands/index.ts"))).toBe(true);
+    expect(parentOf.has(join(REPO_ROOT, "src/cli/commands/triggers.ts"))).toBe(true);
+  });
+
+  it("follows require() edges in real files", () => {
+    // router-db.ts loads session-name.ts only through require().
+    const routerDb = join(REPO_ROOT, "src/router/router-db.ts");
+    expect(readEdges(routerDb).static).toContain(join(REPO_ROOT, "src/router/session-name.ts"));
   });
 
   it("(a) reaches no src/omni/** module and not src/omni-config.ts through static value imports", () => {
