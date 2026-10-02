@@ -6,9 +6,17 @@
  */
 
 import { describe, expect, it, mock } from "bun:test";
+import type { WASocket } from "baileys";
 import type { Logger } from "../lib/foundation.js";
 import { WhatsAppRuntimeError } from "../runtime-errors.js";
-import { OWNER_JID, createHarness, createMemoryAuthStorage, flush } from "./runtime-harness.js";
+import {
+  type FakeSocket,
+  OWNER_JID,
+  createFakeSocket,
+  createHarness,
+  createMemoryAuthStorage,
+  flush,
+} from "./runtime-harness.js";
 
 function closeWith(statusCode: number, message = "closed") {
   const error = Object.assign(new Error(message), { output: { statusCode, payload: { message } } });
@@ -487,6 +495,160 @@ describe("persisted manual disconnect (survives runner restarts)", () => {
     expect(h.library.createSocket).not.toHaveBeenCalled();
     expect(gated.runtime.health()).toEqual({ status: "disconnected", reason: "manual_disconnect" });
     expect(h.auth.flags.manualDisconnected).toBe(true);
+  });
+});
+
+describe("a connect after a disconnect that cancelled an in-flight attempt", () => {
+  /** A harness whose Baileys load waits for `release()`; sockets land in `owner`. */
+  function gatedHarness(options: { registered?: boolean } = {}) {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const owner = createHarness({ registered: options.registered ?? true });
+    const gated = createHarness({
+      auth: owner.auth,
+      loadLibrary: async () => {
+        await gate;
+        return owner.library;
+      },
+    });
+    return { owner, gated, release };
+  }
+
+  it("connection.connect is not dropped while the cancelled attempt still waits for Baileys", async () => {
+    const { owner, gated, release } = gatedHarness();
+    gated.runtime.start();
+    await gated.runtime.call("connection.disconnect", {});
+
+    const result = await gated.runtime.call("connection.connect", {});
+    expect(result).toEqual({ status: "connecting", message: "Connection initiated" });
+    release();
+    await flush(30);
+
+    expect(owner.library.createSocket).toHaveBeenCalledTimes(1);
+    expect(gated.runtime.getState()).toBe("connecting");
+    expect(owner.auth.flags.manualDisconnected).toBe(false);
+    owner.socket().emit("connection.update", { connection: "open" });
+    await flush();
+    expect(gated.runtime.health()).toMatchObject({ status: "connected" });
+    await gated.runtime.stop();
+  });
+
+  it("connection.connect after a logout that cancelled an attempt stuck in socket creation opens a fresh socket", async () => {
+    let releaseFirst: () => void = () => {};
+    const created: FakeSocket[] = [];
+    const h = createHarness({
+      library: {
+        createSocket: mock(async () => {
+          const socket = createFakeSocket();
+          created.push(socket);
+          if (created.length === 1) {
+            await new Promise<void>((resolve) => {
+              releaseFirst = resolve;
+            });
+          }
+          return socket.sock;
+        }),
+      },
+    });
+    h.runtime.start();
+    await flush();
+    expect(created).toHaveLength(1);
+    await h.runtime.call("connection.logout", {});
+    expect(h.runtime.getState()).toBe("logged_out");
+
+    expect(await h.runtime.call("connection.connect", {})).toEqual({
+      status: "connecting",
+      message: "Connection initiated",
+    });
+    await flush();
+    expect(created).toHaveLength(2);
+
+    // The cancelled attempt finishes late: its socket is closed and the new one is kept.
+    releaseFirst();
+    await flush();
+    expect(created[0]?.fake.end).toHaveBeenCalled();
+    expect(created[1]?.fake.end).not.toHaveBeenCalled();
+    created[1]?.emit("connection.update", { qr: "2@QR" });
+    await flush();
+    expect(h.runtime.getState()).toBe("qr");
+    await h.runtime.stop();
+  });
+
+  it("connection.pairingCode after a cancelling disconnect opens a socket and returns the code", async () => {
+    const { owner, gated, release } = gatedHarness();
+    gated.runtime.start();
+    await gated.runtime.call("connection.disconnect", {});
+
+    const pending = gated.runtime.call("connection.pairingCode", { phoneNumber: "+55 11 99999-0000" });
+    release();
+    await flush(30);
+    expect(owner.library.createSocket).toHaveBeenCalledTimes(1);
+    expect(owner.auth.flags.manualDisconnected).toBe(false);
+    owner.socket().emit("connection.update", { qr: "2@QR" });
+    expect(await pending).toEqual({ code: "ABCD1234" });
+    await gated.runtime.stop();
+  });
+
+  it("a cancelled attempt that fails later does not overwrite manual_disconnect or arm the supervisor", async () => {
+    let failSocket: (error: Error) => void = () => {};
+    const h = createHarness({
+      library: {
+        createSocket: mock(
+          () =>
+            new Promise<never>((_resolve, reject) => {
+              failSocket = reject;
+            }),
+        ),
+      },
+    });
+    h.runtime.start();
+    await flush();
+    expect(h.library.createSocket).toHaveBeenCalledTimes(1);
+    await h.runtime.call("connection.disconnect", {});
+
+    failSocket(new Error("ENETUNREACH"));
+    await flush();
+    expect(h.runtime.health()).toEqual({ status: "disconnected", reason: "manual_disconnect" });
+    expect(h.manual.pending.size).toBe(0);
+  });
+
+  it("an attempt superseded by forceNewQr that fails later does not overwrite the new attempt's state", async () => {
+    let failFirst: (error: Error) => void = () => {};
+    let calls = 0;
+    const created: FakeSocket[] = [];
+    const h = createHarness({
+      library: {
+        createSocket: mock(async () => {
+          calls++;
+          if (calls === 1) {
+            return new Promise<WASocket>((_resolve, reject) => {
+              failFirst = reject;
+            });
+          }
+          const socket = createFakeSocket();
+          created.push(socket);
+          return socket.sock;
+        }),
+      },
+    });
+    h.runtime.start();
+    await flush();
+    expect(calls).toBe(1);
+
+    await h.runtime.call("connection.connect", { forceNewQr: true });
+    await flush();
+    expect(created).toHaveLength(1);
+    created[0]?.emit("connection.update", { qr: "2@QR" });
+    await flush();
+    expect(h.runtime.getState()).toBe("qr");
+
+    failFirst(new Error("ENETUNREACH"));
+    await flush();
+    expect(h.runtime.getState()).toBe("qr");
+    expect(h.manual.pending.size).toBe(0);
+    await h.runtime.stop();
   });
 });
 

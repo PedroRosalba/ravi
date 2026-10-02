@@ -617,6 +617,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     if (this.stopped) return;
     this.stopped = true;
     this.generation++;
+    this.connecting = null;
     this.clearSupervisor();
     this.clearPresenceTimers();
     const lib = this.loadedLibrary;
@@ -686,12 +687,14 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
   /**
    * `connection.disconnect`: close the socket, keep the session. Persisted: the instance
    * stays down across runner restarts until `connection.connect`. Bumping the generation
-   * also cancels a connection still waiting for Baileys to load.
+   * also cancels a connection still waiting for Baileys to load; releasing `connecting`
+   * lets a later `connection.connect` start a fresh attempt instead of waiting on it.
    */
   async disconnect(): Promise<void> {
     this.manualDisconnect = true;
     this.writeManualDisconnectMarker(true);
     this.generation++;
+    this.connecting = null;
     this.clearSupervisor();
     this.clearPresenceTimers();
     const lib = this.loadedLibrary;
@@ -716,6 +719,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
   async logout(): Promise<void> {
     this.manualDisconnect = true;
     this.generation++;
+    this.connecting = null;
     this.clearSupervisor();
     this.clearPresenceTimers();
     const lib = await this.library();
@@ -927,7 +931,18 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
       if (this.connecting === pending) this.connecting = null;
     };
     const pending: Promise<void> = this.createConnection().then(settle, (error: unknown) => {
+      // A superseded attempt (disconnect/logout/stop/forceNewQr released or replaced the
+      // slot) must not overwrite the newer state or arm the supervisor.
+      const current = this.connecting === pending;
       settle();
+      if (!current) {
+        this.log.debug("Superseded WhatsApp connection attempt failed", {
+          instanceId: this.instanceId,
+          trigger,
+          error: errorMessage(error),
+        });
+        return;
+      }
       this.onConnectionFailure(trigger, error);
     });
     this.connecting = pending;
