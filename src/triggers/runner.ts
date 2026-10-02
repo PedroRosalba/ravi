@@ -25,7 +25,7 @@ import {
   expandHome,
 } from "../router/index.js";
 import { getAgent } from "../router/config.js";
-import { dbListTriggers, dbGetTrigger, dbUpdateTriggerState } from "./triggers-db.js";
+import { dbListTriggers, dbGetTrigger, dbRecordTriggerFilterRejects, dbUpdateTriggerState } from "./triggers-db.js";
 import type { CompiledFilter } from "./filter.js";
 import type { Trigger } from "./types.js";
 import { resolveTriggerActivation } from "./activation.js";
@@ -47,6 +47,23 @@ interface PreparedTrigger {
 interface TopicSubscription {
   stream: TopicSub;
   triggers: PreparedTrigger[];
+}
+
+interface PendingFilterRejects {
+  count: number;
+  lastRejectAt: number;
+  topic: string;
+  filter: string | undefined;
+}
+
+/** Filter rejects are batched so a busy topic costs one DB write per trigger per window. */
+const FILTER_REJECT_FLUSH_MS = 5_000;
+const MAX_LOGGED_EVENT_KEYS = 20;
+
+/** Top-level field names only: enough to spot a filter path that the event never carries, no values. */
+function eventKeysForLog(data: unknown): string[] {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return [];
+  return Object.keys(data).slice(0, MAX_LOGGED_EVENT_KEYS);
 }
 
 export function planTriggerTopicRefresh(
@@ -90,6 +107,10 @@ export class TriggerRunner {
   private running = false;
   private recentEventFires = new Map<string, number>();
   private recentEventFireOps = 0;
+  private pendingFilterRejects = new Map<string, PendingFilterRejects>();
+  private filterRejectFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** trigger id + filter already logged at info, so each filter logs its first reject once. */
+  private loggedFilterRejects = new Set<string>();
 
   /**
    * Start the trigger runner.
@@ -117,6 +138,7 @@ export class TriggerRunner {
     log.info("Stopping trigger runner");
 
     this.teardownSubscriptions();
+    this.flushFilterRejects();
 
     log.info("Trigger runner stopped");
   }
@@ -281,11 +303,7 @@ export class TriggerRunner {
 
             // Filter check: evaluate trigger's filter expression against event data
             if (!prepared.filter.evaluate(event.data)) {
-              log.debug("Trigger filter did not match, skipping", {
-                triggerId: trigger.id,
-                triggerName: trigger.name,
-                filter: trigger.filter,
-              });
+              this.recordFilterReject(trigger, event);
               continue;
             }
 
@@ -461,6 +479,70 @@ export class TriggerRunner {
 
     // Update in-memory trigger too (for cooldown tracking)
     trigger.lastFiredAt = Date.now();
+  }
+
+  /**
+   * A filter that never matches used to be visible only at debug level, leaving
+   * `fireCount 0` with no trace. Count every reject for `ravi triggers show` and
+   * log the first one per filter at info with the event's top-level keys.
+   */
+  private recordFilterReject(trigger: Trigger, event: { topic: string; data: unknown }): void {
+    const now = Date.now();
+    const pending = this.pendingFilterRejects.get(trigger.id);
+    if (pending && pending.topic === trigger.topic && pending.filter === trigger.filter) {
+      pending.count += 1;
+      pending.lastRejectAt = now;
+    } else {
+      if (pending) this.flushFilterRejects();
+      this.pendingFilterRejects.set(trigger.id, {
+        count: 1,
+        lastRejectAt: now,
+        topic: trigger.topic,
+        filter: trigger.filter,
+      });
+    }
+
+    const logKey = `${trigger.id}\0${trigger.topic}\0${trigger.filter ?? ""}`;
+    if (!this.loggedFilterRejects.has(logKey)) {
+      this.loggedFilterRejects.add(logKey);
+      log.info("Trigger filter rejected an event; later rejects are counted in `ravi triggers show`", {
+        triggerId: trigger.id,
+        triggerName: trigger.name,
+        topic: event.topic,
+        filter: trigger.filter,
+        eventKeys: eventKeysForLog(event.data),
+      });
+    } else {
+      log.debug("Trigger filter did not match, skipping", {
+        triggerId: trigger.id,
+        triggerName: trigger.name,
+        filter: trigger.filter,
+      });
+    }
+
+    if (!this.filterRejectFlushTimer) {
+      this.filterRejectFlushTimer = setTimeout(() => {
+        this.filterRejectFlushTimer = null;
+        this.flushFilterRejects();
+      }, FILTER_REJECT_FLUSH_MS);
+      this.filterRejectFlushTimer.unref?.();
+    }
+  }
+
+  private flushFilterRejects(): void {
+    if (this.filterRejectFlushTimer) {
+      clearTimeout(this.filterRejectFlushTimer);
+      this.filterRejectFlushTimer = null;
+    }
+    const batch = [...this.pendingFilterRejects.entries()];
+    this.pendingFilterRejects.clear();
+    for (const [triggerId, rejects] of batch) {
+      try {
+        dbRecordTriggerFilterRejects(triggerId, rejects);
+      } catch (error) {
+        log.warn("Failed to record trigger filter rejects", { triggerId, error });
+      }
+    }
   }
 
   private truncateForPrompt(text: string, max = 4000): string {
