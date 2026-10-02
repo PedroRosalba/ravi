@@ -420,6 +420,53 @@ describe("WhatsApp native channel driver: real runtime", () => {
     await runtime.stop();
   });
 
+  it("retries a failed baileys load on the next connect instead of staying failed", async () => {
+    const instanceId = uniqueInstanceId("drv");
+    const sockets: FakeSocket[] = [];
+    const library = fakeLibrary(sockets);
+    const nats = createFakeNats();
+    let loads = 0;
+    const loadLibrary = mock(async () => {
+      loads++;
+      if (loads === 1) throw new Error("Cannot find module '/opt/ravi/dist/vendor/baileys.js'");
+      return library;
+    });
+    const driver = createWhatsAppChannelDriver({
+      getConfig: () => config([channel("main")], [instance("main", instanceId)]),
+      connection: () => nats,
+      jetstream: () => createFakeJetStream().js,
+      loadLibrary,
+      rpcDrainTimeoutMs: 50,
+      runtimeOptions: {
+        authStorage: createMemoryAuthStorage({ registered: true }).storage,
+        ensureInboundStream: async () => {},
+        logger: silentLogger,
+        env: {},
+        sleep: async () => {},
+      },
+    });
+    const runtime = await driver.createRuntime({ channel: { name: "main", provider: "whatsapp" }, host });
+
+    await runtime.start();
+    await flush();
+    expect(runtime.health()).toEqual({ status: "failed", reason: "missing_dependency" });
+    expect(sockets).toHaveLength(0);
+    expect(loadLibrary).toHaveBeenCalledTimes(1);
+
+    await expect(
+      nats.request(whatsappRpcSubject(instanceId), rpcRequest(instanceId, "connection.connect")),
+    ).resolves.toMatchObject({ ok: true, data: { status: "connecting" } });
+    await flush();
+    expect(loadLibrary).toHaveBeenCalledTimes(2);
+    expect(sockets).toHaveLength(1);
+    expect(runtime.health().status).toBe("starting");
+
+    sockets[0]?.emit("connection.update", { connection: "open" });
+    await flush();
+    expect(runtime.health()).toMatchObject({ status: "connected" });
+    await runtime.stop();
+  });
+
   it("rejects invalid socket options from channel defaults", async () => {
     const wa = channel("main", { defaults: { whatsapp: { connectTimeoutMs: -1 } } });
     const driver = createWhatsAppChannelDriver({

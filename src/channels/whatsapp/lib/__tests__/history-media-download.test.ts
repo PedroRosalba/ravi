@@ -11,7 +11,8 @@ import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 
 // Spread the real module: mock.module is process-wide, so every other export stays real.
-const realBaileys = await import("baileys");
+const { loadBaileys } = await import("../../baileys-loader.js");
+const realBaileys = await loadBaileys();
 const downloadMediaMessage = mock(async () => Readable.from([Buffer.from([1, 2, 3])]));
 mock.module("baileys", () => ({ ...realBaileys, downloadMediaMessage }));
 

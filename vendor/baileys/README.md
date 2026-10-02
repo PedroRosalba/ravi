@@ -2,7 +2,7 @@
 
 `baileys-v7.0.0-rc14.tgz` is built from the upstream `7.0.0-rc14` npm release and kept at the same package version so the local-file dependency remains reproducible. It is a byte-identical copy of Omni's `packages/channel-whatsapp/vendor/baileys-v7.0.0-rc14.tgz`.
 
-In ravi it is a build-time `devDependency` (`file:vendor/baileys/...`, next to the `audio-decode` shim in `vendor/audio-decode-shim/`). `bun run build:cli` inlines Baileys into a lazily loaded chunk of `dist/bundle/`, so the published package declares no `file:` dependency and needs nothing from `vendor/` at runtime. The tarball is committed despite the global `*.tgz` ignore rule (see the `!vendor/**/*.tgz` exception in `.gitignore`): `bun install --frozen-lockfile` needs it.
+In ravi it is a build-time `devDependency` (`file:vendor/baileys/...`, next to the `audio-decode` shim in `vendor/audio-decode-shim/`). It is never inlined into the CLI bundle: `build:vendor` bundles `vendor/baileys-entry.ts` (`export * from "baileys"`) into `dist/vendor/baileys.js` (`--target bun --minify --external sharp --external jimp --external link-preview-js`), and the single-file `dist/bundle/index.js` loads it at run time through `src/channels/whatsapp/baileys-loader.ts` (`loadBaileys()` resolves `../vendor/baileys.js` relative to the running bundle; in a source checkout it imports the bare `baileys` package instead). No ravi source file imports a runtime value from `"baileys"`; code that needs one calls `baileys()` after `loadBaileys()` resolved. So the published package declares no `file:` dependency and needs nothing from `vendor/` at runtime, and processes that never open a WhatsApp socket (the CLI, the daemon) never load Baileys. The tarball is committed despite the global `*.tgz` ignore rule (see the `!vendor/**/*.tgz` exception in `.gitignore`): `bun install --frozen-lockfile` needs it.
 
 Omni carries four focused changes in this artifact:
 
@@ -29,8 +29,8 @@ A pinned tarball has no update signal, so check `npm view baileys dist-tags` whe
    bun install --frozen-lockfile
    bunx tsc --noEmit -p .
    bun test src/channels/whatsapp/
-   bun run build:cli
+   bun run build
    ```
 
-   Once the runner registers the WhatsApp driver, `grep -l 'web.whatsapp.com' dist/bundle/*.js` must list only a `runtime-library-*.js` chunk: Baileys belongs in the chunk loaded when a WhatsApp runtime starts, never in `index.js` or a chunk it imports statically.
+   `grep -l 'web.whatsapp.com' dist/bundle/*.js dist/vendor/*.js` must list only `dist/vendor/baileys.js`: Baileys belongs in the vendored bundle the runner loads when a WhatsApp runtime starts, never in `dist/bundle/index.js`.
 5. Update the SHA-256 above, commit the tarball, `package.json` and `bun.lock` together, and restart the runner (`ravi channels restart`) to pick up the new bundle.

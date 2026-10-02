@@ -9,8 +9,8 @@ import { mkdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { WAMessage } from "baileys";
-import { downloadMediaMessage } from "baileys";
+import type { WAMessage, downloadMediaMessage } from "baileys";
+import { baileys } from "../../baileys-loader.js";
 import { DownloadTooLargeError } from "../foundation.js";
 import { getDocumentMessage } from "./message.js";
 
@@ -167,7 +167,7 @@ export async function downloadMediaToBuffer(msg: WAMessage): Promise<{ buffer: B
   }
 
   try {
-    const raw = await downloadMediaMessage(msg, "buffer", {});
+    const raw = await baileys().downloadMediaMessage(msg, "buffer", {});
 
     // Baileys may return Buffer, Uint8Array, or null
     let buffer: Buffer;
@@ -207,7 +207,7 @@ export async function downloadMediaToFile(
   const mediaInfo = detectMediaType(msg);
   if (!mediaInfo) return null;
 
-  const stream = await downloadMediaMessage(msg, "stream", {}, context);
+  const stream = await baileys().downloadMediaMessage(msg, "stream", {}, context);
   const size = await writeMediaStreamToFile(stream, outputPath, maxSizeBytes);
   if (size === 0) return null;
   return { mimeType: mediaInfo.mimeType, size };

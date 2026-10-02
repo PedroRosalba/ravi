@@ -6,9 +6,9 @@
  */
 
 import type { AuthenticationState, GroupMetadata, WAMessageKey, WASocket, proto } from "baileys";
-import { Browsers, fetchLatestBaileysVersion, default as makeWASocket } from "baileys";
 import NodeCache from "node-cache";
 import pino from "pino";
+import { baileys } from "../baileys-loader.js";
 
 /**
  * Socket configuration options
@@ -117,7 +117,7 @@ export function resolveHistoryIdentity(
 ): { browser: [string, string, string]; supportGroupHistory: boolean } {
   const desktop = (config.historyIdentity ?? "desktop") === "desktop";
   return {
-    browser: config.browser ?? (desktop ? Browsers.macOS("Desktop") : Browsers.ubuntu("Chrome")),
+    browser: config.browser ?? (desktop ? baileys().Browsers.macOS("Desktop") : baileys().Browsers.ubuntu("Chrome")),
     supportGroupHistory: config.supportGroupHistory ?? desktop,
   };
 }
@@ -180,7 +180,7 @@ export async function createSocket(config: SocketConfig): Promise<WASocket> {
   const { browser, supportGroupHistory } = resolveHistoryIdentity(mergedConfig);
 
   // Get latest Baileys version for compatibility
-  const { version } = await fetchLatestBaileysVersion();
+  const { version } = await baileys().fetchLatestBaileysVersion();
 
   // Create message retry counter cache
   const msgRetryCounterCache = new NodeCache();
@@ -193,7 +193,7 @@ export async function createSocket(config: SocketConfig): Promise<WASocket> {
   // per-key mutexes and transaction-level caching, so the extra global mutex is
   // unnecessary and actively harmful with network-backed stores.
 
-  return makeWASocket({
+  return baileys().makeWASocket({
     version,
     logger,
     auth: {

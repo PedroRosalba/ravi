@@ -12,9 +12,9 @@
 
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { normalizeMessageContent, proto as protoNs } from "baileys";
 import type { MessageUpsertType, WAMessage, WAMessageKey, WASocket, proto } from "baileys";
 import { getRaviStateDir } from "../../../../utils/paths.js";
+import { baileys } from "../../baileys-loader.js";
 import {
   type ContentType,
   type DedupeCache,
@@ -38,9 +38,6 @@ import { decryptMsgSecret, getMessageSecret, rememberMessageSecret } from "../ut
 import { getMediaSize } from "./media.js";
 
 const log = createLogger("whatsapp:messages");
-
-/** Runtime protobuf codec (the `proto` type import is types-only). */
-const protoMessage = protoNs.Message;
 
 /** Fallback dedupe cache — used when no per-instance cache is provided */
 const fallbackDedupeCache = createInboundDedupeCache();
@@ -112,7 +109,7 @@ type ContentExtractor = (message: MessageContent) => ExtractedContent | null;
  */
 function decodeEditPlaintext(plaintext: Buffer): MessageContent | undefined {
   try {
-    const decoded = protoMessage.decode(plaintext) as unknown as MessageContent;
+    const decoded = baileys().proto.Message.decode(plaintext) as unknown as MessageContent;
     return decoded?.protocolMessage?.editedMessage ?? undefined;
   } catch (error) {
     log.debug("Failed to decode decrypted edit payload", { error: String(error) });
@@ -1341,7 +1338,7 @@ export function setupMessageHandlers(
       // Message edits: Baileys re-emits every MESSAGE_EDIT protocol message here as
       // `{ editedMessage: { message: <new content> } }` keyed by the ORIGINAL message id,
       // after normalizing whatever envelope the edit arrived in (omni#1061).
-      const newText = extractEditedText(normalizeMessageContent(update.update.message));
+      const newText = extractEditedText(baileys().normalizeMessageContent(update.update.message));
       if (newText && rememberEdit(update.key.id || "", newText)) {
         const { chatId } = resolveChatId(plugin, instanceId, { key: update.key } as WAMessage);
         await plugin.handleMessageEdited(instanceId, update.key.id || "", chatId, newText, update.key.fromMe || false);

@@ -6,7 +6,7 @@
  */
 
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from "baileys";
-import { BufferJSON, initAuthCreds, proto } from "baileys";
+import { baileys } from "../baileys-loader.js";
 import { type PluginStorage, createLogger } from "./foundation.js";
 
 const log = createLogger("whatsapp:auth");
@@ -16,7 +16,7 @@ const log = createLogger("whatsapp:auth");
  * `useMultiFileAuthState`: Buffers and Uint8Arrays become `{ type: 'Buffer', data: <base64> }`.
  */
 function serialize(data: unknown): string {
-  return JSON.stringify(data, BufferJSON.replacer);
+  return JSON.stringify(data, baileys().BufferJSON.replacer);
 }
 
 /**
@@ -24,7 +24,7 @@ function serialize(data: unknown): string {
  * `{ type: 'Buffer', data: number[] }` form via its numeric-key fallback.
  */
 function deserialize<T>(json: string): T {
-  return JSON.parse(json, BufferJSON.reviver) as T;
+  return JSON.parse(json, baileys().BufferJSON.reviver) as T;
 }
 
 type SignalDataType = keyof SignalDataTypeMap;
@@ -35,7 +35,7 @@ type SignalDataType = keyof SignalDataTypeMap;
  */
 function deserializeSignalData<T extends SignalDataType>(type: T, data: unknown): SignalDataTypeMap[T] {
   if (type === "app-state-sync-key" && data && typeof data === "object") {
-    return proto.Message.AppStateSyncKeyData.fromObject(
+    return baileys().proto.Message.AppStateSyncKeyData.fromObject(
       data as Record<string, unknown>,
     ) as unknown as SignalDataTypeMap[T];
   }
@@ -83,7 +83,7 @@ export async function createStorageAuthState(
     }
     log.info("Restored credentials", { instanceId, registered: creds.registered });
   } else {
-    creds = initAuthCreds();
+    creds = baileys().initAuthCreds();
     log.info("Created new credentials", { instanceId });
   }
 
@@ -139,7 +139,7 @@ export async function createStorageAuthState(
   /** Parse a raw storage value into a usable object, reconstructing Buffers */
   function parseStorageValue(value: unknown): unknown {
     if (typeof value === "string") return deserialize<unknown>(value);
-    return deserialize<unknown>(JSON.stringify(value, BufferJSON.replacer));
+    return deserialize<unknown>(JSON.stringify(value, baileys().BufferJSON.replacer));
   }
 
   /**

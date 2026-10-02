@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { BufferJSON, initAuthCreds, proto } from "baileys";
 import { getDb } from "../../../../router/router-db.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../../../../test/ravi-state.js";
+import { loadBaileys } from "../../baileys-loader.js";
 import { clearAuthState, clearSenderKeys, createStorageAuthState } from "../auth.js";
 import {
   SqliteWhatsAppAuthStorage,
@@ -10,6 +10,8 @@ import {
   hasWhatsAppAuthCreds,
   parseWhatsAppAuthKey,
 } from "../auth-store.js";
+
+const { BufferJSON, initAuthCreds, proto } = await loadBaileys();
 
 const INSTANCE = "5f0c1d2e-0000-4000-8000-000000000001";
 const OTHER_INSTANCE = "5f0c1d2e-0000-4000-8000-000000000002";

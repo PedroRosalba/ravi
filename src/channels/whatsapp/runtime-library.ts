@@ -1,14 +1,15 @@
 /**
- * The Baileys-loading half of the WhatsApp runtime.
+ * The Baileys-backed half of the WhatsApp runtime.
  *
- * Every module re-exported here imports runtime values from `baileys`. The runtime
- * (`runtime.ts`) only holds a type reference to this file and loads it through its
- * injected `loadLibrary` dependency (default: a dynamic `import()`), so constructing
- * a runtime, reading its health, or building the CLI never evaluates Baileys.
- * Tests inject a library whose `createSocket` returns a fake socket.
+ * Every function collected here uses Baileys runtime values through `baileys()`
+ * (baileys-loader.ts), so `loadWhatsAppLibrary()` awaits `loadBaileys()` before
+ * handing the library out. The runtime (`runtime.ts`) only holds a type reference to
+ * this file and loads it through its injected `loadLibrary` dependency, so
+ * constructing a runtime, reading its health, or building the CLI never evaluates
+ * Baileys. Tests inject a library whose `createSocket` returns a fake socket.
  */
 
-import { DisconnectReason } from "baileys";
+import { type LoadBaileysOptions, baileys, loadBaileys } from "./baileys-loader.js";
 import { clearAuthState, createStorageAuthState } from "./lib/auth.js";
 import { setupAllEventHandlers } from "./lib/handlers/all-events.js";
 import {
@@ -53,12 +54,15 @@ export const whatsappLibrary: WhatsAppLibrary = {
   tryDownloadMedia,
   extractQuotedContext,
   convertBufferForVoiceNote,
-  disconnectReason: {
-    loggedOut: DisconnectReason.loggedOut,
-    connectionReplaced: DisconnectReason.connectionReplaced,
+  /** Read from the loaded Baileys module (throws until `loadBaileys()` resolved). */
+  get disconnectReason() {
+    const reason = baileys().DisconnectReason;
+    return { loggedOut: reason.loggedOut, connectionReplaced: reason.connectionReplaced };
   },
 };
 
-export async function loadWhatsAppLibrary(): Promise<WhatsAppLibrary> {
+/** Load Baileys (once; a failure is retried on the next call), then return the library. */
+export async function loadWhatsAppLibrary(options?: LoadBaileysOptions): Promise<WhatsAppLibrary> {
+  await loadBaileys(options);
   return whatsappLibrary;
 }

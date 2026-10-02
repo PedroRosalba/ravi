@@ -12,7 +12,10 @@
 
 import { describe, expect, it } from "bun:test";
 import type { PluginStorage } from "../foundation.js";
+import { loadBaileys } from "../../baileys-loader.js";
 import { clearSenderKeys, createStorageAuthState } from "../auth.js";
+
+await loadBaileys();
 
 function patternToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");

@@ -304,7 +304,8 @@ const DEFAULT_TIMERS: WhatsAppRuntimeTimers = {
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-const loadDefaultLibrary = async (): Promise<WhatsAppLibrary> => (await import("./runtime-library.js")).whatsappLibrary;
+const loadDefaultLibrary = async (): Promise<WhatsAppLibrary> =>
+  (await import("./runtime-library.js")).loadWhatsAppLibrary();
 
 /** Ported `isTransientConnectionClosedError` (prewarm noise during reconnects). */
 export function isTransientConnectionClosedError(error: unknown): boolean {
@@ -882,9 +883,12 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
   }
 
   private async createConnection(): Promise<void> {
+    // Captured before the first await: a disconnect()/stop() issued while Baileys is
+    // still loading bumps the generation, and no socket may be opened afterwards.
+    const requestedGeneration = this.generation;
     const lib = await this.library();
+    if (requestedGeneration !== this.generation || this.stopped) return;
     const generation = ++this.generation;
-    if (this.stopped) return;
 
     // Cancel pending reconnect timers and close any live socket (no duplicate sockets).
     lib.cancelPendingReconnect(this.instanceId);

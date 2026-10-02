@@ -9,7 +9,7 @@
 
 import type { Boom } from "@hapi/boom";
 import type { ConnectionState, WASocket } from "baileys";
-import { DisconnectReason } from "baileys";
+import { baileys } from "../../baileys-loader.js";
 import { createLogger } from "../foundation.js";
 import type { WhatsAppConnectionHost } from "../types.js";
 
@@ -258,7 +258,7 @@ async function handleConnectionClose(
   const error = lastDisconnect?.error as Boom | undefined;
   const statusCode = error?.output?.statusCode;
   const reason = error?.output?.payload?.message || "Unknown error";
-  const wasLoggedOut = statusCode === DisconnectReason.loggedOut;
+  const wasLoggedOut = statusCode === baileys().DisconnectReason.loggedOut;
 
   // DEBUG: Log all disconnect events to diagnose reconnect loop
   log.info("Connection closed", {
@@ -288,7 +288,7 @@ async function handleConnectionClose(
   // If connection was replaced (conflict), do NOT auto-reconnect.
   // The replacing connection (our own reconnect or createConnection) is already active.
   // Reconnecting here would create a duplicate socket → infinite conflict loop.
-  if (statusCode === DisconnectReason.connectionReplaced) {
+  if (statusCode === baileys().DisconnectReason.connectionReplaced) {
     log.info("Connection replaced by another session, not reconnecting", { instanceId });
     reconnectAttempts.delete(instanceId);
     cancelPendingReconnect(instanceId);

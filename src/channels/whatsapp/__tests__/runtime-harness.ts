@@ -23,6 +23,10 @@ import {
 } from "../runtime.js";
 import type { WhatsAppObservedEvent } from "../runtime-events.js";
 import { type WhatsAppLibrary, whatsappLibrary } from "../runtime-library.js";
+import { loadBaileys } from "../baileys-loader.js";
+
+// The real handlers in the harness library read Baileys values through `baileys()`.
+await loadBaileys();
 
 export const OWNER_JID = "5511999990000:7@s.whatsapp.net";
 export const OWNER_LID = "99887766554433:7@lid";

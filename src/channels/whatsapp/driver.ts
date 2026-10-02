@@ -12,8 +12,11 @@
  *
  * Importing this module never loads Baileys: the runtime (`runtime.ts`) and the
  * Baileys-backed library (`runtime-library.ts`) are dynamic imports resolved when a
- * runtime is created / started. A missing `baileys` package surfaces as health
- * `failed` + reason `missing_dependency`.
+ * runtime is created / started, and Baileys itself is loaded by `loadBaileys()`
+ * (baileys-loader.ts: the vendored `dist/vendor/baileys.js` next to the bundle, else
+ * the bare package). `start()` preloads it and every socket creation awaits it. A
+ * load failure surfaces as health `failed` + reason `missing_dependency` and is
+ * retried on the next connect.
  */
 
 import type { JetStreamClient } from "nats";
@@ -97,7 +100,7 @@ export interface WhatsAppChannelDriverOptions {
   readonly createRuntime?: (
     options: WhatsAppRuntimeFactoryOptions,
   ) => WhatsAppDriverRuntime | Promise<WhatsAppDriverRuntime>;
-  /** Loads the Baileys-backed library. Default: dynamic import of `runtime-library.ts`. */
+  /** Loads the Baileys-backed library. Default: `loadWhatsAppLibrary()` (awaits `loadBaileys()`). */
   readonly loadLibrary?: () => Promise<WhatsAppLibrary>;
   /** Extra runtime options (tests: auth storage, timers, ...). */
   readonly runtimeOptions?: Partial<Omit<WhatsAppRuntimeOptions, "instanceId" | "jetstream" | "loadLibrary">>;
@@ -105,7 +108,8 @@ export interface WhatsAppChannelDriverOptions {
   readonly rpcDrainTimeoutMs?: number;
 }
 
-const defaultLoadLibrary = async (): Promise<WhatsAppLibrary> => (await import("./runtime-library.js")).whatsappLibrary;
+const defaultLoadLibrary = async (): Promise<WhatsAppLibrary> =>
+  (await import("./runtime-library.js")).loadWhatsAppLibrary();
 
 async function defaultCreateRuntime(options: WhatsAppRuntimeFactoryOptions): Promise<WhatsAppDriverRuntime> {
   const { WhatsAppRuntime, WhatsAppConnectionOptionsSchema } = await import("./runtime.js");
@@ -166,21 +170,25 @@ export function createWhatsAppChannelDriver(options: WhatsAppChannelDriverOption
         throw new NativeChannelDriverContractError("invalid_channel_configuration");
       }
 
-      // One library load shared by the dependency probe and the runtime.
+      // One library load shared by the dependency probe and the runtime. A failed load
+      // is forgotten, so the runtime's next connect (or the next start) tries again.
       let libraryLoad: Promise<WhatsAppLibrary> | null = null;
       let dependency: "unknown" | "ready" | "missing" = "unknown";
       const loadLibraryOnce = () => {
-        libraryLoad ??= loadLibrary().then(
+        if (libraryLoad) return libraryLoad;
+        const attempt = loadLibrary().then(
           (library) => {
             dependency = "ready";
             return library;
           },
           (error: unknown) => {
             dependency = "missing";
+            if (libraryLoad === attempt) libraryLoad = null;
             throw error;
           },
         );
-        return libraryLoad;
+        libraryLoad = attempt;
+        return attempt;
       };
 
       const runtime = await createRuntime({

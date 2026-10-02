@@ -4,8 +4,10 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { Browsers } from "baileys";
+import { loadBaileys } from "../../baileys-loader.js";
 import { DEFAULT_SOCKET_CONFIG, resolveHistoryIdentity } from "../socket.js";
+
+const { Browsers } = await loadBaileys();
 
 describe("DEFAULT_SOCKET_CONFIG (#70)", () => {
   it("syncFullHistory is false (prevents meId mutex contention)", () => {
