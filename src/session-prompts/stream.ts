@@ -19,7 +19,7 @@ import { getNats, ensureConnected, nats } from "../nats.js";
 import { inferDeliveryBarrier, requireDeliveryBarrier, type DeliveryBarrierSource } from "../delivery-barriers.js";
 import { recordPromptPublishedTrace } from "../session-trace/channel-trace.js";
 import { logger } from "../utils/logger.js";
-import { publishSessionPromptPublication } from "./session-prompt-publication.js";
+import { publishSessionPromptPublication } from "./publication.js";
 
 const log = logger.child("session-stream");
 const sc = StringCodec();

@@ -23,7 +23,7 @@ import {
 } from "nats";
 import { execFile } from "node:child_process";
 import { getNats, publish, nats } from "../nats.js";
-import { publishSessionPrompt } from "./session-stream.js";
+import { publishSessionPrompt } from "../session-prompts/stream.js";
 import { expandRaviCommandPrompt, RaviCommandError } from "../commands/index.js";
 import { channelMessagePrefixDelivery, parseChannelMessagePrefix } from "../channels/message-prefix.js";
 import { handleSlashCommand } from "../slash/index.js";

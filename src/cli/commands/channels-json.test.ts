@@ -314,7 +314,7 @@ mock.module("../../router/router-db.js", () => ({
   },
 }));
 
-mock.module("../../omni/session-stream.js", () => ({
+mock.module("../../session-prompts/stream.js", () => ({
   publishSessionPrompt: mock(async (sessionName: string, payload: Record<string, unknown>) => {
     publishedPrompts.push({ sessionName, payload });
   }),

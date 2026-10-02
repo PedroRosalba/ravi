@@ -54,7 +54,7 @@ import { startTaskCheckpointRunner, stopTaskCheckpointRunner } from "./tasks/ind
 import { startSyncRunner, stopSyncRunner } from "./sync/index.js";
 import { createSessionAdapterBus } from "./adapters/index.js";
 import { resolveOmniConnection } from "./omni-config.js";
-import { ensureSessionPromptsStream, publishSessionPrompt } from "./omni/session-stream.js";
+import { ensureSessionPromptsStream, publishSessionPrompt } from "./session-prompts/stream.js";
 import { ensureRaviEventsStream } from "./events/audit-stream.js";
 import { startWebhookHttpServerFromEnv, type WebhookHttpServerHandle } from "./webhooks/http-server.js";
 import { startHostCliGateway, type HostCliGatewayHandle } from "./cli/host-cli-gateway.js";

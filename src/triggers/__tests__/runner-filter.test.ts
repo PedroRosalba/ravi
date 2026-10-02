@@ -61,7 +61,7 @@ function createTopicStream(topic: string): AsyncIterableIterator<BusEvent> {
 }
 
 const actualNatsModule = await import("../../nats.js");
-const actualSessionStreamModule = await import("../../omni/session-stream.js");
+const actualSessionStreamModule = await import("../../session-prompts/stream.js");
 
 mock.module("../../nats.js", () => ({
   ...actualNatsModule,
@@ -76,7 +76,7 @@ mock.module("../../nats.js", () => ({
   },
 }));
 
-mock.module("../../omni/session-stream.js", () => ({
+mock.module("../../session-prompts/stream.js", () => ({
   ...actualSessionStreamModule,
   publishSessionPrompt: mock(async (sessionName: string, payload: Record<string, unknown>) => {
     publishCalls.push({ sessionName, payload });

@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from "bun:tes
 
 const actualRouterIndexModule = await import("../router/index.js");
 const actualContactsModule = await import("../contacts.js");
-const actualSessionStreamModule = await import("./session-stream.js");
+const actualSessionStreamModule = await import("../session-prompts/stream.js");
 // Cópia: o namespace é mutado in-place por mock.module.
 const actualNatsModule = { ...(await import("../nats.js")) };
 const actualMediaModule = { ...(await import("../utils/media.js")) };
@@ -42,7 +42,7 @@ mock.module("../nats.js", () => ({
   },
 }));
 
-mock.module("./session-stream.js", () => ({
+mock.module("../session-prompts/stream.js", () => ({
   ...actualSessionStreamModule,
   publishSessionPrompt: mock(async () => {}),
 }));

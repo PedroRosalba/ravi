@@ -214,7 +214,12 @@ export const RUNTIME_PATH_MAP: Record<string, string[]> = {
     "src/hooks/tool-safety.test.ts",
   ],
   "src/session-trace/": ["src/session-trace/session-trace.test.ts", "src/session-trace/cloud-trace-export.test.ts"],
-  "src/triggers/": ["src/triggers/triggers.test.ts", "src/triggers/__tests__/topic-catalog.test.ts"],
+  "src/triggers/": [
+    "src/triggers/triggers.test.ts",
+    "src/triggers/__tests__/topic-catalog.test.ts",
+    // Trigger runner: event filtering and the session prompt it publishes.
+    "src/triggers/__tests__/runner-filter.test.ts",
+  ],
   "src/approval/": ["src/approval/service.test.ts", "src/approval/grantor.test.ts", "src/approval/decision.test.ts"],
   "src/apps/": ["src/apps/router.test.ts"],
   "src/devin/": ["src/devin/client.test.ts", "src/devin/store.test.ts"],

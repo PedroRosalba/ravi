@@ -5,8 +5,8 @@ import {
   ensureSessionPromptsStream,
   resetSessionPromptInfrastructureCacheForTests,
   resolveSessionPromptPublishOptions,
-} from "./session-stream.js";
-import { publishSessionPromptPublication } from "./session-prompt-publication.js";
+} from "./stream.js";
+import { publishSessionPromptPublication } from "./publication.js";
 import { inferDeliveryBarrier, requireDeliveryBarrier } from "../delivery-barriers.js";
 
 let currentJsm: PromptJsm;

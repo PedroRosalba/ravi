@@ -11,7 +11,7 @@ const actualRouterDbModule = await import("../router/router-db.js");
 const actualRouterIndexModule = await import("../router/index.js");
 const actualRouterSessionsModule = await import("../router/sessions.js");
 const actualChatDbModule = await import("../db.js");
-const actualSessionStreamModule = await import("./session-stream.js");
+const actualSessionStreamModule = await import("../session-prompts/stream.js");
 // Cópia: o namespace é mutado in-place por mock.module.
 const actualContactsModule = { ...(await import("../contacts.js")) };
 const actualNatsModule = { ...(await import("../nats.js")) };
@@ -94,7 +94,7 @@ mock.module("../nats.js", () => ({
   },
 }));
 
-mock.module("./session-stream.js", () => ({
+mock.module("../session-prompts/stream.js", () => ({
   ...actualSessionStreamModule,
   publishSessionPrompt: mock(async (sessionName: string, payload: Record<string, unknown>) => {
     promptCalls.push([sessionName, payload]);
