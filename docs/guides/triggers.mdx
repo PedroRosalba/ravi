@@ -58,7 +58,7 @@ Use `ravi triggers topics` to inspect the trigger-ready topic catalog with paylo
 |---------|-------------|
 | `ravi.inbound.reaction` | Emoji reactions received. Payload: `{ targetMessageId, emoji, senderId }` |
 | `ravi.inbound.reply` | Replies to bot messages. Payload: `{ targetMessageId, text, senderId }` |
-| `ravi.inbound.pollVote` | Poll vote events. Payload: `{ pollMessageId, votes: [{ name, voters[] }] }` |
+| `ravi.inbound.pollVote` | Poll vote events. Payload: `{ pollMessageId, votes: [{ name, voters[] }] }`. No Ravi publisher emits it today. |
 
 Channel message aliases such as `whatsapp.*.inbound` and channel reaction aliases such as `whatsapp.*.reaction` are not trigger-ready subjects. Inbound channel messages are consumed by the inbound pipeline from `CHANNEL_INBOUND` (WhatsApp, `ravi.channel.inbound.whatsapp.*`) or from the legacy Omni bridge streams (Telegram/Discord); reaction triggers use `ravi.inbound.reaction`.
 
