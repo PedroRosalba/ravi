@@ -968,7 +968,7 @@ To force ravi to **reprocess** messages, delete the durable; the daemon recreate
 ```bash
 # WARNING: ravi won't get new WhatsApp messages until the daemon restarts
 nats consumer rm CHANNEL_INBOUND ravi-whatsapp-messages --server nats://127.0.0.1:4222
-ravi daemon restart
+ravi daemon restart -m "recreate the ravi-whatsapp-messages durable"
 ```
 
 ### Live subscribe (plain pub/sub — no JetStream)

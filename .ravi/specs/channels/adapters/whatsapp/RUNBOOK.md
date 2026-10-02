@@ -74,7 +74,7 @@ step 3 and step 5 each instance is silent (see below).
 3. Restart both processes on the same bundle, daemon first:
 
    ```bash
-   ravi daemon restart && ravi channels restart
+   ravi daemon restart -m "whatsapp runner upgrade" && ravi channels restart
    ravi daemon status              # runtime alignment; nats owner
    ```
 

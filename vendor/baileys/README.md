@@ -33,4 +33,4 @@ A pinned tarball has no update signal, so check `npm view baileys dist-tags` whe
    ```
 
    `grep -l 'web.whatsapp.com' dist/bundle/*.js dist/vendor/*.js` must list only `dist/vendor/baileys.js`: Baileys belongs in the vendored bundle the runner loads when a WhatsApp runtime starts, never in `dist/bundle/index.js`.
-5. Update the SHA-256 above, commit the tarball, `package.json` and `bun.lock` together, and restart the daemon and then the runner (`ravi daemon restart && ravi channels restart`) to pick up the new bundle; the runner refuses a bundle that differs from the daemon's.
+5. Update the SHA-256 above, commit the tarball, `package.json` and `bun.lock` together, and restart the daemon and then the runner (`ravi daemon restart -m "baileys upgrade" && ravi channels restart`) to pick up the new bundle; the runner refuses a bundle that differs from the daemon's.

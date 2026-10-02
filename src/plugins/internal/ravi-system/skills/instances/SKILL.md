@@ -130,7 +130,7 @@ O WhatsApp roda o Baileys dentro do runner `ravi channels` (processo PM2 `ravi-c
 Pré-requisitos:
 
 - `ravi daemon start` rodando (ele repassa os QR codes para o CLI);
-- `ravi channels start` rodando (o daemon não sobe o runner sozinho). Depois de atualizar o Ravi, reinicie o daemon e depois o runner (`ravi daemon restart && ravi channels restart`): o runner recusa um bundle diferente do daemon.
+- `ravi channels start` rodando (o daemon não sobe o runner sozinho). Depois de atualizar o Ravi, reinicie o daemon e depois o runner (`ravi daemon restart -m "whatsapp runner upgrade" && ravi channels restart`; o `-m` com o motivo é obrigatório): o runner recusa um bundle diferente do daemon.
 
 O que `ravi instances connect <name>` faz:
 
@@ -155,7 +155,7 @@ Uma instância por vez (o UUID, as sessões e os chats não mudam):
 
 ```bash
 ravi instances show vendas --json                      # anote o instanceId (UUID): ele não muda
-ravi daemon restart && ravi channels restart           # mesmo bundle nos dois, daemon primeiro
+ravi daemon restart -m "whatsapp runner upgrade" && ravi channels restart   # mesmo bundle nos dois, daemon primeiro
 omni instances disconnect <uuid>                       # para a instância no lado do Omni
 ravi instances connect vendas                          # escaneie o QR novo
 ravi instances status vendas --json                    # transport "whatsapp", status "connected"
