@@ -144,7 +144,14 @@ export function resolveOutboundAccount(
   const record = findInstanceRecord(config, account);
   const aliases = nativeAccountAliases(config, account);
 
-  // WhatsApp first: the instance record (or its WhatsApp binding) decides, whatever the hint.
+  // A Slack hint keeps a matching native Slack channel, even when a same-named WhatsApp
+  // instance record exists (instance records default to channel "whatsapp").
+  if (channelHint && NATIVE_OUTBOUND_PROVIDERS.has(channelHint)) {
+    const native = findNativeChannelAccount(config.channels, account, { provider: channelHint, aliases });
+    if (native) return nativeResolution(account, native);
+  }
+
+  // WhatsApp next: the instance record (or its WhatsApp binding) decides for any other hint.
   if (record && (isWhatsAppChannelType(record.channel) || resolveWhatsAppBinding(config, account))) {
     return whatsappResolution(config, account, record);
   }
@@ -160,8 +167,7 @@ export function resolveOutboundAccount(
   const bridge = bridgeInstance(config, record);
 
   if (channelHint && NATIVE_OUTBOUND_PROVIDERS.has(channelHint)) {
-    const native = findNativeChannelAccount(config.channels, account, { provider: channelHint, aliases });
-    if (native) return nativeResolution(account, native);
+    // No matching native channel (checked above): fall back to the bridge record.
     if (bridge.disabled) return { kind: "unresolved", accountId: account, reason: "disabled" };
     if (bridge.instanceId) return { kind: "bridge", accountId: account, instanceId: bridge.instanceId };
     return { kind: "unresolved", accountId: account, reason: "not_found" };

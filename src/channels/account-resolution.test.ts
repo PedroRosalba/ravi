@@ -274,6 +274,28 @@ describe("resolveOutboundAccount", () => {
     });
   });
 
+  it("keeps a Slack-hinted send on the native Slack channel when a same-named WhatsApp instance exists", () => {
+    const cfg = config({
+      channels: { main: slackChannel({ name: "main", credentialConnection: "main-secret" }) },
+      instances: { main: whatsappInstance() },
+      instanceToAccount: { [WA_UUID]: "main" },
+    });
+
+    expect(resolveOutboundAccount("main", { channel: "slack", config: cfg })).toMatchObject({
+      kind: "native",
+      accountId: "main",
+      instanceId: "main",
+      provider: "slack",
+      channelName: "main",
+    });
+    // Without a Slack hint the WhatsApp instance still wins.
+    expect(resolveOutboundAccount("main", { channel: "whatsapp", config: cfg })).toMatchObject({ kind: "whatsapp" });
+    expect(resolveOutboundAccount("main", { config: cfg })).toMatchObject({ kind: "whatsapp" });
+    // A Slack hint with no matching native channel still falls through to the WhatsApp record.
+    const noSlack = config({ instances: { main: whatsappInstance() }, instanceToAccount: { [WA_UUID]: "main" } });
+    expect(resolveOutboundAccount("main", { channel: "slack", config: noSlack })).toMatchObject({ kind: "whatsapp" });
+  });
+
   it("prefers native Slack over a leftover bridge mapping when the channel is Slack", () => {
     const resolved = resolveOutboundAccount("hana-slack", {
       channel: "slack",
