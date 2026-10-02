@@ -13,7 +13,7 @@ import { EventEmitter } from "node:events";
 import type { GroupMetadata, WASocket } from "baileys";
 import type { JetStreamClient } from "nats";
 import type { WhatsAppTransportEvent } from "../contract.js";
-import type { Logger } from "../lib/compat.js";
+import type { Logger } from "../lib/foundation.js";
 import type { SocketConfig } from "../lib/socket.js";
 import {
   type WhatsAppAuthStorage,

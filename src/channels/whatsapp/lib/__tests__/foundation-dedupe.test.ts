@@ -1,6 +1,6 @@
-// Ported from omni packages/channel-sdk/src/__tests__/dedupe.test.ts (now src/channels/whatsapp/lib/compat.ts).
+// Ported from omni packages/channel-sdk/src/__tests__/dedupe.test.ts (now src/channels/whatsapp/lib/foundation.ts).
 import { describe, expect, mock, test } from "bun:test";
-import { createInboundDedupeCache, validateCacheKey } from "../compat.js";
+import { createInboundDedupeCache, validateCacheKey } from "../foundation.js";
 
 function createMockLogger() {
   return {

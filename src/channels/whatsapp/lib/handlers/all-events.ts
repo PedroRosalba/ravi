@@ -7,7 +7,7 @@
 
 import type { WASocket } from "baileys";
 import { fromJid } from "../jid.js";
-import { createLogger } from "../compat.js";
+import { createLogger } from "../foundation.js";
 import type { WhatsAppEventsHost } from "../types.js";
 
 const waLog = createLogger("whatsapp:events");

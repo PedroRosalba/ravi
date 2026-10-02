@@ -57,7 +57,7 @@ import {
   createInboundDedupeCache,
   createLogger,
   markdownToWhatsApp,
-} from "./lib/compat.js";
+} from "./lib/foundation.js";
 import {
   type WhatsAppOutboundTimingConfig,
   getWhatsAppOutboundTimingConfig,

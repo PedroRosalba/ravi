@@ -10,7 +10,7 @@
  * - Exponential: Starting at 1s, max 30s, with jitter
  */
 
-import type { Logger } from "../compat.js";
+import type { Logger } from "../foundation.js";
 
 export interface RateLimitState {
   backoffUntil: number;

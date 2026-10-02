@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { PluginStorage } from "../compat.js";
+import type { PluginStorage } from "../foundation.js";
 import { clearSenderKeys, createStorageAuthState } from "../auth.js";
 
 function patternToRegex(pattern: string): RegExp {

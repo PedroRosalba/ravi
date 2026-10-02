@@ -7,7 +7,7 @@
 
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from "baileys";
 import { BufferJSON, initAuthCreds, proto } from "baileys";
-import { type PluginStorage, createLogger } from "./compat.js";
+import { type PluginStorage, createLogger } from "./foundation.js";
 
 const log = createLogger("whatsapp:auth");
 
@@ -31,7 +31,7 @@ type SignalDataType = keyof SignalDataTypeMap;
 
 /**
  * Rebuild protobuf-backed signal values, as Baileys' `useMultiFileAuthState` does.
- * (Omni disabled this because `proto` was unavailable under tsx; ravi always has it.)
+ * (The ported code disabled this because `proto` was unavailable under tsx; ravi always has it.)
  */
 function deserializeSignalData<T extends SignalDataType>(type: T, data: unknown): SignalDataTypeMap[T] {
   if (type === "app-state-sync-key" && data && typeof data === "object") {

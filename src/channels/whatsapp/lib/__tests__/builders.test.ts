@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { OutgoingMessage } from "../compat.js";
+import type { OutgoingMessage } from "../foundation.js";
 import { buildMessageContent } from "../senders/builders.js";
 
 const dummyVCard = () => "BEGIN:VCARD\nEND:VCARD";

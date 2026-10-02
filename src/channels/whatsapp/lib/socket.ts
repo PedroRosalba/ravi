@@ -40,7 +40,7 @@ export interface SocketConfig {
   /** Sync full message history on connect (default: false) */
   syncFullHistory?: boolean;
   /**
-   * Pairing identity for history sync (#1126, #1211). 'desktop' (default) = Browsers.macOS('Desktop')
+   * Pairing identity for history sync (omni#1126, omni#1211). 'desktop' (default) = Browsers.macOS('Desktop')
    * + supportGroupHistory (shows as "Mac OS" in Linked Devices); 'web' = Browsers.ubuntu('Chrome').
    * Independent of syncFullHistory.
    */
@@ -109,7 +109,7 @@ export const DEFAULT_SOCKET_CONFIG: Omit<
 };
 
 /**
- * Resolve the history-sync pairing identity (#1126, #1211) from historyIdentity (default 'desktop').
+ * Resolve the history-sync pairing identity (omni#1126, omni#1211) from historyIdentity (default 'desktop').
  * Explicit browser/supportGroupHistory still win. Deliberately not tied to syncFullHistory.
  */
 export function resolveHistoryIdentity(

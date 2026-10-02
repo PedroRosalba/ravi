@@ -1,6 +1,6 @@
-// Ported from omni packages/core/src/__tests__/markdown-to-whatsapp.test.ts (now src/channels/whatsapp/lib/compat.ts).
+// Ported from omni packages/core/src/__tests__/markdown-to-whatsapp.test.ts (now src/channels/whatsapp/lib/foundation.ts).
 import { describe, expect, test } from "bun:test";
-import { markdownToWhatsApp } from "../compat.js";
+import { markdownToWhatsApp } from "../foundation.js";
 
 describe("markdownToWhatsApp", () => {
   test("converts **bold** to *bold*", () => {

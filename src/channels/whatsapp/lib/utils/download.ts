@@ -11,7 +11,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { WAMessage } from "baileys";
 import { downloadMediaMessage } from "baileys";
-import { DownloadTooLargeError } from "../compat.js";
+import { DownloadTooLargeError } from "../foundation.js";
 import { getDocumentMessage } from "./message.js";
 
 /**

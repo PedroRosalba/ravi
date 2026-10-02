@@ -1,6 +1,6 @@
-// Ported from omni packages/channel-sdk/src/__tests__/download-guard.test.ts (now src/channels/whatsapp/lib/compat.ts).
+// Ported from omni packages/channel-sdk/src/__tests__/download-guard.test.ts (now src/channels/whatsapp/lib/foundation.ts).
 import { describe, expect, mock, test } from "bun:test";
-import { DownloadTooLargeError, createDownloadGuard } from "../compat.js";
+import { DownloadTooLargeError, createDownloadGuard } from "../foundation.js";
 
 function createMockLogger() {
   return {

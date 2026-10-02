@@ -7,7 +7,7 @@
 
 import { describe, expect, it, mock } from "bun:test";
 import { WHATSAPP_CHANNEL_TYPE } from "../contract.js";
-import type { Logger } from "../lib/compat.js";
+import type { Logger } from "../lib/foundation.js";
 import { WhatsAppRuntimeError } from "../runtime-errors.js";
 import { OWNER_JID, createHarness, flush } from "./runtime-harness.js";
 

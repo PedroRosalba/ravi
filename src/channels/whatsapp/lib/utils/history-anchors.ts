@@ -1,5 +1,5 @@
 /**
- * Pure helpers for on-demand history paging (#1121, #1122).
+ * Pure helpers for on-demand history paging (omni#1121, omni#1122).
  */
 import type { MessageAnchor } from "../types.js";
 

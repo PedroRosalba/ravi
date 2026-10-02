@@ -10,7 +10,7 @@
 import type { Boom } from "@hapi/boom";
 import type { ConnectionState, WASocket } from "baileys";
 import { DisconnectReason } from "baileys";
-import { createLogger } from "../compat.js";
+import { createLogger } from "../foundation.js";
 import type { WhatsAppConnectionHost } from "../types.js";
 
 const log = createLogger("whatsapp:connection");

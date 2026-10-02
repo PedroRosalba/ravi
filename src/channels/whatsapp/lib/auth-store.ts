@@ -17,7 +17,7 @@
 
 import type { Database } from "bun:sqlite";
 import { getDb } from "../../../router/router-db.js";
-import type { PluginStorage } from "./compat.js";
+import type { PluginStorage } from "./foundation.js";
 
 export const WHATSAPP_AUTH_STATE_TABLE = "whatsapp_auth_state" as const;
 

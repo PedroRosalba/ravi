@@ -37,7 +37,7 @@ describe("resolveHistoryIdentity (#1126, #1211)", () => {
   });
 
   it("honours per-instance overrides", () => {
-    const browser: [string, string, string] = ["Omni", "Chrome", "1.0"];
+    const browser: [string, string, string] = ["Ravi", "Chrome", "1.0"];
     expect(resolveHistoryIdentity({ historyIdentity: "desktop", browser, supportGroupHistory: false })).toEqual({
       browser,
       supportGroupHistory: false,

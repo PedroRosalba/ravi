@@ -1,11 +1,11 @@
 /**
- * Local replacements for the `@omni/core` and `@omni/channel-sdk` symbols the
- * ported Omni WhatsApp library imports.
+ * Foundation primitives of the WhatsApp library (`lib/**`): logger, content types,
+ * outgoing message shapes, plugin storage, inbound sanitization and dedupe, the
+ * download guard, channel errors and markdown conversion.
  *
- * Everything here is a faithful port of the Omni implementation (same names,
- * same defaults, same log event names) so the ported handlers keep their
- * production behaviour. Only the logger is adapted: it is a thin wrapper over
- * ravi's `logger.child`.
+ * Ported from omni packages/core and packages/channel-sdk (same names, same defaults,
+ * same log event names) so the ported handlers keep their production behaviour. Only
+ * the logger is adapted: it is a thin wrapper over ravi's `logger.child`.
  */
 
 import { logger as raviLogger } from "../../../utils/logger.js";
@@ -14,7 +14,7 @@ import { logger as raviLogger } from "../../../utils/logger.js";
 // Logger (@omni/core createLogger / Logger)
 // ============================================================================
 
-/** Structured logger surface the Omni code relies on. */
+/** Structured logger surface the WhatsApp library relies on. */
 export interface Logger {
   debug(message: string, data?: Record<string, unknown>): void;
   info(message: string, data?: Record<string, unknown>): void;
@@ -22,7 +22,7 @@ export interface Logger {
   error(message: string, data?: Record<string, unknown>): void;
 }
 
-/** Omni `createLogger(module)` → ravi `logger.child(module)`. */
+/** `createLogger(module)` → ravi `logger.child(module)`. */
 export function createLogger(module: string): Logger {
   return raviLogger.child(module);
 }
@@ -113,7 +113,7 @@ export interface OutgoingContent {
   };
 }
 
-/** Well-known metadata keys for outgoing messages (open-ended like Omni). */
+/** Well-known metadata keys for outgoing messages (open-ended). */
 export interface MessageMetadata {
   messageFormatMode?: "convert" | "passthrough";
   systemNotice?: boolean;
@@ -467,7 +467,7 @@ export function createDownloadGuard(config?: DownloadGuardConfig): DownloadGuard
 // Errors (@omni/core ERROR_CODES / ChannelError)
 // ============================================================================
 
-/** Subset of Omni core error codes the WhatsApp library maps onto. */
+/** Subset of the ported core error codes the WhatsApp library maps onto. */
 export const ERROR_CODES = {
   UNKNOWN: "UNKNOWN",
   VALIDATION: "VALIDATION",
@@ -482,7 +482,7 @@ export const ERROR_CODES = {
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
 
-/** Port of Omni's `OmniError` → `ChannelError` hierarchy (flattened). */
+/** Port of the core error → `ChannelError` hierarchy (flattened). */
 export class ChannelError extends Error {
   readonly code: ErrorCode;
   readonly context?: Record<string, unknown>;

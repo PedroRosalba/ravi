@@ -7,7 +7,7 @@
 
 import { describe, expect, it, mock } from "bun:test";
 import { EventEmitter } from "node:events";
-import { createInboundDedupeCache } from "../compat.js";
+import { createInboundDedupeCache } from "../foundation.js";
 import { setupMessageHandlers } from "../handlers/messages.js";
 import { DecryptFailureTracker } from "../utils/decrypt-failure-tracker.js";
 import { createFakeHost } from "./fake-host.js";

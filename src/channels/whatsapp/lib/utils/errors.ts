@@ -1,12 +1,12 @@
 /**
  * Error handling utilities for WhatsApp plugin
  *
- * Maps Baileys/Boom errors to Omni error format.
+ * Maps Baileys/Boom errors to the WhatsApp channel error codes (`ChannelError`, foundation.ts).
  * WhatsAppError extends core ChannelError for standardized error handling.
  */
 
 import { Boom } from "@hapi/boom";
-import { ChannelError, type ErrorCode as CoreErrorCode, ERROR_CODES } from "../compat.js";
+import { ChannelError, type ErrorCode as CoreErrorCode, ERROR_CODES } from "../foundation.js";
 
 /**
  * Error codes for WhatsApp plugin errors
