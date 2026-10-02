@@ -1,5 +1,5 @@
 /**
- * Mention resolver for WhatsApp @name syntax (GH#209)
+ * Mention resolver for WhatsApp @name syntax (omni#209)
  *
  * Parses @name patterns from message text, resolves them against
  * a name→JID lookup map, and replaces with @phone format for WhatsApp rendering.

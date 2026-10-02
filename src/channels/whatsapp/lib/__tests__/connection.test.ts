@@ -7,7 +7,6 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { DisconnectReason } from "baileys";
 import {
   cancelPendingReconnect,
   resetConnectionState,
@@ -15,6 +14,9 @@ import {
   seedAuthenticated,
   setupConnectionHandlers,
 } from "../handlers/connection.js";
+import { loadBaileys } from "../../baileys-loader.js";
+
+const { DisconnectReason } = await loadBaileys();
 
 // ---------------------------------------------------------------------------
 // Helpers

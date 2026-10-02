@@ -1,7 +1,8 @@
 /**
  * Message event handlers for Baileys socket
  *
- * Handles incoming messages and converts them to Omni format.
+ * Handles incoming messages and hands them to the runtime host, which publishes
+ * them as `message.received` (WhatsAppInboundEvent, ../../events.ts).
  * Supports all WhatsApp message types including:
  * - Basic: text, image, audio, video, document, sticker
  * - Interactive: reaction, location, live_location, contact
@@ -11,9 +12,9 @@
 
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { normalizeMessageContent, proto as protoNs } from "baileys";
 import type { MessageUpsertType, WAMessage, WAMessageKey, WASocket, proto } from "baileys";
 import { getRaviStateDir } from "../../../../utils/paths.js";
+import { baileys } from "../../baileys-loader.js";
 import {
   type ContentType,
   type DedupeCache,
@@ -21,7 +22,7 @@ import {
   createInboundDedupeCache,
   createLogger,
   sanitizeMessage,
-} from "../compat.js";
+} from "../foundation.js";
 import { fromJid, isLidJid, isUserJid, resolveCanonicalJid, resolveToPhoneJidLegacy } from "../jid.js";
 import type { WhatsAppMessageHost } from "../types.js";
 import type { DecryptFailureTracker } from "../utils/decrypt-failure-tracker.js";
@@ -33,13 +34,12 @@ import {
   getWhatsAppMediaDownloadMaxBytes,
 } from "../utils/download.js";
 import { getDocumentMessage, getMessageContextInfo } from "../utils/message.js";
+import { guardListener } from "../utils/listener-guard.js";
 import { decryptMsgSecret, getMessageSecret, rememberMessageSecret } from "../utils/msg-secret.js";
 import { getMediaSize } from "./media.js";
 
 const log = createLogger("whatsapp:messages");
-
-/** Runtime protobuf codec (the `proto` type import is types-only). */
-const protoMessage = protoNs.Message;
+const guarded = (event: string, instanceId: string) => ({ event, instanceId, log });
 
 /** Fallback dedupe cache — used when no per-instance cache is provided */
 const fallbackDedupeCache = createInboundDedupeCache();
@@ -97,7 +97,7 @@ export interface ExtractedContent {
   // Edit-specific fields
   editedText?: string;
   editedMessageId?: string;
-  /** msgSecret envelope of an encrypted edit (#1061) — decrypted in handleSpecialMessage. */
+  /** msgSecret envelope of an encrypted edit (omni#1061) — decrypted in handleSpecialMessage. */
   encryptedEdit?: { encIv: Uint8Array; encPayload: Uint8Array };
 }
 
@@ -107,11 +107,11 @@ type ContentExtractor = (message: MessageContent) => ExtractedContent | null;
 /**
  * The plaintext inside an encrypted edit is a full `proto.Message` whose
  * `protocolMessage.editedMessage` holds the new content — the same shape the old
- * plaintext path carried, just wrapped and encrypted (#1061).
+ * plaintext path carried, just wrapped and encrypted (omni#1061).
  */
 function decodeEditPlaintext(plaintext: Buffer): MessageContent | undefined {
   try {
-    const decoded = protoMessage.decode(plaintext) as unknown as MessageContent;
+    const decoded = baileys().proto.Message.decode(plaintext) as unknown as MessageContent;
     return decoded?.protocolMessage?.editedMessage ?? undefined;
   } catch (error) {
     log.debug("Failed to decode decrypted edit payload", { error: String(error) });
@@ -141,6 +141,11 @@ function extractEditedText(edited: MessageContent | null | undefined): string | 
  */
 const SEEN_EDITS = new Set<string>();
 const SEEN_EDITS_MAX = 500;
+/** Test-only: forget every remembered edit (the dedupe set is module-level, shared by all sockets). */
+export function resetEditDedupeForTests(): void {
+  SEEN_EDITS.clear();
+}
+
 function rememberEdit(targetMessageId: string, newText: string): boolean {
   const key = `${targetMessageId}:${newText}`;
   if (SEEN_EDITS.has(key)) return false;
@@ -162,7 +167,7 @@ function bracketButtons(labels: Array<string | null | undefined>): string | unde
 }
 
 /**
- * Bot-interactive message flattening (issue #902).
+ * Bot-interactive message flattening (omni#902).
  *
  * WhatsApp's native interactive UX — list menus, quick-reply buttons, and the
  * modern nativeFlow / template variants — is what a bot SENDS, so it has no
@@ -430,7 +435,7 @@ const contentExtractors: Array<{ check: (m: MessageContent) => boolean; extract:
     }),
   },
   // Secret-encrypted message — WhatsApp's msgSecret envelope. Edits moved here from
-  // the plaintext protocol message (#1061): the new text is encrypted under the
+  // the plaintext protocol message (omni#1061): the new text is encrypted under the
   // ORIGINAL message's secret, so this extractor only surfaces the envelope and the
   // target; decryption happens in `handleSpecialMessage`, which can reach the secret.
   {
@@ -523,7 +528,7 @@ const contentExtractors: Array<{ check: (m: MessageContent) => boolean; extract:
       text: m.buttonsResponseMessage?.selectedDisplayText ?? m.buttonsResponseMessage?.selectedButtonId ?? undefined,
     }),
   },
-  // Bot-sent interactive list menu (issue #902) — flatten to a text transcript.
+  // Bot-sent interactive list menu (omni#902) — flatten to a text transcript.
   {
     check: (m) => !!m.listMessage,
     extract: (m) => ({
@@ -531,19 +536,19 @@ const contentExtractors: Array<{ check: (m: MessageContent) => boolean; extract:
       text: m.listMessage ? extractListMessageText(m.listMessage) : undefined,
     }),
   },
-  // Bot-sent quick-reply buttons (legacy buttonsMessage) — issue #902.
+  // Bot-sent quick-reply buttons (legacy buttonsMessage) — omni#902.
   // A media header (image/video/document above the buttons) is classified as
   // that media with the button transcript as caption; otherwise a text message.
   {
     check: (m) => !!m.buttonsMessage,
     extract: (m) => (m.buttonsMessage ? extractButtonsMessage(m.buttonsMessage) : null),
   },
-  // Bot-sent modern interactive message (nativeFlow / flows) — issue #902
+  // Bot-sent modern interactive message (nativeFlow / flows) — omni#902
   {
     check: (m) => !!m.interactiveMessage,
     extract: (m) => (m.interactiveMessage ? extractInteractiveMessage(m.interactiveMessage) : null),
   },
-  // Bot-sent template message (hydrated four-row / interactive template) — issue #902
+  // Bot-sent template message (hydrated four-row / interactive template) — omni#902
   {
     check: (m) => !!m.templateMessage,
     extract: (m) => (m.templateMessage ? extractTemplateMessage(m.templateMessage) : null),
@@ -594,7 +599,7 @@ function extractUnknownContent(message: MessageContent): ExtractedContent | null
 
   // Log unknown types at debug level for future investigation. The keys stay in
   // the log + rawPayload only — never in `text`, which downstream consumers
-  // (agents, FTS) treat as user speech (#1041).
+  // (agents, FTS) treat as user speech (omni#1041).
   log.debug("Unknown message type", { keys: messageKeys });
 
   return { type: "unknown" as ContentType };
@@ -609,7 +614,7 @@ function extractUnknownContent(message: MessageContent): ExtractedContent | null
  * `normalizeMessageContent` list plus `deviceSentMessage` (own-device sync).
  * Envelopes nest in any order (e.g. own edit from the phone:
  * deviceSentMessage → editedMessage → protocolMessage), so unwrap iteratively
- * instead of special-casing each wrapper (#1061).
+ * instead of special-casing each wrapper (omni#1061).
  */
 const ENVELOPE_KEYS = [
   "deviceSentMessage",
@@ -670,7 +675,7 @@ function getReplyToId(msg: WAMessage): string | undefined {
 }
 
 /**
- * Quoted-message context of a reply, lifted out of `contextInfo` (#1090).
+ * Quoted-message context of a reply, lifted out of `contextInfo` (omni#1090).
  *
  * Baileys nests the quoted stanza under `message.<type>.contextInfo.quotedMessage`;
  * persistence and the agent plugins read a top-level `rawPayload.quotedMessage`
@@ -745,7 +750,7 @@ export function resolveSenderJid(
   }
 
   // LID-first: canonicalize to LID so per_user sessions stay stable across
-  // the two JID forms Baileys emits for the same human (#374).
+  // the two JID forms Baileys emits for the same human (omni#374).
   const lidCache = plugin.getLidMappingCache(instanceId);
   return resolveCanonicalJid(senderJid, participantAlt, lidCache);
 }
@@ -768,8 +773,8 @@ function shouldProcessMessage(plugin: WhatsAppMessageHost, instanceId: string, m
 }
 
 /**
- * Default inbound media root: `<RAVI_STATE_DIR>/media/whatsapp` (Omni used
- * `MEDIA_STORAGE_PATH`, default `./data/media`). Resolved per call so tests and
+ * Default inbound media root: `<RAVI_STATE_DIR>/media/whatsapp` (the ported plugin
+ * used `MEDIA_STORAGE_PATH`, default `./data/media`). Resolved per call so tests and
  * runtimes that switch `RAVI_STATE_DIR` see the current value.
  */
 export function getDefaultWhatsAppMediaBaseDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -805,9 +810,9 @@ export interface TryDownloadMediaOptions {
  * The size guard runs on the declared size first, then while streaming, so
  * oversized video is never buffered in the heap.
  *
- * ravi deviation from Omni: there is no media API and no S3 backend. `mediaUrl`
- * is `file://<abs>` and `mediaLocalPath` is the absolute path (Omni returned an
- * API URL and the path relative to its media root).
+ * ravi deviation from the ported plugin: there is no media API and no S3 backend.
+ * `mediaUrl` is `file://<abs>` and `mediaLocalPath` is the absolute path (the plugin
+ * returned an API URL and the path relative to its media root).
  */
 export async function tryDownloadMedia(
   msg: WAMessage,
@@ -828,7 +833,7 @@ export async function tryDownloadMedia(
       downloadGuard.checkSize(declaredSize, log, { instanceId, channel: "whatsapp" });
     }
 
-    // File under the message's own month so backfilled media doesn't land in today's folder (#1127).
+    // File under the message's own month so backfilled media doesn't land in today's folder (omni#1127).
     const messageDate = new Date(getPlatformTimestamp(msg));
     const yearMonth = `${messageDate.getFullYear()}-${String(messageDate.getMonth() + 1).padStart(2, "0")}`;
     const ext = getExtension(mediaInfo.mimeType);
@@ -864,7 +869,7 @@ const mediaFailureLog = { windowStart: 0, suppressed: 0 };
 /**
  * Aggregate media download failures: one warn per window, carrying the count
  * suppressed since the previous one. History backfills with expired CDN links
- * otherwise emit hundreds of identical warnings (#1127).
+ * otherwise emit hundreds of identical warnings (omni#1127).
  */
 export function logMediaDownloadFailure(externalId: string, error: unknown, now = Date.now()): boolean {
   if (now - mediaFailureLog.windowStart < MEDIA_FAILURE_LOG_WINDOW_MS) {
@@ -882,7 +887,7 @@ export function logMediaDownloadFailure(externalId: string, error: unknown, now 
 }
 
 /**
- * Encrypted edit (#1061): WhatsApp ships the new text under the ORIGINAL message's
+ * Encrypted edit (omni#1061): WhatsApp ships the new text under the ORIGINAL message's
  * secret. Decrypt with the secret we stored for that message; a miss (secret never
  * seen, process restart, unknown scheme) degrades to the previous behaviour — the
  * edit stays unreadable and nothing throws.
@@ -1038,7 +1043,7 @@ export function resolveChatId(
 
   // LID-first: canonicalize to a single stable chatId per human so debounce
   // and session keys don't fragment across the two JID forms Baileys emits
-  // for the same contact (#374).
+  // for the same contact (omni#374).
   const lidCache = plugin.getLidMappingCache(instanceId);
   const chatId = resolveCanonicalJid(rawChatId, remoteJidAlt, lidCache);
   return { chatId, rawChatId };
@@ -1126,7 +1131,7 @@ async function processMessage(
   }
 
   // An edit arrives encrypted under the ORIGINAL message's secret and never repeats
-  // it, so remember the secret of every message as it lands (#1061). Cheap, bounded,
+  // it, so remember the secret of every message as it lands (omni#1061). Cheap, bounded,
   // and the only way a later edit becomes readable without a durable secret store.
   const inboundSecret = msg.message?.messageContextInfo?.messageSecret;
   if (inboundSecret && msg.key.id) {
@@ -1280,7 +1285,7 @@ export function setupMessageHandlers(
 ): void {
   const cache = dedupeCache ?? fallbackDedupeCache;
 
-  // ravi: let Baileys request a media re-upload when the CDN link expired (Omni passed no context).
+  // ravi: let Baileys request a media re-upload when the CDN link expired (the ported code passed no context).
   const mediaContext: MediaDownloadContext | undefined =
     typeof sock.updateMediaMessage === "function" && sock.logger
       ? { reuploadRequest: sock.updateMediaMessage, logger: sock.logger }
@@ -1292,88 +1297,109 @@ export function setupMessageHandlers(
   // per JID per connection lifecycle.
   const presenceSubscribed = new Set<string>();
 
-  sock.ev.on("messages.upsert", async (upsert: { messages: WAMessage[]; type: MessageUpsertType }) => {
-    // Log all message types to diagnose missing messages
-    log.debug("messages.upsert received", {
-      instanceId,
-      type: upsert.type,
-      count: upsert.messages.length,
-      messageIds: upsert.messages.map((m) => m.key.id),
-    });
+  sock.ev.on(
+    "messages.upsert",
+    guardListener(
+      guarded("messages.upsert", instanceId),
+      async (upsert: { messages: WAMessage[]; type: MessageUpsertType }) => {
+        // Log all message types to diagnose missing messages
+        log.debug("messages.upsert received", {
+          instanceId,
+          type: upsert.type,
+          count: upsert.messages.length,
+          messageIds: upsert.messages.map((m) => m.key.id),
+        });
 
-    // Track decrypt failures for dynamic JID blocking (#70)
-    if (decryptTracker) {
-      trackDecryptFailures(decryptTracker, upsert.messages);
-    }
+        // Track decrypt failures for dynamic JID blocking (#70)
+        if (decryptTracker) {
+          trackDecryptFailures(decryptTracker, upsert.messages);
+        }
 
-    // Process all message types, not just 'notify'
-    // 'notify' = incoming messages
-    // 'append' = outgoing messages sent from this device
-    // We need both to capture all conversation activity
-    for (const msg of upsert.messages) {
-      // Subscribe to presence updates for DM chats so Baileys delivers
-      // typing indicators (composing/recording). Without this, the WA
-      // server never pushes chatstate nodes for 1-on-1 conversations.
-      const chatJid = msg.key.remoteJid;
-      if (chatJid && isUserJid(chatJid) && !presenceSubscribed.has(chatJid)) {
-        presenceSubscribed.add(chatJid);
-        sock
-          .presenceSubscribe(chatJid)
-          .catch((err) => log.debug("presenceSubscribe failed (non-fatal)", { chatJid, error: String(err) }));
+        // Process all message types, not just 'notify'
+        // 'notify' = incoming messages
+        // 'append' = outgoing messages sent from this device
+        // We need both to capture all conversation activity
+        for (const msg of upsert.messages) {
+          // Subscribe to presence updates for DM chats so Baileys delivers
+          // typing indicators (composing/recording). Without this, the WA
+          // server never pushes chatstate nodes for 1-on-1 conversations.
+          const chatJid = msg.key.remoteJid;
+          if (chatJid && isUserJid(chatJid) && !presenceSubscribed.has(chatJid)) {
+            presenceSubscribed.add(chatJid);
+            sock
+              .presenceSubscribe(chatJid)
+              .catch((err) => log.debug("presenceSubscribe failed (non-fatal)", { chatJid, error: String(err) }));
+          }
+
+          if (shouldProcessMessage(plugin, instanceId, msg)) {
+            await processMessage(plugin, instanceId, msg, cache, mediaContext);
+          }
+        }
+      },
+    ),
+  );
+
+  sock.ev.on(
+    "messages.update",
+    guardListener(guarded("messages.update", instanceId), async (updates) => {
+      for (const update of updates) {
+        // Handle delivery/read/error status updates.
+        // status === 0 (WAMessageStatus.ERROR) is the silent-PreKeyError path;
+        // a truthy check would drop it because 0 is falsy.
+        if (update.update.status !== undefined && update.update.status !== null) {
+          await processStatusUpdate(plugin, instanceId, update.key, update.update.status);
+        }
+
+        // Message edits: Baileys re-emits every MESSAGE_EDIT protocol message here as
+        // `{ editedMessage: { message: <new content> } }` keyed by the ORIGINAL message id,
+        // after normalizing whatever envelope the edit arrived in (omni#1061).
+        const newText = extractEditedText(baileys().normalizeMessageContent(update.update.message));
+        if (newText && rememberEdit(update.key.id || "", newText)) {
+          const { chatId } = resolveChatId(plugin, instanceId, { key: update.key } as WAMessage);
+          await plugin.handleMessageEdited(
+            instanceId,
+            update.key.id || "",
+            chatId,
+            newText,
+            update.key.fromMe || false,
+          );
+        }
       }
+    }),
+  );
 
-      if (shouldProcessMessage(plugin, instanceId, msg)) {
-        await processMessage(plugin, instanceId, msg, cache, mediaContext);
+  sock.ev.on(
+    "messages.delete",
+    guardListener(guarded("messages.delete", instanceId), async (deletion) => {
+      // Handle message deletions (revoke)
+      if ("keys" in deletion) {
+        // Batch deletion
+        for (const key of deletion.keys) {
+          await plugin.handleMessageDeleted(instanceId, key.id || "", key.remoteJid || "", key.fromMe || false);
+        }
       }
-    }
-  });
-
-  sock.ev.on("messages.update", async (updates) => {
-    for (const update of updates) {
-      // Handle delivery/read/error status updates.
-      // status === 0 (WAMessageStatus.ERROR) is the silent-PreKeyError path;
-      // a truthy check would drop it because 0 is falsy.
-      if (update.update.status !== undefined && update.update.status !== null) {
-        await processStatusUpdate(plugin, instanceId, update.key, update.update.status);
-      }
-
-      // Message edits: Baileys re-emits every MESSAGE_EDIT protocol message here as
-      // `{ editedMessage: { message: <new content> } }` keyed by the ORIGINAL message id,
-      // after normalizing whatever envelope the edit arrived in (#1061).
-      const newText = extractEditedText(normalizeMessageContent(update.update.message));
-      if (newText && rememberEdit(update.key.id || "", newText)) {
-        const { chatId } = resolveChatId(plugin, instanceId, { key: update.key } as WAMessage);
-        await plugin.handleMessageEdited(instanceId, update.key.id || "", chatId, newText, update.key.fromMe || false);
-      }
-    }
-  });
-
-  sock.ev.on("messages.delete", async (deletion) => {
-    // Handle message deletions (revoke)
-    if ("keys" in deletion) {
-      // Batch deletion
-      for (const key of deletion.keys) {
-        await plugin.handleMessageDeleted(instanceId, key.id || "", key.remoteJid || "", key.fromMe || false);
-      }
-    }
-  });
+    }),
+  );
 
   // Handle message reactions (separate from upsert for updates to existing reactions)
-  sock.ev.on("messages.reaction", async (reactions) => {
-    for (const { key, reaction } of reactions) {
-      const chatId = key.remoteJid || "";
-      const messageId = key.id || "";
-      const { id: senderId } = fromJid(reaction.key?.participant || reaction.key?.remoteJid || chatId);
+  sock.ev.on(
+    "messages.reaction",
+    guardListener(guarded("messages.reaction", instanceId), async (reactions) => {
+      for (const { key, reaction } of reactions) {
+        const chatId = key.remoteJid || "";
+        const messageId = key.id || "";
+        const { id: senderId } = fromJid(reaction.key?.participant || reaction.key?.remoteJid || chatId);
 
-      await plugin.handleReactionReceived(
-        instanceId,
-        reaction.key?.id || messageId,
-        chatId,
-        senderId,
-        reaction.text || "",
-        messageId,
-        reaction.key?.fromMe || false,
-      );
-    }
-  });
+        await plugin.handleReactionReceived(
+          instanceId,
+          reaction.key?.id || messageId,
+          chatId,
+          senderId,
+          reaction.text || "",
+          messageId,
+          reaction.key?.fromMe || false,
+        );
+      }
+    }),
+  );
 }

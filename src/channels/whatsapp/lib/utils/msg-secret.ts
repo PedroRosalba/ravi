@@ -9,7 +9,7 @@
  * with the new content encrypted under the ORIGINAL message's
  * `messageContextInfo.messageSecret`. Baileys carries the protobuf for it
  * (`SecretEncType.MESSAGE_EDIT = 2`) but ships no decryptor, so the envelope
- * reaches us opaque and the edit is lost (#1061).
+ * reaches us opaque and the edit is lost (omni#1061).
  *
  * Scheme (matches whatsmeow's `generateMsgSecretKey`, msgsecret.go):
  *
@@ -24,7 +24,7 @@
  */
 
 import { createDecipheriv, hkdfSync } from "node:crypto";
-import { createLogger } from "../compat.js";
+import { createLogger } from "../foundation.js";
 
 const log = createLogger("whatsapp:msg-secret");
 

@@ -17,7 +17,7 @@
  * See: #70
  */
 
-import { createLogger } from "../compat.js";
+import { createLogger } from "../foundation.js";
 
 const log = createLogger("whatsapp:decrypt-tracker");
 

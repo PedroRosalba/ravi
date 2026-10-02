@@ -7,7 +7,8 @@
 
 import type { WASocket } from "baileys";
 import { fromJid } from "../jid.js";
-import { createLogger } from "../compat.js";
+import { createLogger } from "../foundation.js";
+import { guardListener } from "../utils/listener-guard.js";
 import type { WhatsAppEventsHost } from "../types.js";
 
 const waLog = createLogger("whatsapp:events");
@@ -217,25 +218,28 @@ export function setupAllEventHandlers(sock: WASocket, plugin: WhatsAppEventsHost
   // ============================================================================
   // HISTORY SYNC - Initial chat/message sync
   // ============================================================================
-  sock.ev.on("messaging-history.set", async (history) => {
-    const { chats, contacts, messages, progress, syncType } = history;
-    waLog.info("History sync", {
-      chats: chats.length,
-      contacts: contacts.length,
-      messages: messages.length,
-      progress: progress || 0,
-      syncType,
-    });
-    if (DEBUG)
-      logEvent("messaging-history.set", {
-        chatCount: chats.length,
-        contactCount: contacts.length,
-        messageCount: messages.length,
-        progress,
+  sock.ev.on(
+    "messaging-history.set",
+    guardListener({ event: "messaging-history.set", instanceId, log: waLog }, async (history) => {
+      const { chats, contacts, messages, progress, syncType } = history;
+      waLog.info("History sync", {
+        chats: chats.length,
+        contacts: contacts.length,
+        messages: messages.length,
+        progress: progress || 0,
         syncType,
       });
-    await plugin.handleHistorySync(instanceId, history);
-  });
+      if (DEBUG)
+        logEvent("messaging-history.set", {
+          chatCount: chats.length,
+          contactCount: contacts.length,
+          messageCount: messages.length,
+          progress,
+          syncType,
+        });
+      await plugin.handleHistorySync(instanceId, history);
+    }),
+  );
 
   onReadOnlyEvent("messaging-history.status", (status: { syncType?: unknown; status?: string; explicit?: boolean }) => {
     waLog.info("History sync status", {

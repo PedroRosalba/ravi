@@ -49,16 +49,23 @@ export function whatsappRpcSubject(instanceId: string): string {
   return `${WHATSAPP_RPC_SUBJECT_PREFIX}${InstanceIdSchema.parse(instanceId)}`;
 }
 
-/** Omni-compatible transport subject, e.g. `message.received.whatsapp-baileys.<uuid>`. */
+/**
+ * PR #590 inbound subject tail, e.g. `message.received.whatsapp-baileys.<uuid>`.
+ * @deprecated The runner publishes on `whatsappInboundSubject` (events.ts). Deleted in WP-Z.
+ */
 export function whatsappTransportSubject(eventType: string, instanceId: string): string {
   return `${eventType}.${WHATSAPP_CHANNEL_TYPE}.${InstanceIdSchema.parse(instanceId)}`;
 }
 
+/** @deprecated Use `whatsappInboundSubject` (events.ts). Deleted in WP-Z. */
 export function channelInboundSubject(transportSubject: string): string {
   return `${CHANNEL_INBOUND_SUBJECT_PREFIX}${transportSubject}`;
 }
 
-/** Strip the Ravi inbound prefix, returning the Omni-compatible subject. */
+/**
+ * Strip the Ravi inbound prefix, returning the PR #590 subject tail.
+ * @deprecated Use `parseWhatsAppInboundSubject` (events.ts). Deleted in WP-Z.
+ */
 export function transportSubjectFromChannelInbound(subject: string): string | null {
   if (!subject.startsWith(CHANNEL_INBOUND_SUBJECT_PREFIX)) return null;
   const rest = subject.slice(CHANNEL_INBOUND_SUBJECT_PREFIX.length);
@@ -66,9 +73,10 @@ export function transportSubjectFromChannelInbound(subject: string): string | nu
 }
 
 // ============================================================================
-// Inbound event envelope (Omni-compatible)
+// PR #590 inbound envelope (replaced by WhatsAppInboundEventSchema, events.ts)
 // ============================================================================
 
+/** @deprecated Use `WhatsAppInboundEventSchema` (events.ts). Deleted in WP-Z. */
 export const WhatsAppTransportEventSchema = z.object({
   id: z.string().min(1),
   type: z.string().min(1),
@@ -84,6 +92,7 @@ export const WhatsAppTransportEventSchema = z.object({
   timestamp: z.number(),
 });
 
+/** @deprecated Use `WhatsAppInboundEvent` (events.ts). Deleted in WP-Z. */
 export type WhatsAppTransportEvent = z.infer<typeof WhatsAppTransportEventSchema>;
 
 // ============================================================================
@@ -298,7 +307,12 @@ export interface WhatsAppRpcResults {
   "connection.disconnect": Record<string, never>;
   "connection.logout": Record<string, never>;
   "connection.pairingCode": { code: string };
-  "groups.list": { items: WhatsAppRpcGroupRecord[] };
+  /**
+   * `participantsTruncated`: the full list would not fit in one NATS message (~1 MB), so
+   * every record's `participants` is empty (`memberCount` stays exact); use
+   * `groups.metadata` for the members of one group.
+   */
+  "groups.list": { items: WhatsAppRpcGroupRecord[]; participantsTruncated?: boolean };
   "groups.create": WhatsAppRpcGroupRecord;
   "groups.addParticipants": { groupJid: string; results: Array<{ jid: string; status: string }> };
   "groups.updateParticipants": { groupJid: string; results: Array<{ jid: string; status: string }> };
@@ -337,7 +351,7 @@ export const WHATSAPP_RPC_ERROR_CODES = {
 } as const;
 
 // ============================================================================
-// Native ownership
+// Ownership (channel ↔ instance binding)
 // ============================================================================
 
 export interface WhatsAppBinding {

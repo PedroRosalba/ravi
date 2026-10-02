@@ -1,7 +1,7 @@
 /**
- * Runner side of the native WhatsApp RPC.
+ * Runner side of the WhatsApp RPC.
  *
- * One server per native WhatsApp runtime. It queue-subscribes
+ * One server per WhatsApp runtime. It queue-subscribes
  * `_RAVI.channels.whatsapp.rpc.<instanceId>` (queue `ravi-whatsapp-rpc`), validates
  * every request against the contract, dispatches it to the runtime and always
  * answers with a `WhatsAppRpcResponse`:
@@ -37,7 +37,7 @@ const log = logger.child("channels:whatsapp:rpc");
 
 export const DEFAULT_WHATSAPP_RPC_DRAIN_TIMEOUT_MS = 5_000;
 
-/** The runtime surface the server dispatches to (`WhatsAppNativeRuntime.call`). */
+/** The runtime surface the server dispatches to (`WhatsAppRuntime.call`). */
 export interface WhatsAppRpcDispatcher {
   call<M extends WhatsAppRpcMethod>(method: M, params: unknown): Promise<WhatsAppRpcResult<M>>;
 }

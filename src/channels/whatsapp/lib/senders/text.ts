@@ -3,7 +3,7 @@
  */
 
 import type { AnyMessageContent, WASocket } from "baileys";
-import { markdownToWhatsApp } from "../compat.js";
+import { markdownToWhatsApp } from "../foundation.js";
 import { splitWhatsAppMessage } from "../utils/split-message.js";
 
 /**

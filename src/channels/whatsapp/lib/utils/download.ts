@@ -9,9 +9,9 @@ import { mkdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { WAMessage } from "baileys";
-import { downloadMediaMessage } from "baileys";
-import { DownloadTooLargeError } from "../compat.js";
+import type { WAMessage, downloadMediaMessage } from "baileys";
+import { baileys } from "../../baileys-loader.js";
+import { DownloadTooLargeError } from "../foundation.js";
 import { getDocumentMessage } from "./message.js";
 
 /**
@@ -27,10 +27,10 @@ const DEFAULT_WHATSAPP_MEDIA_MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2Gi
  * upload limits. We preserve what WhatsApp delivered; processors can
  * transcode/downsample before calling model providers.
  *
- * Override: `WHATSAPP_MEDIA_MAX_DOWNLOAD_MB` (ravi) or `OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB` (Omni name, still honoured).
+ * Override: `WHATSAPP_MEDIA_MAX_DOWNLOAD_MB` (MiB).
  */
 export function getWhatsAppMediaDownloadMaxBytes(): number {
-  const overrideMb = process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB || process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB;
+  const overrideMb = process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB;
   if (!overrideMb) return DEFAULT_WHATSAPP_MEDIA_MAX_DOWNLOAD_BYTES;
 
   const parsed = Number.parseInt(overrideMb, 10);
@@ -167,7 +167,7 @@ export async function downloadMediaToBuffer(msg: WAMessage): Promise<{ buffer: B
   }
 
   try {
-    const raw = await downloadMediaMessage(msg, "buffer", {});
+    const raw = await baileys().downloadMediaMessage(msg, "buffer", {});
 
     // Baileys may return Buffer, Uint8Array, or null
     let buffer: Buffer;
@@ -207,7 +207,7 @@ export async function downloadMediaToFile(
   const mediaInfo = detectMediaType(msg);
   if (!mediaInfo) return null;
 
-  const stream = await downloadMediaMessage(msg, "stream", {}, context);
+  const stream = await baileys().downloadMediaMessage(msg, "stream", {}, context);
   const size = await writeMediaStreamToFile(stream, outputPath, maxSizeBytes);
   if (size === 0) return null;
   return { mimeType: mediaInfo.mimeType, size };

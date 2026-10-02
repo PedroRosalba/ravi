@@ -668,14 +668,14 @@ export interface WAContactUpdate {
 // ============================================================================
 
 /**
- * In Omni the socket handlers receive the whole `WhatsAppPlugin`. In ravi they
- * receive a host: the methods below are exactly the plugin methods/fields the
- * handlers call, with Omni's signatures (including the leading `instanceId`,
- * kept so handler code maps 1:1 to Omni). `WhatsAppNativeRuntime` implements
+ * In the ported plugin the socket handlers received the whole `WhatsAppPlugin`. In
+ * ravi they receive a host: the methods below are exactly the plugin methods/fields
+ * the handlers call, with the ported signatures (including the leading `instanceId`,
+ * kept so handler code maps 1:1 to the original). `WhatsAppRuntime` implements
  * `WhatsAppHandlerHost` for its single instance.
  */
 
-/** Sub-stage timings carried with an inbound message (Omni `InboundSubStageTimings`). */
+/** Sub-stage timings carried with an inbound message (ported `InboundSubStageTimings`). */
 export interface InboundSubStageTimings {
   ingestedAt?: number;
   mediaReadyAt?: number;
@@ -683,15 +683,15 @@ export interface InboundSubStageTimings {
 
 /** Called by handlers/connection.ts. */
 export interface WhatsAppConnectionHost {
-  /** A fresh QR is ready (Omni emits `instance.qr_code` and sets status `qr`). */
+  /** A fresh QR is ready (the runtime emits `connection.qr` and sets state `qr`). */
   handleQrCode(instanceId: string, qrCode: string, expiresAt: Date): Promise<void>;
-  /** Socket opened (Omni sets status `connected`, emits `instance.connected`, prefetches groups). */
+  /** Socket opened (the runtime sets state `connected`, emits `connection.connected`, prefetches groups). */
   handleConnected(instanceId: string, sock: WASocket, isNewLogin?: boolean): Promise<void>;
   /** Socket closed for good; `willReconnect` is always false from the handlers. */
   handleDisconnected(instanceId: string, reason: string, willReconnect: boolean): Promise<void>;
-  /** A backoff reconnect was scheduled (Omni sets status `reconnecting`). */
+  /** A backoff reconnect was scheduled (the runtime sets state `reconnecting`). */
   handleReconnecting(instanceId: string, attempt: number, maxAttempts: number): Promise<void>;
-  /** A scheduled reconnect threw (Omni sets status `disconnected` unless `willRetry`). */
+  /** A scheduled reconnect threw (the runtime moves to `disconnected` and lets its supervisor re-arm). */
   handleConnectionError(instanceId: string, error: string, willRetry: boolean): void;
   /** Passkey pairing ceremony update (vendored Baileys patch). */
   handlePasskeyUpdate(instanceId: string, update: PasskeyConnectionUpdate): Promise<void>;
@@ -715,7 +715,7 @@ export interface WhatsAppMessageHost extends WhatsAppIdentityHost {
   isBotSentMessage(instanceId: string, messageId: string): boolean;
   /**
    * Root directory for downloaded inbound media (ravi: `~/.ravi/media/whatsapp`).
-   * Replaces Omni's `getApiBaseUrl()`: media is stored under
+   * Replaces the ported `getApiBaseUrl()`: media is stored under
    * `<root>/<instanceId>/<YYYY-MM>/<safeId><ext>` and referenced by `file://` URL.
    */
   getMediaBaseDir(): string;
@@ -801,10 +801,10 @@ export interface WhatsAppEventsHost {
   handleLabelAssociation(instanceId: string, association: unknown, type: "add" | "remove"): void;
 }
 
-/** Everything the three handler modules call: what `WhatsAppNativeRuntime` implements. */
+/** Everything the three handler modules call: what `WhatsAppRuntime` implements. */
 export interface WhatsAppHandlerHost extends WhatsAppConnectionHost, WhatsAppMessageHost, WhatsAppEventsHost {}
 
-/** History paging anchor (Omni `plugin.ts` `MessageAnchor`, used by utils/history-anchors.ts). */
+/** History paging anchor (ported `plugin.ts` `MessageAnchor`, used by utils/history-anchors.ts). */
 export interface MessageAnchor {
   /** Chat JID (e.g., "5511999999999@s.whatsapp.net") */
   chatJid: string;

@@ -5,13 +5,18 @@ import { z } from "zod";
 import { TtlCache } from "../runtime-cache.js";
 import { WhatsAppRuntimeError, toWhatsAppRuntimeError } from "../runtime-errors.js";
 import {
-  buildTransportEvent,
+  DEFAULT_PUBLISHED_EVENT_TYPES,
+  buildWhatsAppObservedEvent,
+  connectionConnectedPayload,
+  connectionDisconnectedPayload,
+  connectionQrPayload,
   deterministicEventId,
-  instanceConnectedPayload,
   messageIdempotencyKey,
   messageReceivedPayload,
   reactionIdempotencyKey,
+  toWhatsAppInboundEvent,
 } from "../runtime-events.js";
+import { WHATSAPP_INBOUND_EVENT_TYPES } from "../events.js";
 import {
   buildVCard,
   extractInviteCode,
@@ -41,7 +46,7 @@ describe("TtlCache", () => {
 });
 
 describe("event builders", () => {
-  it("derives stable UUID-shaped ids from Omni's idempotency keys", () => {
+  it("derives stable UUID-shaped ids from the ingress idempotency keys", () => {
     const key = messageIdempotencyKey("inst", "MSG-1", "text");
     expect(key).toBe("whatsapp-baileys:inst:MSG-1:text");
     const id = deterministicEventId(key);
@@ -56,18 +61,99 @@ describe("event builders", () => {
     ).toBe("whatsapp-baileys:inst:M:f:reaction.received:👍");
   });
 
-  it("builds the envelope with optional metadata only when set", () => {
-    const event = buildTransportEvent({ type: "instance.connected", instanceId: "inst", payload: {}, now: 5, id: "x" });
-    expect(event).toEqual({
+  it("builds an observed event; receivedAt defaults to the build time and ingestMode is only set when given", () => {
+    expect(
+      buildWhatsAppObservedEvent({ type: "connection.connected", instanceId: "inst", payload: {}, now: 5, id: "x" }),
+    ).toEqual({
       id: "x",
-      type: "instance.connected",
-      payload: {},
-      metadata: { instanceId: "inst", channelType: "whatsapp-baileys", source: "ravi.whatsapp.native", receivedAt: 5 },
+      type: "connection.connected",
+      instanceId: "inst",
       timestamp: 5,
+      payload: {},
+      receivedAt: 5,
     });
+    const message = buildWhatsAppObservedEvent({
+      type: "message.received",
+      instanceId: "inst",
+      payload: {},
+      now: 9,
+      ingestMode: "history-sync",
+      receivedAt: 7,
+    });
+    expect(message).toMatchObject({ ingestMode: "history-sync", receivedAt: 7, timestamp: 9 });
+    expect(message.id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  it("message payload keeps Omni field order and only adds localPath when present", () => {
+  it("publishes exactly the inbound contract types by default", () => {
+    expect([...DEFAULT_PUBLISHED_EVENT_TYPES]).toEqual([...WHATSAPP_INBOUND_EVENT_TYPES]);
+  });
+
+  it("maps a published observed event to a validated WhatsAppInboundEvent", () => {
+    const payload = messageReceivedPayload({
+      externalId: "E",
+      chatId: "C@s.whatsapp.net",
+      from: "C",
+      content: { type: "text", text: "oi" },
+    });
+    const observed = buildWhatsAppObservedEvent({
+      type: "message.received",
+      instanceId: "inst",
+      payload,
+      now: 5,
+      id: "x",
+    });
+    expect(toWhatsAppInboundEvent(observed)).toEqual({
+      schemaVersion: 1,
+      id: "x",
+      instanceId: "inst",
+      timestamp: 5,
+      receivedAt: 5,
+      type: "message.received",
+      ingestMode: "realtime",
+      payload: { externalId: "E", chatId: "C@s.whatsapp.net", from: "C", content: { type: "text", text: "oi" } },
+    });
+
+    const disconnected = toWhatsAppInboundEvent(
+      buildWhatsAppObservedEvent({
+        type: "connection.disconnected",
+        instanceId: "inst",
+        payload: connectionDisconnectedPayload("bye", true),
+        now: 6,
+        id: "d",
+        ingestMode: "realtime",
+      }),
+    );
+    expect(disconnected).toEqual({
+      schemaVersion: 1,
+      id: "d",
+      instanceId: "inst",
+      timestamp: 6,
+      receivedAt: 6,
+      type: "connection.disconnected",
+      payload: { reason: "bye", willReconnect: true },
+    });
+    expect(disconnected).not.toHaveProperty("ingestMode");
+  });
+
+  it("returns null for observe-only types and throws on a payload outside the contract", () => {
+    for (const type of ["reaction.removed", "presence.typing", "message.sent", "custom.chat.unread-updated"]) {
+      expect(
+        toWhatsAppInboundEvent(buildWhatsAppObservedEvent({ type, instanceId: "inst", payload: {}, now: 1 })),
+      ).toBeNull();
+    }
+    expect(() =>
+      toWhatsAppInboundEvent(
+        buildWhatsAppObservedEvent({ type: "connection.qr", instanceId: "inst", payload: { qrCode: "" }, now: 1 }),
+      ),
+    ).toThrow();
+  });
+
+  it("connection payloads carry no instanceId/channelType (the envelope does)", () => {
+    expect(connectionQrPayload("2@QR", new Date(10))).toEqual({ qrCode: "2@QR", expiresAt: 10 });
+    expect(connectionDisconnectedPayload(undefined, false)).toEqual({ reason: undefined, willReconnect: false });
+  });
+
+  it("message payload keeps the ported field order and only adds localPath when present", () => {
     const payload = messageReceivedPayload({
       externalId: "E",
       chatId: "C",
@@ -87,9 +173,10 @@ describe("event builders", () => {
     ).not.toHaveProperty("localPath");
   });
 
-  it("instance.connected only carries isNewLogin when true", () => {
-    expect(instanceConnectedPayload("i", { isNewLogin: false })).not.toHaveProperty("isNewLogin");
-    expect(instanceConnectedPayload("i", { isNewLogin: true })).toHaveProperty("isNewLogin", true);
+  it("connection.connected only carries isNewLogin when true", () => {
+    expect(connectionConnectedPayload({ isNewLogin: false })).not.toHaveProperty("isNewLogin");
+    expect(connectionConnectedPayload({ isNewLogin: true })).toHaveProperty("isNewLogin", true);
+    expect(connectionConnectedPayload({ profileName: "Ravi" })).not.toHaveProperty("instanceId");
   });
 });
 
@@ -128,7 +215,7 @@ describe("send helpers", () => {
     expect(isWebp(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBe(false);
   });
 
-  it("builds Omni's vCard", () => {
+  it("builds the plugin's vCard", () => {
     expect(buildVCard({ name: "Ana", phone: "+55 11 98888-7777", email: "a@b.c" })).toContain("FN:Ana");
   });
 });

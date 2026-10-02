@@ -6,6 +6,7 @@ import {
   CHANNEL_PROBE_SKIPPED_PROVIDERS,
   RAVI_CONFIG_CHANGED_SUBJECT,
   collectNativeRuntimeDeliveries,
+  installChannelRunnerCrashGuards,
   nativeChannelBindingKey,
   startNativeChannelConfigWatch,
   syncNativeRuntimeSurfaces,
@@ -28,8 +29,26 @@ import type { NativeChannelReconcileOptions, NativeInboundChannelActionHandler }
 import type { ChannelConfig, InstanceConfig } from "../router/router-db.js";
 import type { ChannelRuntimeEventSink } from "./runtime-events.js";
 import { createSlackNativeChannelDriver } from "./slack/driver.js";
+import { createWhatsAppChannelDriver, createWhatsAppNativeChannelDriver } from "./whatsapp/driver.js";
 import type { ChannelOutboundJob } from "./outbound-stream.js";
 import { buildRunnerPm2Env } from "./pm2-env.js";
+import { EventEmitter } from "node:events";
+
+describe("channel runner crash guards", () => {
+  it("logs unhandled rejections and uncaught exceptions instead of letting the process exit", () => {
+    const hooks = new EventEmitter();
+    const uninstall = installChannelRunnerCrashGuards(hooks);
+    expect(hooks.listenerCount("unhandledRejection")).toBe(1);
+    expect(hooks.listenerCount("uncaughtException")).toBe(1);
+    // With a listener registered, emitting does not throw (an EventEmitter "error"-style
+    // event without listeners is what makes Bun/Node exit).
+    expect(() => hooks.emit("unhandledRejection", new Error("QR cycle reset failed"))).not.toThrow();
+    expect(() => hooks.emit("uncaughtException", new Error("boom"))).not.toThrow();
+    uninstall();
+    expect(hooks.listenerCount("unhandledRejection")).toBe(0);
+    expect(hooks.listenerCount("uncaughtException")).toBe(0);
+  });
+});
 
 describe("channel runner PM2 environment", () => {
   it("does not use Slack connection env as runner configuration", () => {
@@ -69,6 +88,24 @@ describe("channel runner PM2 environment", () => {
     } finally {
       setOptionalEnv("RAVI_CHANNELS_CONSUME_OUTBOUND", previousConsumeOutbound);
       setOptionalEnv("RAVI_SLACK_THREAD_REPLY_MODE", previousThreadReplyMode);
+    }
+  });
+
+  it("forwards WHATSAPP_MEDIA_MAX_DOWNLOAD_MB and never the retired Omni name", () => {
+    const previous = process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB;
+    const previousLegacy = process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB;
+
+    try {
+      process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = "512";
+      process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = "256";
+
+      const env = buildRunnerPm2Env();
+
+      expect(env).toMatchObject({ WHATSAPP_MEDIA_MAX_DOWNLOAD_MB: "512" });
+      expect(env).not.toHaveProperty("OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB");
+    } finally {
+      setOptionalEnv("WHATSAPP_MEDIA_MAX_DOWNLOAD_MB", previous);
+      setOptionalEnv("OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB", previousLegacy);
     }
   });
 });
@@ -624,6 +661,11 @@ describe("channel runner Slack health projection", () => {
 describe("channel runner native channel reconcile", () => {
   it("keeps the WhatsApp provider out of channels probe", () => {
     expect(CHANNEL_PROBE_SKIPPED_PROVIDERS).toEqual(["whatsapp"]);
+  });
+
+  it("registers the WhatsApp channel driver for the whatsapp provider (old factory name is an alias)", () => {
+    expect(createWhatsAppChannelDriver().descriptor).toMatchObject({ driverId: "ravi.whatsapp", provider: "whatsapp" });
+    expect(createWhatsAppNativeChannelDriver).toBe(createWhatsAppChannelDriver);
   });
 
   it("derives binding keys only for WhatsApp channels (including the provider alias)", () => {

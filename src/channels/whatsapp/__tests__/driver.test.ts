@@ -18,11 +18,11 @@ import {
   type WhatsAppRpcMethod,
 } from "../contract.js";
 import {
-  createWhatsAppNativeChannelDriver,
+  createWhatsAppChannelDriver,
   resolveWhatsAppChannelBinding,
   whatsappChannelBindingKey,
   type WhatsAppDriverRuntime,
-  type WhatsAppNativeChannelDriverOptions,
+  type WhatsAppChannelDriverOptions,
   type WhatsAppRuntimeFactoryOptions,
 } from "../driver.js";
 import { type WhatsAppLibrary, whatsappLibrary } from "../runtime-library.js";
@@ -88,14 +88,11 @@ function fakeRuntime(health: NativeChannelRuntimeHealth = { status: "starting", 
   return { runtime, call };
 }
 
-function driverWith(
-  routerConfig: ReturnType<typeof config>,
-  overrides: Partial<WhatsAppNativeChannelDriverOptions> = {},
-) {
+function driverWith(routerConfig: ReturnType<typeof config>, overrides: Partial<WhatsAppChannelDriverOptions> = {}) {
   const nats = createFakeNats();
   const created: WhatsAppRuntimeFactoryOptions[] = [];
   const runtimes: ReturnType<typeof fakeRuntime>[] = [];
-  const driver = createWhatsAppNativeChannelDriver({
+  const driver = createWhatsAppChannelDriver({
     getConfig: () => routerConfig,
     connection: () => nats,
     jetstream: () => createFakeJetStream().js,
@@ -168,6 +165,7 @@ describe("WhatsApp native channel driver: descriptor and binding", () => {
         instance: "vendas",
         readReceiptMode: "off",
         offlineIngestMode: "realtime",
+        offlineStaleMs: 120_000,
         historyDownloadMedia: true,
         autoConnect: false,
         whatsapp: { markOnlineOnConnect: false },
@@ -182,10 +180,18 @@ describe("WhatsApp native channel driver: descriptor and binding", () => {
       accountName: "vendas",
       readReceiptMode: "off",
       offlineIngestMode: "realtime",
+      offlineStaleMs: 120_000,
       historyDownloadMedia: true,
       autoConnect: false,
       socketOptions: { markOnlineOnConnect: false },
     });
+  });
+
+  it("leaves offline backlog age-aware by default (no offlineIngestMode / offlineStaleMs passed)", async () => {
+    const { driver, created } = driverWith(config([channel("main")], [instance("main", UUID_A)]));
+    await driver.createRuntime({ channel: { name: "main", provider: "whatsapp" }, host });
+    expect(created[0]?.offlineIngestMode).toBeUndefined();
+    expect(created[0]?.offlineStaleMs).toBeUndefined();
   });
 
   it("fails invalid_channel_configuration when the instance is missing or has no transport id", async () => {
@@ -339,9 +345,13 @@ describe("WhatsApp native channel driver: real runtime", () => {
       }),
       createStorageAuthState: mock(async () => {
         const state = { creds: { me: { id: OWNER_JID }, registered: true }, keys: {} };
-        return { state, saveCreds: async () => {} } as unknown as Awaited<
-          ReturnType<WhatsAppLibrary["createStorageAuthState"]>
-        >;
+        return {
+          state,
+          saveCreds: async () => {},
+          flush: async () => true,
+          discard: async () => {},
+          pendingWrites: () => 0,
+        } as unknown as Awaited<ReturnType<WhatsAppLibrary["createStorageAuthState"]>>;
       }),
     };
   }
@@ -352,7 +362,7 @@ describe("WhatsApp native channel driver: real runtime", () => {
     const library = fakeLibrary(sockets);
     const jetstream = createFakeJetStream();
     const nats = createFakeNats();
-    const driver = createWhatsAppNativeChannelDriver({
+    const driver = createWhatsAppChannelDriver({
       getConfig: () => config([channel("main")], [instance("main", instanceId)]),
       connection: () => nats,
       jetstream: () => jetstream.js,
@@ -374,7 +384,7 @@ describe("WhatsApp native channel driver: real runtime", () => {
     await flush();
     expect(sockets).toHaveLength(1);
 
-    // Not connected yet: sends are 503 NOT_CONNECTED (retryable for OmniSender).
+    // Not connected yet: sends are 503 NOT_CONNECTED (the sender retries it: certainly unsent).
     await expect(
       nats.request(
         subject,
@@ -389,7 +399,7 @@ describe("WhatsApp native channel driver: real runtime", () => {
       ok: true,
       data: { state: "connected", isConnected: true },
     });
-    expect(jetstream.published.map((record) => record.event.type)).toContain("instance.connected");
+    expect(jetstream.published.map((record) => record.event.type)).toContain("connection.connected");
 
     await runtime.stop();
     expect(runtime.health()).toEqual({ status: "disconnected", reason: "stopped" });
@@ -400,7 +410,7 @@ describe("WhatsApp native channel driver: real runtime", () => {
     const instanceId = uniqueInstanceId("drv");
     const sockets: FakeSocket[] = [];
     const nats = createFakeNats();
-    const driver = createWhatsAppNativeChannelDriver({
+    const driver = createWhatsAppChannelDriver({
       getConfig: () => config([channel("main")], [instance("main", instanceId)]),
       connection: () => nats,
       jetstream: () => createFakeJetStream().js,
@@ -423,9 +433,56 @@ describe("WhatsApp native channel driver: real runtime", () => {
     await runtime.stop();
   });
 
+  it("retries a failed baileys load on the next connect instead of staying failed", async () => {
+    const instanceId = uniqueInstanceId("drv");
+    const sockets: FakeSocket[] = [];
+    const library = fakeLibrary(sockets);
+    const nats = createFakeNats();
+    let loads = 0;
+    const loadLibrary = mock(async () => {
+      loads++;
+      if (loads === 1) throw new Error("Cannot find module '/opt/ravi/dist/vendor/baileys.js'");
+      return library;
+    });
+    const driver = createWhatsAppChannelDriver({
+      getConfig: () => config([channel("main")], [instance("main", instanceId)]),
+      connection: () => nats,
+      jetstream: () => createFakeJetStream().js,
+      loadLibrary,
+      rpcDrainTimeoutMs: 50,
+      runtimeOptions: {
+        authStorage: createMemoryAuthStorage({ registered: true }).storage,
+        ensureInboundStream: async () => {},
+        logger: silentLogger,
+        env: {},
+        sleep: async () => {},
+      },
+    });
+    const runtime = await driver.createRuntime({ channel: { name: "main", provider: "whatsapp" }, host });
+
+    await runtime.start();
+    await flush();
+    expect(runtime.health()).toEqual({ status: "failed", reason: "missing_dependency" });
+    expect(sockets).toHaveLength(0);
+    expect(loadLibrary).toHaveBeenCalledTimes(1);
+
+    await expect(
+      nats.request(whatsappRpcSubject(instanceId), rpcRequest(instanceId, "connection.connect")),
+    ).resolves.toMatchObject({ ok: true, data: { status: "connecting" } });
+    await flush();
+    expect(loadLibrary).toHaveBeenCalledTimes(2);
+    expect(sockets).toHaveLength(1);
+    expect(runtime.health().status).toBe("starting");
+
+    sockets[0]?.emit("connection.update", { connection: "open" });
+    await flush();
+    expect(runtime.health()).toMatchObject({ status: "connected" });
+    await runtime.stop();
+  });
+
   it("rejects invalid socket options from channel defaults", async () => {
     const wa = channel("main", { defaults: { whatsapp: { connectTimeoutMs: -1 } } });
-    const driver = createWhatsAppNativeChannelDriver({
+    const driver = createWhatsAppChannelDriver({
       getConfig: () => config([wa], [instance("main", UUID_A)]),
       connection: () => createFakeNats(),
       jetstream: () => createFakeJetStream().js,

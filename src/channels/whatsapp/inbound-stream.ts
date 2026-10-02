@@ -1,9 +1,9 @@
 /**
- * CHANNEL_INBOUND JetStream stream shared by the native WhatsApp runtime (publisher,
- * in the `ravi channels` runner) and the daemon's OmniConsumer (reader).
+ * CHANNEL_INBOUND JetStream stream shared by the WhatsApp runtime (publisher, in the
+ * `ravi channels` runner) and the daemon's `WhatsAppInboundSource` (reader).
  *
- * Both sides call `ensureChannelInboundStream()` so whichever starts first creates it
- * with the same configuration.
+ * Both sides call `ensureChannelInboundStream()` so whichever starts first creates it,
+ * and the `ravi-whatsapp-*` durables, with the same configuration.
  */
 
 import {
@@ -16,14 +16,13 @@ import {
 } from "nats";
 import { getNats } from "../../nats.js";
 import { logger } from "../../utils/logger.js";
+import { CHANNEL_INBOUND_STREAM, CHANNEL_INBOUND_SUBJECT_FILTER } from "./contract.js";
 import {
-  CHANNEL_INBOUND_STREAM,
-  CHANNEL_INBOUND_SUBJECT_FILTER,
-  channelInboundSubject,
-  whatsappTransportSubject,
-  type WhatsAppTransportEvent,
-} from "./contract.js";
-import { WHATSAPP_INBOUND_DURABLES } from "./events.js";
+  WHATSAPP_INBOUND_DURABLES,
+  type WhatsAppInboundEvent,
+  whatsappInboundKindOf,
+  whatsappInboundSubject,
+} from "./events.js";
 
 const log = logger.child("channels:inbound-stream");
 const sc = StringCodec();
@@ -89,7 +88,7 @@ async function ensureStream(jsm: JetStreamManager): Promise<void> {
   try {
     await jsm.streams.add({
       name: CHANNEL_INBOUND_STREAM,
-      description: "Native channel transport events (Omni-compatible envelopes)",
+      description: "Ravi channel inbound events",
       subjects: [CHANNEL_INBOUND_SUBJECT_FILTER],
       retention: RetentionPolicy.Limits,
       storage: "file" as never,
@@ -116,11 +115,11 @@ async function ensureStream(jsm: JetStreamManager): Promise<void> {
 }
 
 /**
- * Publish one transport event. The subject is derived from the event (type + instance),
- * and `event.id` is the JetStream `msgID`, so republishing the same event inside the
- * duplicate window is a no-op.
+ * Publish one WhatsApp inbound event on
+ * `ravi.channel.inbound.whatsapp.<kind>.<instanceId>`. `event.id` is the JetStream
+ * `msgID`, so republishing the same event inside the duplicate window is a no-op.
  */
-export async function publishChannelInboundEvent(js: JetStreamClient, event: WhatsAppTransportEvent): Promise<void> {
-  const subject = channelInboundSubject(whatsappTransportSubject(event.type, event.metadata.instanceId));
+export async function publishWhatsAppInboundEvent(js: JetStreamClient, event: WhatsAppInboundEvent): Promise<void> {
+  const subject = whatsappInboundSubject(whatsappInboundKindOf(event.type), event.instanceId);
   await js.publish(subject, sc.encode(JSON.stringify(event)), { msgID: event.id });
 }

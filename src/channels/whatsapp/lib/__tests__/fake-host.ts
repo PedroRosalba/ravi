@@ -9,7 +9,11 @@
  */
 
 import { mock } from "bun:test";
+import { loadBaileys } from "../../baileys-loader.js";
 import type { WhatsAppHandlerHost } from "../types.js";
+
+// The handlers read Baileys values through `baileys()`: load it once for every test using this host.
+await loadBaileys();
 
 export interface FakeHostOptions {
   lidFirstEnabled?: boolean;

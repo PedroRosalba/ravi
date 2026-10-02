@@ -58,20 +58,35 @@ describe("Media Utilities", () => {
     });
 
     it("supports explicit env override in MiB", () => {
-      const original = process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB;
-      process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = "512";
+      const original = process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB;
+      process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = "512";
       try {
         expect(getWhatsAppMediaDownloadMaxBytes()).toBe(512 * 1024 * 1024);
       } finally {
-        if (original === undefined) process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = undefined;
-        else process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = original;
+        if (original === undefined) process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = undefined;
+        else process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = original;
+      }
+    });
+
+    it("ignores the retired OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB name", () => {
+      const original = process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB;
+      const legacy = process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB;
+      process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = undefined;
+      process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = "512";
+      try {
+        expect(getWhatsAppMediaDownloadMaxBytes()).toBe(2 * 1024 * 1024 * 1024);
+      } finally {
+        if (original === undefined) process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = undefined;
+        else process.env.WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = original;
+        if (legacy === undefined) process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = undefined;
+        else process.env.OMNI_WHATSAPP_MEDIA_MAX_DOWNLOAD_MB = legacy;
       }
     });
   });
 
   describe("downloadMediaToFile cleanup", () => {
     it("removes partial files when stream download fails", async () => {
-      const outputPath = join(tmpdir(), `omni-download-partial-${Date.now()}.bin`);
+      const outputPath = join(tmpdir(), `ravi-whatsapp-download-partial-${Date.now()}.bin`);
       const failingStream = Readable.from(
         (async function* () {
           yield Buffer.from("partial");
@@ -88,7 +103,7 @@ describe("Media Utilities", () => {
     });
 
     it("removes zero-byte files and returns size 0", async () => {
-      const outputPath = join(tmpdir(), `omni-download-empty-${Date.now()}.bin`);
+      const outputPath = join(tmpdir(), `ravi-whatsapp-download-empty-${Date.now()}.bin`);
       try {
         const size = await writeMediaStreamToFile(Readable.from([]), outputPath);
         expect(size).toBe(0);

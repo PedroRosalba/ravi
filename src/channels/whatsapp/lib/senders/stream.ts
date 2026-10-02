@@ -12,7 +12,7 @@
 
 import type { WASocket, proto } from "baileys";
 
-import { type StreamDelta, type StreamSender, createLogger, markdownToWhatsApp } from "../compat.js";
+import { type StreamDelta, type StreamSender, createLogger, markdownToWhatsApp } from "../foundation.js";
 import { isGroupJid } from "../jid.js";
 import { splitWhatsAppMessage } from "../utils/split-message.js";
 
@@ -41,7 +41,7 @@ export interface WhatsAppStreamSenderOptions {
   editMode?: boolean;
   /** Throttle interval for edits in ms (default 2500). Only applies when editMode is true. */
   throttleMs?: number;
-  /** Called with each new message id, so the plugin can drop the fromMe echo (#1248). */
+  /** Called with each new message id, so the plugin can drop the fromMe echo (omni#1248). */
   onSent?: (messageId: string) => void;
 }
 

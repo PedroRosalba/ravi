@@ -2,14 +2,17 @@
  * Message edits (#1061, reopened).
  *
  * Baileys re-emits every MESSAGE_EDIT as `messages.update` with the ORIGINAL key
- * and `{ editedMessage: { message: <new content> } }`. That is the single source
- * for edit events; the raw protocol message on `messages.upsert` is swallowed so
- * it is neither journaled as `unknown` nor emitted twice.
+ * and `{ editedMessage: { message: <new content> } }`. The raw protocol message on
+ * `messages.upsert` may surface the same edit first; the edit dedupe makes sure the
+ * pair produces exactly one edit event and never a `message.received`.
+ *
+ * The dedupe set is module-level: every test starts from an empty one, so each test
+ * passes alone and in any order (`bun test --randomize`).
  */
 
-import { describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { EventEmitter } from "node:events";
-import { setupMessageHandlers } from "../handlers/messages.js";
+import { resetEditDedupeForTests, setupMessageHandlers } from "../handlers/messages.js";
 import { createFakeHost } from "./fake-host.js";
 
 const GROUP = "120363000000000000@g.us";
@@ -24,6 +27,10 @@ function harness() {
 }
 
 const flush = () => new Promise((r) => setImmediate(r));
+
+beforeEach(() => {
+  resetEditDedupeForTests();
+});
 
 describe("WhatsApp message edits via messages.update", () => {
   it("text edit of own group message lands on the original id with the new text", async () => {
@@ -63,7 +70,7 @@ describe("WhatsApp message edits via messages.update", () => {
     expect(h.handleEdited).not.toHaveBeenCalled();
   });
 
-  it("the raw edit protocol message on messages.upsert is swallowed (not unknown, not a second edit)", async () => {
+  it("the raw edit protocol message on messages.upsert plus its messages.update yield exactly one edit", async () => {
     const h = harness();
     h.ev.emit("messages.upsert", {
       type: "notify",
@@ -91,7 +98,28 @@ describe("WhatsApp message edits via messages.update", () => {
       ],
     });
     await flush();
-    expect(h.handleEdited).not.toHaveBeenCalled();
+    h.ev.emit("messages.update", [
+      {
+        key: { id: "ORIG789", remoteJid: GROUP, fromMe: true, participant: "5511999998888@s.whatsapp.net" },
+        update: { message: { editedMessage: { message: { conversation: "edited in group" } } } },
+      },
+    ]);
+    await flush();
+    // Whichever of the two surfaces it first (here the upsert), the edit lands once, on the original id.
+    expect(h.handleEdited).toHaveBeenCalledTimes(1);
+    expect(h.handleEdited.mock.calls[0]?.slice(0, 5)).toEqual(["inst-1", "ORIG789", GROUP, "edited in group", true]);
     expect(h.emitReceived).not.toHaveBeenCalled();
+  });
+
+  it("a repeated messages.update for the same edit is emitted once", async () => {
+    const h = harness();
+    const update = {
+      key: { id: "ORIG999", remoteJid: GROUP, fromMe: false, participant: "5511999998888@s.whatsapp.net" },
+      update: { message: { editedMessage: { message: { conversation: "same text" } } } },
+    };
+    h.ev.emit("messages.update", [update]);
+    h.ev.emit("messages.update", [update]);
+    await flush();
+    expect(h.handleEdited).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,10 +1,10 @@
 /**
- * Test harness for `WhatsAppNativeRuntime`: a fake Baileys socket (EventEmitter `ev`
+ * Test harness for `WhatsAppRuntime`: a fake Baileys socket (EventEmitter `ev`
  * plus mocked socket methods), a fake JetStream client that records publishes, an
  * in-memory auth store, manual timers and a library whose socket/auth/ffmpeg seams
  * are faked while the ported handlers (connection, messages, all-events) stay real.
  *
- * Omni's plugin-level tests built a real `WhatsAppPlugin` with a mocked socket; this
+ * The ported plugin-level tests built a real `WhatsAppPlugin` with a mocked socket; this
  * harness drives the runtime through exactly the same Baileys events.
  */
 
@@ -12,16 +12,21 @@ import { mock } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { GroupMetadata, WASocket } from "baileys";
 import type { JetStreamClient } from "nats";
-import type { WhatsAppTransportEvent } from "../contract.js";
-import type { Logger } from "../lib/compat.js";
+import type { WhatsAppInboundEvent, WhatsAppInboundEventType } from "../events.js";
+import type { Logger } from "../lib/foundation.js";
 import type { SocketConfig } from "../lib/socket.js";
 import {
   type WhatsAppAuthStorage,
-  WhatsAppNativeRuntime,
-  type WhatsAppNativeRuntimeOptions,
+  WhatsAppRuntime,
+  type WhatsAppRuntimeOptions,
   type WhatsAppRuntimeTimers,
 } from "../runtime.js";
+import type { WhatsAppObservedEvent } from "../runtime-events.js";
 import { type WhatsAppLibrary, whatsappLibrary } from "../runtime-library.js";
+import { loadBaileys } from "../baileys-loader.js";
+
+// The real handlers in the harness library read Baileys values through `baileys()`.
+await loadBaileys();
 
 export const OWNER_JID = "5511999990000:7@s.whatsapp.net";
 export const OWNER_LID = "99887766554433:7@lid";
@@ -138,9 +143,15 @@ export type FakeSocket = ReturnType<typeof createFakeSocket>;
 export interface PublishedRecord {
   subject: string;
   msgID?: string;
-  event: WhatsAppTransportEvent;
+  /** The decoded wire event (`WhatsAppInboundEvent`, events.ts). */
+  event: WhatsAppInboundEvent;
   raw: string;
 }
+
+/** A published record whose event is narrowed to one inbound event type. */
+export type PublishedRecordOf<T extends WhatsAppInboundEventType> = PublishedRecord & {
+  event: Extract<WhatsAppInboundEvent, { type: T }>;
+};
 
 export function createFakeJetStream(options: { failTimes?: number } = {}) {
   const published: PublishedRecord[] = [];
@@ -151,7 +162,7 @@ export function createFakeJetStream(options: { failTimes?: number } = {}) {
       throw new Error("no responders available for request");
     }
     const raw = new TextDecoder().decode(data);
-    published.push({ subject, msgID: opts?.msgID, event: JSON.parse(raw) as WhatsAppTransportEvent, raw });
+    published.push({ subject, msgID: opts?.msgID, event: JSON.parse(raw) as WhatsAppInboundEvent, raw });
     return { seq: published.length, duplicate: false };
   });
   return { js: { publish } as unknown as JetStreamClient, publish, published };
@@ -163,7 +174,7 @@ export function createFakeJetStream(options: { failTimes?: number } = {}) {
 
 export function createMemoryAuthStorage(options: { registered?: boolean } = {}) {
   const data = new Map<string, unknown>();
-  const flags = { registered: options.registered ?? false };
+  const flags = { registered: options.registered ?? false, manualDisconnected: false };
   const storage: WhatsAppAuthStorage = {
     async get<T>(key: string) {
       return (data.has(key) ? data.get(key) : null) as T | null;
@@ -181,6 +192,10 @@ export function createMemoryAuthStorage(options: { registered?: boolean } = {}) 
       return [...data.keys()];
     },
     hasRegisteredCreds: () => flags.registered,
+    isManuallyDisconnected: () => flags.manualDisconnected,
+    setManuallyDisconnected: (_instanceId: string, disconnected: boolean) => {
+      flags.manualDisconnected = disconnected;
+    },
   };
   return { storage, flags, data };
 }
@@ -219,15 +234,17 @@ export function createManualTimers() {
 // Runtime harness
 // ============================================================================
 
-export interface HarnessOptions extends Partial<Omit<WhatsAppNativeRuntimeOptions, "instanceId" | "jetstream">> {
+export interface HarnessOptions extends Partial<Omit<WhatsAppRuntimeOptions, "instanceId" | "jetstream">> {
   instanceId?: string;
   registered?: boolean;
   /** creds.me.id returned by the fake auth state (default: owner JID when registered). */
   credsMeId?: string | null;
-  socketOptions?: WhatsAppNativeRuntimeOptions["socketOptions"];
+  socketOptions?: WhatsAppRuntimeOptions["socketOptions"];
   socket?: FakeSocketOptions;
   publishFailTimes?: number;
   library?: Partial<WhatsAppLibrary>;
+  /** Share an auth store between harnesses (simulates a runner restart on the same `auth.db`). */
+  auth?: ReturnType<typeof createMemoryAuthStorage>;
 }
 
 export function createHarness(options: HarnessOptions = {}) {
@@ -238,18 +255,21 @@ export function createHarness(options: HarnessOptions = {}) {
     socket: _socket,
     publishFailTimes: _publishFailTimes,
     library: _library,
+    auth: _auth,
     ...runtimeOverrides
   } = options;
   const instanceId = requestedInstanceId ?? uniqueInstanceId();
   const { js, publish, published } = createFakeJetStream({ failTimes: options.publishFailTimes });
-  const auth = createMemoryAuthStorage({ registered: options.registered ?? true });
+  const auth = options.auth ?? createMemoryAuthStorage({ registered: options.registered ?? true });
   const manual = createManualTimers();
   const clock = { now: 1_750_000_000_000 };
   const sockets: FakeSocket[] = [];
   const socketConfigs: SocketConfig[] = [];
-  const observed: WhatsAppTransportEvent[] = [];
+  const observed: WhatsAppObservedEvent[] = [];
   const ensureInboundStream = mock(async () => {});
   const saveCreds = mock(async () => {});
+  const authFlush = mock(async (_options?: { timeoutMs?: number }) => true);
+  const authDiscard = mock(async () => {});
 
   const library: WhatsAppLibrary = {
     ...whatsappLibrary,
@@ -266,7 +286,13 @@ export function createHarness(options: HarnessOptions = {}) {
     createStorageAuthState: mock(async () => {
       const meId = options.credsMeId === undefined ? (auth.flags.registered ? OWNER_JID : null) : options.credsMeId;
       const state = { creds: meId ? { me: { id: meId }, registered: true } : {}, keys: {} };
-      return { state, saveCreds } as unknown as Awaited<ReturnType<WhatsAppLibrary["createStorageAuthState"]>>;
+      return {
+        state,
+        saveCreds,
+        flush: authFlush,
+        discard: authDiscard,
+        pendingWrites: () => 0,
+      } as unknown as Awaited<ReturnType<WhatsAppLibrary["createStorageAuthState"]>>;
     }),
     clearAuthState: mock(async () => {
       auth.flags.registered = false;
@@ -278,7 +304,7 @@ export function createHarness(options: HarnessOptions = {}) {
     ...options.library,
   };
 
-  const runtime = new WhatsAppNativeRuntime({
+  const runtime = new WhatsAppRuntime({
     instanceId,
     accountName: "main",
     jetstream: js,
@@ -328,7 +354,8 @@ export function createHarness(options: HarnessOptions = {}) {
     return sock;
   };
 
-  const publishedOfType = (type: string) => published.filter((record) => record.event.type === type);
+  const publishedOfType = <T extends WhatsAppInboundEventType>(type: T): PublishedRecordOf<T>[] =>
+    published.filter((record): record is PublishedRecordOf<T> => record.event.type === type);
   const observedOfType = (type: string) => observed.filter((event) => event.type === type);
 
   return {
@@ -349,6 +376,8 @@ export function createHarness(options: HarnessOptions = {}) {
     socket,
     ensureInboundStream,
     saveCreds,
+    authFlush,
+    authDiscard,
     startAndWaitForSocket,
     connect,
   };

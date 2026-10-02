@@ -1,14 +1,18 @@
 /**
- * WhatsAppNativeRuntime inbound path: Baileys events → Omni-identical envelopes on
- * CHANNEL_INBOUND. Ports Omni plugin-level tests inbound-dedup, history-sync,
- * reaction-echo, delete-echo, message-edit-*, sender-instance, quoted-context,
- * lid-mapping-publish-delta, silent-prekey-error, media-remote-ingest and
- * history-media-download, plus an envelope parity check.
+ * WhatsAppRuntime inbound path: Baileys events → `WhatsAppInboundEvent`s (events.ts) on
+ * CHANNEL_INBOUND. Ports the plugin-level tests of omni packages/channel-whatsapp
+ * (inbound-dedup, history-sync, reaction-echo, delete-echo, message-edit-*,
+ * sender-instance, quoted-context, lid-mapping-publish-delta, silent-prekey-error,
+ * media-remote-ingest, history-media-download), plus the inbound contract check.
  */
 
 import { describe, expect, it, mock } from "bun:test";
 import type { WAMessage } from "baileys";
-import { WHATSAPP_CHANNEL_TYPE, WhatsAppTransportEventSchema } from "../contract.js";
+import {
+  WHATSAPP_INBOUND_EVENT_SCHEMA_VERSION,
+  WhatsAppInboundEventSchema,
+  whatsappInboundSubject,
+} from "../events.js";
 import { deterministicEventId, messageIdempotencyKey } from "../runtime-events.js";
 import { OWNER_JID, OWNER_LID, createHarness, flush } from "./runtime-harness.js";
 
@@ -31,8 +35,8 @@ function textMessage(id: string, remoteJid: string, text: string, extra: Record<
   };
 }
 
-describe("envelope parity with Omni", () => {
-  it("message.received: subject, msgID, envelope and payload fields match what the consumer reads", async () => {
+describe("WhatsApp inbound contract", () => {
+  it("message.received: subject, msgID, envelope and payload fields match the inbound contract", async () => {
     const h = createHarness();
     const sock = await h.connect();
     h.clock.now = 1_750_000_123_000;
@@ -55,35 +59,34 @@ describe("envelope parity with Omni", () => {
     if (!record) throw new Error("missing record");
     const expectedId = deterministicEventId(messageIdempotencyKey(h.instanceId, "MSG-1", "text"));
 
-    expect(record.subject).toBe(`ravi.channel.inbound.message.received.whatsapp-baileys.${h.instanceId}`);
+    expect(record.subject).toBe(`ravi.channel.inbound.whatsapp.message.${h.instanceId}`);
+    expect(record.subject).toBe(whatsappInboundSubject("message", h.instanceId));
     expect(record.msgID).toBe(expectedId);
-    expect(WhatsAppTransportEventSchema.safeParse(record.event).success).toBe(true);
+    expect(WhatsAppInboundEventSchema.safeParse(record.event).success).toBe(true);
 
     const envelope = JSON.parse(record.raw) as Record<string, unknown>;
-    expect(Object.keys(envelope)).toEqual(["id", "type", "payload", "metadata", "timestamp"]);
-    expect(envelope.id).toBe(expectedId);
-    expect(envelope.type).toBe("message.received");
-    expect(envelope.timestamp).toBe(1_750_000_123_000);
-    const metadata = envelope.metadata as Record<string, unknown>;
-    expect(Object.keys(metadata)).toEqual([
+    expect(Object.keys(envelope)).toEqual([
+      "schemaVersion",
+      "id",
       "instanceId",
-      "channelType",
-      "source",
-      "ingestMode",
-      "pluginReceivedAt",
+      "timestamp",
       "receivedAt",
+      "type",
+      "ingestMode",
+      "payload",
     ]);
-    expect(metadata).toMatchObject({
+    expect(envelope).toMatchObject({
+      schemaVersion: WHATSAPP_INBOUND_EVENT_SCHEMA_VERSION,
+      id: expectedId,
       instanceId: h.instanceId,
-      channelType: WHATSAPP_CHANNEL_TYPE,
-      source: "ravi.whatsapp.native",
+      type: "message.received",
       ingestMode: "realtime",
-      receivedAt: 1_750_000_123_000,
+      timestamp: 1_750_000_123_000,
     });
-    expect(typeof metadata.pluginReceivedAt).toBe("number");
+    expect(typeof envelope.receivedAt).toBe("number");
 
     const payload = envelope.payload as Record<string, unknown>;
-    // Omni field order with undefined members dropped by JSON.
+    // Payload field order unchanged, undefined members dropped by JSON.
     expect(Object.keys(payload)).toEqual([
       "externalId",
       "chatId",
@@ -97,7 +100,7 @@ describe("envelope parity with Omni", () => {
     expect(payload.chatId).toBe(DM_LID);
     expect(payload.from).toBe("217046273028329");
     expect(payload.senderName).toBe("Ana");
-    // The sender's pushName is cached first, so a DM resolves its chat name (Omni order).
+    // The sender's pushName is cached first, so a DM resolves its chat name.
     expect(payload.chatName).toBe("Ana");
     expect(payload.content).toEqual({ type: "text", text: "oi" });
     const raw = payload.rawPayload as Record<string, unknown>;
@@ -142,7 +145,7 @@ describe("envelope parity with Omni", () => {
     expect(raw.isMentioningInstance).toBe(true);
   });
 
-  it("instance.disconnected and reaction.received carry Omni's payload keys", async () => {
+  it("connection.disconnected and reaction.received carry the contract payload keys", async () => {
     const h = createHarness();
     const sock = await h.connect();
     sock.emit("messages.reaction", [
@@ -162,20 +165,22 @@ describe("envelope parity with Omni", () => {
       emoji: "👍",
       rawPayload: { externalId: "R-1", isFromMe: false },
     });
-    expect(reaction?.subject).toBe(`ravi.channel.inbound.reaction.received.whatsapp-baileys.${h.instanceId}`);
-    expect(reaction?.event.metadata.ingestMode).toBeUndefined();
-    const disconnected = h.publishedOfType("instance.disconnected")[0]?.event.payload as Record<string, unknown>;
-    expect(Object.keys(disconnected)).toEqual(["instanceId", "channelType", "reason", "willReconnect"]);
+    expect(reaction?.subject).toBe(`ravi.channel.inbound.whatsapp.reaction.${h.instanceId}`);
+    expect(reaction?.event).not.toHaveProperty("ingestMode");
+    const disconnected = h.publishedOfType("connection.disconnected")[0];
+    expect(disconnected?.subject).toBe(`ravi.channel.inbound.whatsapp.connection.${h.instanceId}`);
+    expect(disconnected?.event.instanceId).toBe(h.instanceId);
+    expect(Object.keys(disconnected?.event.payload ?? {})).toEqual(["reason", "willReconnect"]);
   });
 
-  it("only consumer-read types reach CHANNEL_INBOUND; the rest stay observer-only", async () => {
+  it("only inbound contract types reach CHANNEL_INBOUND; the rest stay observer-only", async () => {
     const h = createHarness();
     const sock = await h.connect();
     sock.emit("presence.update", { id: PLAIN_DM, presences: { [PLAIN_DM]: { lastKnownPresence: "composing" } } });
     sock.emit("chats.upsert", [{ id: PLAIN_DM, name: "Carla", unreadCount: 3 }]);
     await flush();
     const publishedTypes = new Set(h.published.map((record) => record.event.type));
-    expect([...publishedTypes].sort()).toEqual(["instance.connected"]);
+    expect([...publishedTypes].sort()).toEqual(["connection.connected"]);
     expect(h.observedOfType("custom.chat.unread-updated")[0]?.payload).toEqual({ chatId: PLAIN_DM, unreadCount: 3 });
   });
 });
@@ -241,29 +246,82 @@ describe("inbound dedup", () => {
 });
 
 describe("offline backlog and history sync", () => {
-  it("messages delivered as an `append` batch are tagged history-sync", async () => {
-    const h = createHarness();
-    const sock = await h.connect();
-    sock.emit("messages.upsert", upsert([textMessage("OFF-1", PLAIN_DM, "while you were away")], "append"));
-    sock.emit("messages.upsert", upsert([textMessage("RT-1", PLAIN_DM, "now")], "notify"));
-    await flush();
-    const modes = Object.fromEntries(
+  const modesOf = (h: ReturnType<typeof createHarness>) =>
+    Object.fromEntries(
       h
         .publishedOfType("message.received")
-        .map((record) => [
-          (record.event.payload as { externalId: string }).externalId,
-          record.event.metadata.ingestMode,
-        ]),
+        .map((record) => [(record.event.payload as { externalId: string }).externalId, record.event.ingestMode]),
     );
-    expect(modes).toEqual({ "OFF-1": "history-sync", "RT-1": "realtime" });
+  /** Seconds-resolution messageTimestamp `ageMs` before the harness clock. */
+  const sentAgo = (h: ReturnType<typeof createHarness>, ageMs: number) => Math.floor((h.clock.now - ageMs) / 1000);
+
+  it("offline backlog (`append`) is age-aware: recent → realtime, older than offlineStaleMs → history-sync", async () => {
+    const h = createHarness();
+    const sock = await h.connect();
+    sock.emit(
+      "messages.upsert",
+      upsert(
+        [
+          textMessage("OFF-RECENT", PLAIN_DM, "sent during a 2 min gap", { messageTimestamp: sentAgo(h, 2 * 60_000) }),
+          textMessage("OFF-EDGE", PLAIN_DM, "just under 10 min", { messageTimestamp: sentAgo(h, 9 * 60_000) }),
+          textMessage("OFF-OLD", PLAIN_DM, "an hour ago", { messageTimestamp: sentAgo(h, 60 * 60_000) }),
+          textMessage("OFF-LONG", PLAIN_DM, "protobuf Long", {
+            messageTimestamp: { toNumber: () => sentAgo(h, 11 * 60_000) },
+          }),
+          textMessage("OFF-NOTS", PLAIN_DM, "no timestamp", { messageTimestamp: undefined }),
+        ],
+        "append",
+      ),
+    );
+    sock.emit("messages.upsert", upsert([textMessage("RT-1", PLAIN_DM, "now")], "notify"));
+    await flush();
+    expect(modesOf(h)).toEqual({
+      "OFF-RECENT": "realtime",
+      "OFF-EDGE": "realtime",
+      "OFF-OLD": "history-sync",
+      "OFF-LONG": "history-sync",
+      "OFF-NOTS": "history-sync",
+      "RT-1": "realtime",
+    });
+  });
+
+  it("offlineStaleMs moves the threshold", async () => {
+    const h = createHarness({ offlineStaleMs: 60_000 });
+    const sock = await h.connect();
+    sock.emit(
+      "messages.upsert",
+      upsert(
+        [
+          textMessage("OFF-30S", PLAIN_DM, "a", { messageTimestamp: sentAgo(h, 30_000) }),
+          textMessage("OFF-2M", PLAIN_DM, "b", { messageTimestamp: sentAgo(h, 2 * 60_000) }),
+        ],
+        "append",
+      ),
+    );
+    await flush();
+    expect(modesOf(h)).toEqual({ "OFF-30S": "realtime", "OFF-2M": "history-sync" });
+  });
+
+  it('offlineIngestMode "history-sync" is the explicit opt-in to never answer offline backlog', async () => {
+    const h = createHarness({ offlineIngestMode: "history-sync" });
+    const sock = await h.connect();
+    sock.emit(
+      "messages.upsert",
+      upsert([textMessage("OFF-1", PLAIN_DM, "1 s ago", { messageTimestamp: sentAgo(h, 1_000) })], "append"),
+    );
+    await flush();
+    expect(modesOf(h)).toEqual({ "OFF-1": "history-sync" });
   });
 
   it("offlineIngestMode can keep offline backlog realtime", async () => {
     const h = createHarness({ offlineIngestMode: "realtime" });
     const sock = await h.connect();
-    sock.emit("messages.upsert", upsert([textMessage("OFF-2", PLAIN_DM, "late")], "append"));
+    sock.emit(
+      "messages.upsert",
+      upsert([textMessage("OFF-2", PLAIN_DM, "late", { messageTimestamp: sentAgo(h, 24 * 3_600_000) })], "append"),
+    );
     await flush();
-    expect(h.publishedOfType("message.received")[0]?.event.metadata.ingestMode).toBe("realtime");
+    expect(h.publishedOfType("message.received")[0]?.event.ingestMode).toBe("realtime");
   });
 
   it("messaging-history.set publishes history-sync messages and fills chat/contact caches", async () => {
@@ -293,7 +351,7 @@ describe("offline backlog and history sync", () => {
       "H-1",
       "H-2",
     ]);
-    for (const record of records) expect(record.event.metadata.ingestMode).toBe("history-sync");
+    for (const record of records) expect(record.event.ingestMode).toBe("history-sync");
     const h1 = records.find((record) => (record.event.payload as { externalId: string }).externalId === "H-1");
     expect(h1?.event.payload).toMatchObject({
       chatId: PLAIN_DM,
@@ -464,7 +522,7 @@ describe("reactions", () => {
 });
 
 describe("edits and deletes", () => {
-  it("messages.update edit → message.received edit payload (Omni shape)", async () => {
+  it("messages.update edit → message.received edit payload (ported payload shape)", async () => {
     const h = createHarness();
     const sock = await h.connect();
     h.clock.now = 1_750_000_500_000;
@@ -476,7 +534,7 @@ describe("edits and deletes", () => {
     ]);
     await flush();
     const record = h.publishedOfType("message.received")[0];
-    expect(record?.event.metadata.ingestMode).toBe("realtime");
+    expect(record?.event.ingestMode).toBe("realtime");
     expect(record?.event.payload).toEqual({
       externalId: "MSG-E1-edit-1750000500000",
       chatId: PLAIN_DM,
@@ -502,7 +560,7 @@ describe("edits and deletes", () => {
     expect(payload?.rawPayload.isFromMe).toBe(true);
   });
 
-  it("messages.delete → message.received delete payload (Omni shape)", async () => {
+  it("messages.delete → message.received delete payload (ported payload shape)", async () => {
     const h = createHarness();
     const sock = await h.connect();
     h.clock.now = 1_750_000_600_000;

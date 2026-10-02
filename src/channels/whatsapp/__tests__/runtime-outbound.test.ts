@@ -1,5 +1,5 @@
 /**
- * WhatsAppNativeRuntime outbound + RPC surface: every `WhatsAppRpcMethod` returns the
+ * WhatsAppRuntime outbound + RPC surface: every `WhatsAppRpcMethod` returns the
  * contract shape and fails with a typed `{status, code}` error.
  */
 
@@ -109,7 +109,7 @@ describe("messages.sendText", () => {
     expect(lastSend(sock).content).toEqual({ text: "**raw**" });
   });
 
-  it("drops text made only of routing headers (Omni 'filtered')", async () => {
+  it("drops text made only of routing headers ('filtered')", async () => {
     const h = createHarness();
     const sock = await h.connect();
     const result = await h.runtime.call("messages.sendText", {
@@ -157,6 +157,47 @@ describe("messages.sendText", () => {
     });
   });
 
+  it("RATE_LIMITED errors carry retryAfterMs (explicit retry_after or the runtime's backoff) to the RPC error", async () => {
+    const h = createHarness();
+    const sock = await h.connect();
+    sock.fake.sendMessage.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("rate-overlimit"), { output: { statusCode: 429 }, retryAfter: 7 });
+    });
+    const explicit = await h.runtime.call("messages.sendText", { to: DM, text: "a" }).catch((error: unknown) => error);
+    expect(explicit).toBeInstanceOf(WhatsAppRuntimeError);
+    expect((explicit as WhatsAppRuntimeError).toRpcError()).toEqual({
+      message: "rate-overlimit",
+      status: 429,
+      code: "RATE_LIMITED",
+      retryAfterMs: 7_000,
+    });
+
+    // No explicit delay: the exponential backoff the runtime itself waits before its next send.
+    sock.fake.sendMessage.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("rate-overlimit"), { output: { statusCode: 429 } });
+    });
+    const backoff = await h.runtime.call("messages.sendText", { to: DM, text: "b" }).catch((error: unknown) => error);
+    const body = (backoff as WhatsAppRuntimeError).toRpcError();
+    expect(body.code).toBe("RATE_LIMITED");
+    expect(body.retryAfterMs).toBeGreaterThan(0);
+
+    // Reactions report it too.
+    sock.fake.sendMessage.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("rate-overlimit"), { output: { statusCode: 429 }, retryAfter: 2 });
+    });
+    await expect(h.runtime.call("messages.react", { to: DM, messageId: "X", emoji: "👍" })).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+      retryAfterMs: 2_000,
+    });
+
+    // Other failures have none.
+    sock.fake.sendMessage.mockImplementationOnce(async () => {
+      throw new Error("socket hang up");
+    });
+    const other = await h.runtime.call("messages.sendText", { to: DM, text: "c" }).catch((error: unknown) => error);
+    expect((other as WhatsAppRuntimeError).toRpcError()).not.toHaveProperty("retryAfterMs");
+  });
+
   it("maps rate limits to 429 RATE_LIMITED and other failures to 502, observing message.failed", async () => {
     const h = createHarness();
     const sock = await h.connect();
@@ -177,7 +218,7 @@ describe("messages.sendText", () => {
     const failed = h.observedOfType("message.failed").map((event) => event.payload as Record<string, unknown>);
     expect(failed).toHaveLength(2);
     expect(failed[0]).toMatchObject({ chatId: DM, retryable: true });
-    expect(h.publishedOfType("message.failed")).toHaveLength(0);
+    expect(h.published.map((record) => record.event.type as string)).not.toContain("message.failed");
   });
 });
 
@@ -393,7 +434,7 @@ describe("groups", () => {
     "120363111111111111@g.us": { id: "120363111111111111@g.us", subject: "Outro", participants: [] },
   };
 
-  it("lists groups with search and limit (Omni record shape)", async () => {
+  it("lists groups with search and limit (group record shape)", async () => {
     const h = createHarness({ socket: { groups } });
     await h.connect();
     const all = await h.runtime.call("groups.list", {});
@@ -416,6 +457,36 @@ describe("groups", () => {
         isCommunity: false,
       },
     ]);
+  });
+
+  it("omits participant lists (participantsTruncated) when the result would exceed the NATS payload budget", async () => {
+    const big: Record<
+      string,
+      { id: string; subject: string; size?: number; participants: Array<{ id: string; admin: null }> }
+    > = {};
+    for (let g = 0; g < 40; g++) {
+      const id = `1203639${String(g).padStart(11, "0")}@g.us`;
+      big[id] = {
+        id,
+        subject: `Big ${g}`,
+        participants: Array.from({ length: 1_024 }, (_, p) => ({
+          id: `55119${String(g * 10_000 + p).padStart(8, "0")}@s.whatsapp.net`,
+          admin: null,
+        })),
+      };
+    }
+    const h = createHarness({ socket: { groups: big } });
+    await h.connect();
+    const result = await h.runtime.call("groups.list", {});
+    expect(result.participantsTruncated).toBe(true);
+    expect(result.items).toHaveLength(40);
+    expect(result.items.every((item) => item.participants.length === 0 && item.memberCount === 1_024)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(900_000);
+
+    // Small results are untouched (no flag).
+    const small = await h.runtime.call("groups.list", { limit: 1 });
+    expect(small.participantsTruncated).toBeUndefined();
+    expect(small.items[0]?.participants).toHaveLength(1_024);
   });
 
   it("groups.metadata resolves names and LID phones, honoring maxAgeMs", async () => {

@@ -1,15 +1,14 @@
 /**
- * WhatsAppNativeRuntime lifecycle: start/connect/disconnect/logout, QR and pairing
+ * WhatsAppRuntime lifecycle: start/connect/disconnect/logout, QR and pairing
  * code, connectionReplaced/loggedOut, reconnect + supervisor, health/status, passkey,
- * group prewarm noise, publish retry. Ports Omni plugin.test, disconnect-status and
- * prewarm-connection-closed to the one-instance runtime.
+ * group prewarm noise, publish retry. Ports plugin.test, disconnect-status and
+ * prewarm-connection-closed (omni packages/channel-whatsapp) to the one-instance runtime.
  */
 
 import { describe, expect, it, mock } from "bun:test";
-import { WHATSAPP_CHANNEL_TYPE } from "../contract.js";
-import type { Logger } from "../lib/compat.js";
+import type { Logger } from "../lib/foundation.js";
 import { WhatsAppRuntimeError } from "../runtime-errors.js";
-import { OWNER_JID, createHarness, flush } from "./runtime-harness.js";
+import { OWNER_JID, createHarness, createMemoryAuthStorage, flush } from "./runtime-harness.js";
 
 function closeWith(statusCode: number, message = "closed") {
   const error = Object.assign(new Error(message), { output: { statusCode, payload: { message } } });
@@ -25,7 +24,7 @@ function spyLogger() {
   } satisfies Logger;
 }
 
-describe("WhatsAppNativeRuntime start()", () => {
+describe("WhatsAppRuntime start()", () => {
   it("never blocks and waits for pairing when no creds are stored", async () => {
     const h = createHarness({ registered: false });
     expect(h.runtime.getState()).toBe("idle");
@@ -41,7 +40,7 @@ describe("WhatsAppNativeRuntime start()", () => {
     expect(h.runtime.getStatus()).toEqual({ state: "disconnected", isConnected: false, profileName: null });
   });
 
-  it("connects in the background with stored creds and publishes instance.connected", async () => {
+  it("connects in the background with stored creds and publishes connection.connected", async () => {
     const h = createHarness();
     h.runtime.start();
     expect(h.runtime.getState()).toBe("connecting");
@@ -54,16 +53,15 @@ describe("WhatsAppNativeRuntime start()", () => {
     expect(h.runtime.getStatus()).toEqual({ state: "connected", isConnected: true, profileName: "Ravi Bot" });
     expect(sock.fake.profilePictureUrl).toHaveBeenCalledWith(OWNER_JID, "image");
 
-    const connected = h.publishedOfType("instance.connected");
+    const connected = h.publishedOfType("connection.connected");
     expect(connected).toHaveLength(1);
+    expect(connected[0]?.event.instanceId).toBe(h.instanceId);
     expect(connected[0]?.event.payload).toEqual({
-      instanceId: h.instanceId,
-      channelType: WHATSAPP_CHANNEL_TYPE,
       profileName: "Ravi Bot",
       profilePicUrl: "https://pps.whatsapp.net/me.jpg",
       ownerIdentifier: OWNER_JID,
     });
-    expect(connected[0]?.subject).toBe(`ravi.channel.inbound.instance.connected.whatsapp-baileys.${h.instanceId}`);
+    expect(connected[0]?.subject).toBe(`ravi.channel.inbound.whatsapp.connection.${h.instanceId}`);
   });
 
   it("passes the runtime caches to the socket config and strips ravi-only options", async () => {
@@ -97,7 +95,7 @@ describe("WhatsAppNativeRuntime start()", () => {
 });
 
 describe("QR and pairing", () => {
-  it("publishes instance.qr_code and republishes the pending QR on a second connect", async () => {
+  it("publishes connection.qr and republishes the pending QR on a second connect", async () => {
     const h = createHarness({ registered: false });
     h.runtime.start();
     const first = await h.runtime.connect();
@@ -109,16 +107,17 @@ describe("QR and pairing", () => {
     expect(h.runtime.getState()).toBe("qr");
     expect(h.runtime.health()).toEqual({ status: "starting", reason: "qr_pending" });
     expect(h.runtime.getStatus().state).toBe("qr");
-    const qr = h.publishedOfType("instance.qr_code");
+    const qr = h.publishedOfType("connection.qr");
     expect(qr).toHaveLength(1);
+    expect(qr[0]?.subject).toBe(`ravi.channel.inbound.whatsapp.connection.${h.instanceId}`);
     const payload = qr[0]?.event.payload as Record<string, unknown>;
-    expect(Object.keys(payload)).toEqual(["instanceId", "channelType", "qrCode", "expiresAt"]);
+    expect(Object.keys(payload)).toEqual(["qrCode", "expiresAt"]);
     expect(payload.qrCode).toBe("2@QR-PAYLOAD");
     expect(typeof payload.expiresAt).toBe("number");
 
     const second = await h.runtime.connect();
     expect(second.status).toBe("qr");
-    expect(h.publishedOfType("instance.qr_code")).toHaveLength(2);
+    expect(h.publishedOfType("connection.qr")).toHaveLength(2);
     expect(h.sockets).toHaveLength(1);
   });
 
@@ -167,24 +166,20 @@ describe("QR and pairing", () => {
 });
 
 describe("disconnect / logout", () => {
-  it("disconnect closes the socket, publishes instance.disconnected and never reconnects (#1169)", async () => {
+  it("disconnect closes the socket, publishes connection.disconnected and never reconnects (omni#1169)", async () => {
     const h = createHarness();
     const sock = await h.connect();
     await h.runtime.call("connection.disconnect", {});
 
     expect(h.runtime.getState()).toBe("disconnected");
-    expect(h.runtime.health()).toEqual({ status: "disconnected", reason: "user_disconnect" });
+    expect(h.runtime.health()).toEqual({ status: "disconnected", reason: "manual_disconnect" });
+    expect(h.auth.flags.manualDisconnected).toBe(true);
     expect(sock.fake.end).toHaveBeenCalled();
     expect(sock.fake.logout).not.toHaveBeenCalled();
     expect(sock.fake.ev.listenerCount("connection.update")).toBe(0);
-    const disconnected = h.publishedOfType("instance.disconnected");
+    const disconnected = h.publishedOfType("connection.disconnected");
     expect(disconnected.map((record) => record.event.payload)).toEqual([
-      {
-        instanceId: h.instanceId,
-        channelType: WHATSAPP_CHANNEL_TYPE,
-        reason: "User requested disconnect",
-        willReconnect: false,
-      },
+      { reason: "User requested disconnect", willReconnect: false },
     ]);
     expect(h.manual.pending.size).toBe(0);
     await flush(30);
@@ -196,7 +191,7 @@ describe("disconnect / logout", () => {
     h.runtime.start();
     await h.runtime.disconnect();
     expect(h.runtime.getState()).toBe("disconnected");
-    expect(h.publishedOfType("instance.disconnected")).toHaveLength(0);
+    expect(h.publishedOfType("connection.disconnected")).toHaveLength(0);
   });
 
   it("logout unlinks the device, clears auth and reports logged_out", async () => {
@@ -208,7 +203,7 @@ describe("disconnect / logout", () => {
     expect(h.runtime.getState()).toBe("logged_out");
     expect(h.runtime.health()).toEqual({ status: "disconnected", reason: "logged_out" });
     expect(h.runtime.getStatus()).toEqual({ state: "logged_out", isConnected: false, profileName: null });
-    expect(h.publishedOfType("instance.disconnected")[0]?.event.payload).toMatchObject({ reason: "Logged out" });
+    expect(h.publishedOfType("connection.disconnected")[0]?.event.payload).toMatchObject({ reason: "Logged out" });
   });
 
   it("stop() closes the socket and later calls fail with 503", async () => {
@@ -237,7 +232,7 @@ describe("socket loss", () => {
     expect(sock.fake.end).toHaveBeenCalled();
     expect(h.sockets).toHaveLength(1);
     expect(h.manual.pending.size).toBe(0);
-    expect(h.publishedOfType("instance.disconnected")[0]?.event.payload).toMatchObject({
+    expect(h.publishedOfType("connection.disconnected")[0]?.event.payload).toMatchObject({
       reason: "Connection replaced by another session",
       willReconnect: false,
     });
@@ -252,7 +247,7 @@ describe("socket loss", () => {
     expect(h.runtime.getState()).toBe("logged_out");
     expect(h.library.clearAuthState).toHaveBeenCalledTimes(1);
     expect(h.auth.flags.registered).toBe(false);
-    expect(h.publishedOfType("instance.disconnected")[0]?.event.payload).toMatchObject({
+    expect(h.publishedOfType("connection.disconnected")[0]?.event.payload).toMatchObject({
       reason: "Logged out from WhatsApp",
       willReconnect: false,
     });
@@ -271,7 +266,7 @@ describe("socket loss", () => {
     await flush();
     expect(h.runtime.getState()).toBe("connected");
     expect(h.runtime.health()).toMatchObject({ status: "connected", reconnectCount: 1 });
-    expect(h.publishedOfType("instance.connected")).toHaveLength(2);
+    expect(h.publishedOfType("connection.connected")).toHaveLength(2);
   });
 
   it("the supervisor re-arms a connect after a failed socket creation", async () => {
@@ -413,12 +408,188 @@ describe("CHANNEL_INBOUND publishing", () => {
     const h = createHarness({ publishFailTimes: 1 });
     await h.connect();
     expect(h.ensureInboundStream).toHaveBeenCalledTimes(2);
-    expect(h.publishedOfType("instance.connected")).toHaveLength(1);
+    expect(h.publishedOfType("connection.connected")).toHaveLength(1);
   });
 
   it("keeps running when the stream check fails at start", async () => {
     const h = createHarness({ ensureInboundStream: async () => Promise.reject(new Error("jetstream not enabled")) });
     await h.connect();
     expect(h.runtime.getState()).toBe("connected");
+  });
+});
+
+describe("persisted manual disconnect (survives runner restarts)", () => {
+  it("a restarted runtime stays down after connection.disconnect, and connection.connect clears the marker", async () => {
+    const auth = createMemoryAuthStorage({ registered: true });
+    const first = createHarness({ auth });
+    await first.connect();
+    await first.runtime.call("connection.disconnect", {});
+    await first.runtime.stop();
+    expect(auth.flags.manualDisconnected).toBe(true);
+
+    // Runner restart: same auth store, new runtime.
+    const second = createHarness({ auth });
+    second.runtime.start();
+    await flush();
+    expect(second.sockets).toHaveLength(0);
+    expect(second.runtime.getState()).toBe("disconnected");
+    expect(second.runtime.health()).toEqual({ status: "disconnected", reason: "manual_disconnect" });
+    // The supervisor does not bring it back either.
+    second.manual.runAll();
+    await flush();
+    expect(second.sockets).toHaveLength(0);
+
+    await second.runtime.call("connection.connect", {});
+    await flush();
+    expect(auth.flags.manualDisconnected).toBe(false);
+    expect(second.sockets).toHaveLength(1);
+    second.socket().emit("connection.update", { connection: "open" });
+    await flush();
+    expect(second.runtime.health()).toMatchObject({ status: "connected" });
+    await second.runtime.stop();
+
+    // Next restart auto-connects again.
+    const third = createHarness({ auth });
+    await third.startAndWaitForSocket();
+    expect(third.sockets).toHaveLength(1);
+    await third.runtime.stop();
+  });
+
+  it("a pairing-code request clears the marker", async () => {
+    const auth = createMemoryAuthStorage({ registered: false });
+    auth.flags.manualDisconnected = true;
+    const h = createHarness({ auth });
+    h.runtime.start();
+    expect(h.runtime.health()).toEqual({ status: "disconnected", reason: "manual_disconnect" });
+    const pending = h.runtime.call("connection.pairingCode", { phoneNumber: "+55 11 99999-0000" });
+    await flush();
+    expect(auth.flags.manualDisconnected).toBe(false);
+    h.socket().emit("connection.update", { qr: "2@QR" });
+    expect(await pending).toEqual({ code: "ABCD1234" });
+  });
+
+  it("a disconnect issued while Baileys is still loading is honoured: no socket is opened", async () => {
+    let releaseLibrary: () => void = () => {};
+    const libraryGate = new Promise<void>((resolve) => {
+      releaseLibrary = resolve;
+    });
+    const h = createHarness();
+    const loadLibrary = async () => {
+      await libraryGate;
+      return h.library;
+    };
+    const gated = createHarness({ auth: h.auth, loadLibrary });
+    gated.runtime.start();
+    expect(gated.runtime.getState()).toBe("connecting");
+    await gated.runtime.call("connection.disconnect", {});
+    releaseLibrary();
+    await flush(30);
+    expect(h.library.createSocket).not.toHaveBeenCalled();
+    expect(gated.runtime.health()).toEqual({ status: "disconnected", reason: "manual_disconnect" });
+    expect(h.auth.flags.manualDisconnected).toBe(true);
+  });
+});
+
+describe("QR cycle reset failures never escape as unhandled rejections", () => {
+  it("reports qr_reset_failed health when clearing auth throws, and a later connect works", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const clearAuthState = mock(async () => {
+        throw new Error("database is locked");
+      });
+      const h = createHarness({ registered: false, library: { clearAuthState } });
+      h.runtime.start();
+      await h.runtime.call("connection.connect", {});
+      await flush();
+      const sock = h.socket();
+      // 1 fresh QR + 3 expired ones → the handler resets the QR cycle (clear auth + reconnect).
+      for (const qr of ["2@A", "2@B", "2@C", "2@D"]) {
+        sock.emit("connection.update", { qr });
+        await flush();
+      }
+      await flush(30);
+      expect(clearAuthState).toHaveBeenCalledTimes(1);
+      expect(rejections).toEqual([]);
+      expect(h.runtime.getState()).toBe("disconnected");
+      expect(h.runtime.health()).toMatchObject({ status: "disconnected", reason: "qr_reset_failed" });
+      expect(h.publishedOfType("connection.disconnected").at(-1)?.event.payload).toMatchObject({
+        willReconnect: false,
+      });
+      expect(h.sockets).toHaveLength(1);
+
+      // The runtime is not wedged: connection.connect opens a new socket.
+      await h.runtime.call("connection.connect", {});
+      await flush();
+      expect(h.sockets).toHaveLength(2);
+      h.socket().emit("connection.update", { qr: "2@E" });
+      await flush();
+      expect(h.runtime.getState()).toBe("qr");
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
+  it("a throwing host callback inside connection.update is reported as a connection error", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const h = createHarness({ registered: false });
+      h.runtime.start();
+      await h.runtime.call("connection.connect", {});
+      await flush();
+      const original = h.runtime.handleQrCode.bind(h.runtime);
+      h.runtime.handleQrCode = async () => {
+        throw new Error("emit exploded");
+      };
+      h.socket().emit("connection.update", { qr: "2@A" });
+      await flush(30);
+      h.runtime.handleQrCode = original;
+      expect(rejections).toEqual([]);
+      expect(h.runtime.health()).toMatchObject({ status: "disconnected", reason: "connection_error" });
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+});
+
+describe("auth-state write queue across the lifecycle", () => {
+  it("stop() flushes pending auth writes with the configured timeout", async () => {
+    const h = createHarness({ authFlushTimeoutMs: 1234 });
+    await h.connect();
+    await h.runtime.stop();
+    expect(h.authFlush).toHaveBeenCalledWith({ timeoutMs: 1234 });
+  });
+
+  it("a reconnect flushes the previous socket's writes before re-reading the store", async () => {
+    const h = createHarness();
+    const sock = await h.connect();
+    expect(h.authFlush).not.toHaveBeenCalled();
+    sock.emit("connection.update", { connection: "close", lastDisconnect: { error: new Error("stream errored") } });
+    await flush(30);
+    expect(h.sockets.length).toBeGreaterThan(1);
+    expect(h.authFlush).toHaveBeenCalledTimes(1);
+  });
+
+  it("logout and forceNewQr discard pending writes before clearing the auth state", async () => {
+    const order: string[] = [];
+    const h = createHarness({
+      library: {
+        clearAuthState: mock(async () => {
+          order.push("clear");
+        }),
+      },
+    });
+    h.authDiscard.mockImplementation(async () => {
+      order.push("discard");
+    });
+    await h.connect();
+    await h.runtime.call("connection.connect", { forceNewQr: true });
+    await flush();
+    expect(order).toEqual(["discard", "clear"]);
+    await h.runtime.call("connection.logout", {});
+    expect(order).toEqual(["discard", "clear", "discard", "clear"]);
   });
 });

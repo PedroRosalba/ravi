@@ -6,7 +6,7 @@
  */
 
 import type { AnyMessageContent } from "baileys";
-import type { OutgoingMessage } from "../compat.js";
+import type { OutgoingMessage } from "../foundation.js";
 import { toJid } from "../jid.js";
 import { ErrorCode, WhatsAppError } from "../utils/errors.js";
 
