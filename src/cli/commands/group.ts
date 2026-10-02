@@ -24,12 +24,10 @@ import {
 import { publishChannelSessionPrompt } from "../../channels/session-prompt.js";
 import { resolveGroupMetadata } from "../../channels/group-metadata/cache.js";
 import type { GroupMetadataFetcher } from "../../channels/group-metadata/types.js";
+import { createWhatsAppClient, type WhatsAppClient } from "../../channels/whatsapp/client.js";
 import { createWhatsAppGroupMetadataFetcher } from "../../channels/whatsapp/group-metadata.js";
-import { createOmniGroupMetadataFetcher } from "../../omni/group-metadata.js";
+import { createWhatsAppSender } from "../../channels/whatsapp/sender.js";
 import { prepareMentionMessage } from "../../channels/mentions.js";
-import { OmniSender } from "../../omni/sender.js";
-import { resolveOmniConnection, type OmniConnection } from "../../omni-config.js";
-import { createChannelTransportClient, type ChannelTransportClient } from "../../channels/whatsapp/transport-client.js";
 import { buildSessionKey } from "../../router/session-key.js";
 import {
   attachChatToSession,
@@ -394,64 +392,32 @@ function resolveGroupInstance(account?: string): { accountId: string; instanceId
 
   const instance = dbGetInstance(accountId);
   const instanceId = instance?.instanceId ?? (UUID_RE.test(accountId) ? accountId : "");
-  if (!instanceId) fail(`No omni instance mapped for account "${accountId}".`);
+  if (!instanceId) fail(`No WhatsApp instance mapped for account "${accountId}".`);
 
   return { accountId, instanceId };
 }
 
-const OMNI_NOT_CONFIGURED_MESSAGE =
-  "Omni API is not configured. Set OMNI_API_URL/OMNI_API_KEY or ~/.omni/config.json, or move the account to the native WhatsApp transport (ravi instances connect <account> --transport native).";
-
 interface GroupTransportContext {
   accountId: string;
   instanceId: string;
-  /** Routing client: native WhatsApp instances go to the channel runner RPC, the rest to Omni. */
-  client: ChannelTransportClient;
-  native: boolean;
-  /** Omni connection for the Omni path (group metadata REST); null for native instances. */
-  omniConnection: OmniConnection | null;
+  /**
+   * WhatsApp runner client. An instance that is not bound to a WhatsApp channel fails
+   * with WHATSAPP_NOT_BOUND before any network call.
+   */
+  client: WhatsAppClient;
 }
 
-/**
- * Bind an account/instance to its transport. Native WhatsApp instances never need
- * Omni; any other instance still requires an Omni API connection, exactly as before.
- */
 function resolveGroupTransport(accountId: string, instanceId: string): GroupTransportContext {
-  const client = createChannelTransportClient();
-  const native = client.native.isNativeInstance(instanceId);
-  const omniConnection = native ? null : resolveOmniConnection();
-  if (!native && !omniConnection) fail(OMNI_NOT_CONFIGURED_MESSAGE);
-  return { accountId, instanceId, client, native, omniConnection };
+  return { accountId, instanceId, client: createWhatsAppClient() };
 }
 
-/**
- * Group metadata refresh source (interim until the CLI drops the legacy bridge): the runner
- * RPC for native WhatsApp instances (over the same routing client as every other group
- * call here), the Omni REST API otherwise.
- */
-function groupMetadataFetcherFor(
-  context: Pick<GroupTransportContext, "client" | "native" | "omniConnection">,
-): GroupMetadataFetcher | null {
-  if (context.native) {
-    const native = context.client.native;
-    return createWhatsAppGroupMetadataFetcher({
-      groups: { metadata: (ref, params, options) => native.request(ref, "groups.metadata", params, options) },
-    });
-  }
-  return context.omniConnection ? createOmniGroupMetadataFetcher(context.omniConnection) : null;
-}
-
-function resolveGroupOmniContext(account?: string): GroupTransportContext {
+function resolveGroupWhatsAppContext(account?: string): GroupTransportContext {
   const { accountId, instanceId } = resolveGroupInstance(account);
   return resolveGroupTransport(accountId, instanceId);
 }
 
-/** `omni.rest<suffix>` for Omni, `native.rpc<suffix>` for the native WhatsApp runner. */
-function transportSource<S extends string>(
-  context: Pick<GroupTransportContext, "native">,
-  suffix: S,
-): `omni.rest${S}` | `native.rpc${S}` {
-  return context.native ? `native.rpc${suffix}` : `omni.rest${suffix}`;
+function groupMetadataFetcherFor(context: Pick<GroupTransportContext, "client">): GroupMetadataFetcher {
+  return createWhatsAppGroupMetadataFetcher(context.client);
 }
 
 function normalizeGroupInviteCode(value: string): string {
@@ -460,7 +426,13 @@ function normalizeGroupInviteCode(value: string): string {
   return match?.[1] ?? trimmed;
 }
 
-async function createGroupViaOmni(
+function inviteLinkFor(result: { code?: string; inviteLink?: string }): { code?: string; link?: string } {
+  const code = result.code;
+  const link = result.inviteLink ?? (code ? `https://chat.whatsapp.com/${code}` : undefined);
+  return { code, link };
+}
+
+async function createGroupViaWhatsApp(
   input: {
     subject: string;
     participants: string[];
@@ -468,23 +440,25 @@ async function createGroupViaOmni(
   },
   transport?: GroupTransportContext,
 ): Promise<{ id: string; subject: string; participants: number; raw: Record<string, unknown> }> {
-  const { instanceId, client, native } = transport ?? resolveGroupOmniContext(input.account);
-  const raw = await client.instances.createGroup(instanceId, {
-    subject: input.subject,
-    participants: input.participants,
-  });
+  const { instanceId, client } = transport ?? resolveGroupWhatsAppContext(input.account);
+  const raw: Record<string, unknown> = {
+    ...(await client.groups.create(instanceId, {
+      subject: input.subject,
+      participants: input.participants,
+    })),
+  };
   const id = asNonEmptyString(raw.id) ?? asNonEmptyString(raw.externalId);
-  if (!id) fail(`${native ? "Native WhatsApp" : "Omni"} group create returned no group id.`);
+  if (!id) fail("WhatsApp group create returned no group id.");
 
   return {
     id,
     subject: asNonEmptyString(raw.subject) ?? asNonEmptyString(raw.name) ?? input.subject,
     participants: Array.isArray(raw.participants) ? raw.participants.length : input.participants.length,
-    raw: raw as Record<string, unknown>,
+    raw,
   };
 }
 
-function normalizeOmniGroupRecord(group: Record<string, unknown>): {
+function normalizeGroupRecord(group: Record<string, unknown>): {
   id: string;
   subject: string;
   size: number;
@@ -503,13 +477,13 @@ function normalizeOmniGroupRecord(group: Record<string, unknown>): {
   };
 }
 
-async function listGroupsViaOmni(
+async function listGroupsViaWhatsApp(
   account?: string,
   transport?: GroupTransportContext,
 ): Promise<{
   accountId: string;
   instanceId: string;
-  source: "omni.rest" | "native.rpc" | "local.chat_model";
+  source: "whatsapp.rpc" | "local.chat_model";
   groups: Array<{
     id: string;
     subject: string;
@@ -519,18 +493,18 @@ async function listGroupsViaOmni(
   }>;
   meta?: Record<string, unknown>;
 }> {
-  const context = transport ?? resolveGroupOmniContext(account);
+  const context = transport ?? resolveGroupWhatsAppContext(account);
   const { accountId, instanceId, client } = context;
   try {
-    const response = await client.instances.listGroups(instanceId, { limit: 500 });
+    const response = await client.groups.list(instanceId, { limit: 500 });
     return {
       accountId,
       instanceId,
-      source: transportSource(context, ""),
+      source: "whatsapp.rpc",
       groups: response.items
-        .map((group) => normalizeOmniGroupRecord(group as Record<string, unknown>))
+        .map((group) => normalizeGroupRecord({ ...group }))
         .filter((group): group is NonNullable<typeof group> => Boolean(group)),
-      meta: response.meta,
+      meta: { transport: "whatsapp" },
     };
   } catch (err) {
     const local = dbListChats({
@@ -563,18 +537,18 @@ async function listGroupsViaOmni(
   }
 }
 
-async function getGroupInfoViaOmni(
+async function getGroupInfoViaWhatsApp(
   groupId: string,
   account: string | undefined,
   contract: { op: string; asJson?: boolean },
 ): Promise<
   Record<string, unknown> & { id: string; subject: string; participants?: Array<{ id: string; admin: string | null }> }
 > {
-  const context = resolveGroupOmniContext(account);
+  const context = resolveGroupWhatsAppContext(account);
   const { accountId, instanceId } = context;
   const groupJid = normalizeGroupJid(groupId);
   const lookup = normalizeGroupLookupKey(groupId);
-  const list = await listGroupsViaOmni(account, context);
+  const list = await listGroupsViaWhatsApp(account, context);
   const group = list.groups.find((item) => {
     const id = normalizeGroupLookupKey(item.id);
     return id === lookup || item.id === groupId || item.subject === groupId;
@@ -591,10 +565,9 @@ async function getGroupInfoViaOmni(
 
   if (!group && !metadata) {
     // GROUP_NOT_FOUND (Manual v2): suggestions reuse the group list ALREADY
-    // fetched for resolution above (omni REST, or the local chat model when
-    // the bridge is down) — no extra provider call is made for suggestions.
-    const via = context.native ? "the native WhatsApp runner" : "Omni REST";
-    contractFail(contract.op, "GROUP_NOT_FOUND", `Group not found via ${via}: ${groupId}`, {
+    // fetched for resolution above (the WhatsApp runner, or the local chat model
+    // when it is down) — no extra provider call is made for suggestions.
+    contractFail(contract.op, "GROUP_NOT_FOUND", `Group not found via the WhatsApp runner: ${groupId}`, {
       asJson: contract.asJson,
       details: {
         suggestedAction: "Check the group id/JID (list with: ravi whatsapp group list --json)",
@@ -620,7 +593,7 @@ async function getGroupInfoViaOmni(
     ...(participants ? { participants } : {}),
     accountId,
     instanceId,
-    source: transportSource(context, ""),
+    source: "whatsapp.rpc",
   };
 }
 
@@ -686,20 +659,21 @@ function syncUpdatedGroupParticipantsToLocalChat(input: {
   };
 }
 
-async function addGroupParticipantsViaOmni(input: {
+async function addGroupParticipantsViaWhatsApp(input: {
   groupId: string;
   participants: string[];
   account?: string;
 }): Promise<Record<string, unknown>> {
-  const context = resolveGroupOmniContext(input.account);
+  const context = resolveGroupWhatsAppContext(input.account);
   const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
-  const result = await client.instances.addGroupParticipants(instanceId, groupJid, {
+  const result = await client.groups.addParticipants(instanceId, {
+    groupJid,
     participants: input.participants,
   });
   return {
     status: "added",
-    source: transportSource(context, ".group_participants"),
+    source: "whatsapp.rpc.group_participants",
     accountId,
     instanceId,
     groupId: groupJid,
@@ -715,7 +689,7 @@ async function addGroupParticipantsViaOmni(input: {
   };
 }
 
-async function updateGroupParticipantsViaOmni(input: {
+async function updateGroupParticipantsViaWhatsApp(input: {
   action: "remove" | "promote" | "demote";
   status: string;
   groupId: string;
@@ -723,16 +697,17 @@ async function updateGroupParticipantsViaOmni(input: {
   account?: string;
   syncLocal?: boolean;
 }): Promise<Record<string, unknown>> {
-  const context = resolveGroupOmniContext(input.account);
+  const context = resolveGroupWhatsAppContext(input.account);
   const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
-  const result = await client.instances.updateGroupParticipants(instanceId, groupJid, {
+  const result = await client.groups.updateParticipants(instanceId, {
+    groupJid,
     action: input.action,
     participants: input.participants,
   });
   return {
     status: input.status,
-    source: transportSource(context, ".group_participants"),
+    source: "whatsapp.rpc.group_participants",
     accountId,
     instanceId,
     groupId: groupJid,
@@ -753,55 +728,54 @@ async function updateGroupParticipantsViaOmni(input: {
   };
 }
 
-async function getGroupInviteViaOmni(input: { groupId: string; account?: string }): Promise<Record<string, unknown>> {
-  const context = resolveGroupOmniContext(input.account);
+async function getGroupInviteViaWhatsApp(input: {
+  groupId: string;
+  account?: string;
+}): Promise<Record<string, unknown>> {
+  const context = resolveGroupWhatsAppContext(input.account);
   const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
-  const result = await client.instances.getGroupInvite(instanceId, groupJid);
-  const code = result.code;
-  const link = result.inviteLink ?? result.link ?? (code ? `https://chat.whatsapp.com/${code}` : undefined);
+  const result = await client.groups.getInvite(instanceId, { groupJid });
   return {
     status: "invite_link",
-    source: transportSource(context, ".group_invite"),
+    source: "whatsapp.rpc.group_invite",
     accountId,
     instanceId,
     groupId: groupJid,
-    invite: { code, link },
+    invite: inviteLinkFor(result),
     result,
   };
 }
 
-async function revokeGroupInviteViaOmni(input: {
+async function revokeGroupInviteViaWhatsApp(input: {
   groupId: string;
   account?: string;
 }): Promise<Record<string, unknown>> {
-  const context = resolveGroupOmniContext(input.account);
+  const context = resolveGroupWhatsAppContext(input.account);
   const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
-  const result = await client.instances.revokeGroupInvite(instanceId, groupJid);
-  const code = result.code;
-  const link = result.inviteLink ?? result.link ?? (code ? `https://chat.whatsapp.com/${code}` : undefined);
+  const result = await client.groups.revokeInvite(instanceId, { groupJid });
   return {
     status: "invite_revoked",
-    source: transportSource(context, ".group_invite"),
+    source: "whatsapp.rpc.group_invite",
     accountId,
     instanceId,
     groupId: groupJid,
-    invite: { code, link },
+    invite: inviteLinkFor(result),
     result,
     changedCount: 1,
   };
 }
 
-async function joinGroupViaOmni(input: { code: string; account?: string }): Promise<Record<string, unknown>> {
-  const context = resolveGroupOmniContext(input.account);
+async function joinGroupViaWhatsApp(input: { code: string; account?: string }): Promise<Record<string, unknown>> {
+  const context = resolveGroupWhatsAppContext(input.account);
   const { accountId, instanceId, client } = context;
   const code = normalizeGroupInviteCode(input.code);
-  const result = await client.instances.joinGroup(instanceId, { code });
-  const groupId = result.groupJid ?? result.groupId ?? "";
+  const result = await client.groups.join(instanceId, { code });
+  const groupId = result.groupJid ?? "";
   return {
     status: "joined",
-    source: transportSource(context, ".group_join"),
+    source: "whatsapp.rpc.group_join",
     accountId,
     instanceId,
     code,
@@ -811,14 +785,14 @@ async function joinGroupViaOmni(input: { code: string; account?: string }): Prom
   };
 }
 
-async function leaveGroupViaOmni(input: { groupId: string; account?: string }): Promise<Record<string, unknown>> {
-  const context = resolveGroupOmniContext(input.account);
+async function leaveGroupViaWhatsApp(input: { groupId: string; account?: string }): Promise<Record<string, unknown>> {
+  const context = resolveGroupWhatsAppContext(input.account);
   const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
-  const result = await client.instances.leaveGroup(instanceId, groupJid);
+  const result = await client.groups.leave(instanceId, { groupJid });
   return {
     status: "left",
-    source: transportSource(context, ".group"),
+    source: "whatsapp.rpc.group",
     accountId,
     instanceId,
     groupId: groupJid,
@@ -827,18 +801,18 @@ async function leaveGroupViaOmni(input: { groupId: string; account?: string }): 
   };
 }
 
-async function renameGroupViaOmni(input: {
+async function renameGroupViaWhatsApp(input: {
   groupId: string;
   subject: string;
   account?: string;
 }): Promise<Record<string, unknown>> {
-  const context = resolveGroupOmniContext(input.account);
+  const context = resolveGroupWhatsAppContext(input.account);
   const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
-  const result = await client.instances.renameGroup(instanceId, groupJid, { subject: input.subject });
+  const result = await client.groups.rename(instanceId, { groupJid, subject: input.subject });
   return {
     status: "renamed",
-    source: transportSource(context, ".group"),
+    source: "whatsapp.rpc.group",
     accountId,
     instanceId,
     groupId: groupJid,
@@ -848,18 +822,18 @@ async function renameGroupViaOmni(input: {
   };
 }
 
-async function setGroupDescriptionViaOmni(input: {
+async function setGroupDescriptionViaWhatsApp(input: {
   groupId: string;
   description: string;
   account?: string;
 }): Promise<Record<string, unknown>> {
-  const context = resolveGroupOmniContext(input.account);
+  const context = resolveGroupWhatsAppContext(input.account);
   const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
-  const result = await client.instances.setGroupDescription(instanceId, groupJid, { description: input.description });
+  const result = await client.groups.setDescription(instanceId, { groupJid, description: input.description });
   return {
     status: "description_updated",
-    source: transportSource(context, ".group"),
+    source: "whatsapp.rpc.group",
     accountId,
     instanceId,
     groupId: groupJid,
@@ -869,18 +843,18 @@ async function setGroupDescriptionViaOmni(input: {
   };
 }
 
-async function setGroupSettingsViaOmni(input: {
+async function setGroupSettingsViaWhatsApp(input: {
   groupId: string;
   setting: string;
   account?: string;
 }): Promise<Record<string, unknown>> {
-  const context = resolveGroupOmniContext(input.account);
+  const context = resolveGroupWhatsAppContext(input.account);
   const { accountId, instanceId, client } = context;
   const groupJid = normalizeGroupJid(input.groupId);
-  const result = await client.instances.setGroupSettings(instanceId, groupJid, { setting: input.setting });
+  const result = await client.groups.setSettings(instanceId, { groupJid, setting: input.setting });
   return {
     status: "setting_applied",
-    source: transportSource(context, ".group"),
+    source: "whatsapp.rpc.group",
     accountId,
     instanceId,
     groupId: groupJid,
@@ -906,7 +880,7 @@ export class GroupCommands {
     @Option({ flags: "--fields <a,b,c>", description: "Compact mode: keep only these fields of each item" })
     fields?: string,
   ) {
-    const result = await listGroupsViaOmni(account);
+    const result = await listGroupsViaWhatsApp(account);
     const groups = result.groups.filter((group) => !group.isCommunity);
     const page = paginateCliItems(groups, { limit, offset });
     const pagination = buildCliOffsetPagination({
@@ -969,7 +943,7 @@ export class GroupCommands {
     @Option({ flags: "--account <id>", description: "WhatsApp account ID" }) account?: string,
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
   ) {
-    const result = await getGroupInfoViaOmni(groupId, account, { op: "whatsapp group info", asJson });
+    const result = await getGroupInfoViaWhatsApp(groupId, account, { op: "whatsapp group info", asJson });
 
     if (asJson) {
       printJson({
@@ -1049,10 +1023,9 @@ export class GroupCommands {
     if (!accountId) fail("No WhatsApp account configured.");
 
     const instanceId = resolveGroupSendInstanceId(accountId);
-    if (!instanceId) fail(`No omni instance mapped for account "${accountId}".`);
+    if (!instanceId) fail(`No WhatsApp instance mapped for account "${accountId}".`);
 
     const transport = resolveGroupTransport(accountId, instanceId);
-    const connection = transport.omniConnection;
 
     const rawGroupId = resolveGroupSendChatId(groupId);
     const groupJid = normalizeGroupJid(rawGroupId);
@@ -1098,13 +1071,12 @@ export class GroupCommands {
       placeholderMode: "native",
     });
 
-    // Native instances send through the routing client (channel runner RPC); Omni keeps its REST sender.
-    const sender = connection ? new OmniSender(connection.apiUrl, connection.apiKey) : new OmniSender(transport.client);
+    const sender = createWhatsAppSender(transport.client);
     const result = await sender.send(instanceId, groupJid, prepared.text, { mentions: prepared.mentions });
     const payload = {
       status: "sent" as const,
       channel: "whatsapp" as const,
-      transport: transport.native ? ("native" as const) : ("omni" as const),
+      transport: "whatsapp" as const,
       accountId,
       instanceId,
       groupId: rawGroupId,
@@ -1225,8 +1197,8 @@ export class GroupCommands {
         })
       : null;
 
-    const groupTransport = resolveGroupOmniContext(account);
-    const result = await createGroupViaOmni({ subject: name, participants, account }, groupTransport);
+    const groupTransport = resolveGroupWhatsAppContext(account);
+    const result = await createGroupViaWhatsApp({ subject: name, participants, account }, groupTransport);
     const jsonPayload: Record<string, unknown> = {
       status: "created",
       accountId: resolveGroupAccount(account),
@@ -1267,7 +1239,7 @@ export class GroupCommands {
 
     if (adminPhones.length > 0) {
       try {
-        const promotion = await updateGroupParticipantsViaOmni({
+        const promotion = await updateGroupParticipantsViaWhatsApp({
           action: "promote",
           status: "promoted",
           groupId: result.id,
@@ -1290,8 +1262,8 @@ export class GroupCommands {
         const msg = errorMessage(err);
         jsonPayload.adminPromotion = {
           status: "failed",
-          source: transportSource(groupTransport, ".group_participants"),
-          reason: groupTransport.native ? "native_group_admin_promotion_failed" : "omni_group_admin_promotion_failed",
+          source: "whatsapp.rpc.group_participants",
+          reason: "whatsapp_group_admin_promotion_failed",
           error: msg,
           participants: adminPhones,
           actorAdmins,
@@ -1484,7 +1456,7 @@ export class GroupCommands {
       );
     }
 
-    const payload = await addGroupParticipantsViaOmni({ groupId, participants, account });
+    const payload = await addGroupParticipantsViaWhatsApp({ groupId, participants, account });
     if (asJson) {
       printJson(payload);
       return payload;
@@ -1534,7 +1506,7 @@ export class GroupCommands {
       );
     }
 
-    const payload = await updateGroupParticipantsViaOmni({
+    const payload = await updateGroupParticipantsViaWhatsApp({
       action: "remove",
       status: "removed",
       groupId,
@@ -1589,7 +1561,7 @@ export class GroupCommands {
       );
     }
 
-    const payload = await updateGroupParticipantsViaOmni({
+    const payload = await updateGroupParticipantsViaWhatsApp({
       action: "promote",
       status: "promoted",
       groupId,
@@ -1623,7 +1595,7 @@ export class GroupCommands {
       .map((p) => p.trim())
       .filter(Boolean);
 
-    const payload = await updateGroupParticipantsViaOmni({
+    const payload = await updateGroupParticipantsViaWhatsApp({
       action: "demote",
       status: "demoted",
       groupId,
@@ -1645,7 +1617,7 @@ export class GroupCommands {
     @Option({ flags: "--account <id>", description: "WhatsApp account ID" }) account?: string,
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
   ) {
-    const payload = await getGroupInviteViaOmni({ groupId, account });
+    const payload = await getGroupInviteViaWhatsApp({ groupId, account });
     if (asJson) {
       printJson(payload);
       return payload;
@@ -1690,7 +1662,7 @@ export class GroupCommands {
       );
     }
 
-    const payload = await revokeGroupInviteViaOmni({ groupId, account });
+    const payload = await revokeGroupInviteViaWhatsApp({ groupId, account });
     if (asJson) {
       printJson(payload);
       return payload;
@@ -1733,7 +1705,7 @@ export class GroupCommands {
       );
     }
 
-    const payload = await joinGroupViaOmni({ code, account });
+    const payload = await joinGroupViaWhatsApp({ code, account });
     if (asJson) {
       printJson(payload);
       return payload;
@@ -1777,7 +1749,7 @@ export class GroupCommands {
       );
     }
 
-    const payload = await leaveGroupViaOmni({ groupId, account });
+    const payload = await leaveGroupViaWhatsApp({ groupId, account });
     if (asJson) {
       printJson(payload);
       return payload;
@@ -1822,7 +1794,7 @@ export class GroupCommands {
       );
     }
 
-    const payload = await renameGroupViaOmni({ groupId, subject: name, account });
+    const payload = await renameGroupViaWhatsApp({ groupId, subject: name, account });
     if (asJson) {
       printJson(payload);
       return payload;
@@ -1868,7 +1840,7 @@ export class GroupCommands {
       );
     }
 
-    const payload = await setGroupDescriptionViaOmni({ groupId, description: text, account });
+    const payload = await setGroupDescriptionViaWhatsApp({ groupId, description: text, account });
     if (asJson) {
       printJson(payload);
       return payload;
@@ -1921,7 +1893,7 @@ export class GroupCommands {
       );
     }
 
-    const payload = await setGroupSettingsViaOmni({ groupId, setting, account });
+    const payload = await setGroupSettingsViaWhatsApp({ groupId, setting, account });
     if (asJson) {
       printJson(payload);
       return payload;
