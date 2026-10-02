@@ -1,12 +1,14 @@
 /**
- * Channel Gateway (omni-backed)
+ * Channel Gateway (channel-backed)
  *
- * Routes bot responses back to channel instances via the channel sender.
+ * Routes bot responses back to channel instances via the channel sender: a per-instance
+ * router that sends WhatsApp through ravi's own runner (RPC) and Telegram/Discord through
+ * the legacy bridge when one is configured. Native Slack goes through CHANNEL_OUTBOUND.
  * Inbound message handling is done by the inbound pipeline, which also owns the
  * presence targets the gateway renews and clears.
  *
  * Subscriptions maintained here:
- *   ravi.session.*.response    → send via omni HTTP
+ *   ravi.session.*.response    → send via the channel sender
  *   ravi.session.*.claude      → typing heartbeat (Claude compatibility)
  *   ravi.session.*.runtime     → typing heartbeat (provider-neutral)
  *   ravi.session.*.stream      → typing heartbeat renewal on streamed chunks
@@ -36,6 +38,7 @@ import { getAgentPlatformIdentity, recordOutbound } from "./contacts.js";
 import {
   NO_INSTANCE_FOR_ACCOUNT,
   resolveOutboundAccount,
+  unresolvedAccountError,
   type OutboundAccountResolution,
 } from "./channels/account-resolution.js";
 import { assertChannelSupportsStickers } from "./channels/capabilities.js";
@@ -70,7 +73,7 @@ const NATIVE_OUTBOUND_CHANNELS = new Set(["slack"]);
 const NATIVE_PRESENCE_CHANNELS = new Set(["slack"]);
 
 /**
- * Normalize a chatId to a valid WhatsApp JID for the omni API.
+ * Normalize a chatId to a valid WhatsApp JID for the channel sender.
  *
  * Handles ravi-internal formats:
  *   "group:120363407390920496"  → "120363407390920496@g.us"
@@ -83,6 +86,13 @@ function normalizeOutboundJid(chatId: string): string {
     return chatId.slice(6) + "@g.us";
   }
   return chatId;
+}
+
+/** Stable error code of a sender failure (e.g. INSTANCE_NOT_FOUND, WHATSAPP_NOT_BOUND), when it has one. */
+function sendErrorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== "object" || !("code" in err)) return undefined;
+  const code = (err as { code: unknown }).code;
+  return typeof code === "string" && code ? code : undefined;
 }
 
 function isWhatsAppGroupJid(chatId: string): boolean {
@@ -297,7 +307,7 @@ export class Gateway {
   private running = false;
   private sender: ChannelMessageSender;
   private presenceTargets: ChannelPresenceTargets;
-  /** Read by prepareOutboundMentionMessage once group metadata is transport-neutral. */
+  /** Group metadata refresh for outbound @mentions (prepareOutboundMentionMessage); null = cache only. */
   private groupMetadataFetcher: GroupMetadataFetcher | null;
   private emitEvent: typeof nats.emit;
   private activeSubscriptions = new Set<string>();
@@ -1214,6 +1224,7 @@ export class Gateway {
         chatId,
         textLen: text.length,
         error: err instanceof Error ? err.message : String(err),
+        ...(sendErrorCode(err) ? { errorCode: sendErrorCode(err) } : {}),
         durationMs: Date.now() - t0,
       });
     }
@@ -1322,6 +1333,7 @@ export class Gateway {
         target,
         textLen: 0,
         error: err instanceof Error ? err.message : String(err),
+        ...(sendErrorCode(err) ? { errorCode: sendErrorCode(err) } : {}),
         durationMs: Date.now() - t0,
       });
     }
@@ -1509,7 +1521,7 @@ export class Gateway {
         for await (const event of nats.subscribe(...topics, ...((opts?.queue ? [{ queue: opts.queue }] : []) as []))) {
           if (!this.running) break;
           // Fire-and-forget: don't block the subscription loop on slow handlers
-          // (e.g. omni sender timeouts shouldn't stall all other events)
+          // (e.g. channel sender timeouts shouldn't stall all other events)
           handler(event).catch((err) => {
             log.error(`${key} handler error`, { error: err });
           });
@@ -1528,7 +1540,7 @@ export class Gateway {
   }
 
   /**
-   * Subscribe to bot responses and send via omni.
+   * Subscribe to bot responses and send them through the channel sender.
    * Queue group: only one gateway daemon sends each response.
    */
   private subscribeToResponses(): void {
@@ -1658,12 +1670,13 @@ export class Gateway {
       await this.deliverNativeDirectSend(resolved, data);
       return;
     }
-    if (resolved.kind !== "omni") {
+    if (resolved.kind === "unresolved") {
       if (data.replyTopic) {
-        await this.emitEvent(data.replyTopic, { success: false, error: NO_INSTANCE_FOR_ACCOUNT });
+        await this.emitEvent(data.replyTopic, { success: false, error: unresolvedAccountError(resolved) });
       }
       return;
     }
+    // whatsapp | bridge: the sender (per-instance router) picks the transport.
     const instanceId = resolved.instanceId;
     const to = normalizeOutboundJid(data.to);
 
@@ -1691,7 +1704,7 @@ export class Gateway {
       let messageId: string | undefined;
 
       if (data.poll) {
-        // Poll not supported via omni yet — send as text
+        // Polls are not sent natively yet — send as text
         const pollText = `${data.poll.name}\n${data.poll.values.map((v, i) => `${i + 1}. ${v}`).join("\n")}`;
         if (typingDelayMs > 0) {
           await this.sender.sendTyping(instanceId, to, true);
@@ -1734,7 +1747,8 @@ export class Gateway {
     } catch (err) {
       log.error("Failed to deliver direct send", { to, instanceId, error: err });
       if (data.replyTopic) {
-        await this.emitEvent(data.replyTopic, { success: false, error: String(err) });
+        const code = sendErrorCode(err);
+        await this.emitEvent(data.replyTopic, { success: false, error: String(err), ...(code ? { code } : {}) });
       }
     }
   }
@@ -1869,7 +1883,10 @@ export class Gateway {
         log.info("Native reaction queued", { chatId: data.chatId, messageId: data.messageId, emoji: data.emoji });
         return;
       }
-      if (resolved.kind !== "omni") return;
+      if (resolved.kind === "unresolved") {
+        log.warn("Reaction skipped", { accountId: data.accountId, reason: resolved.reason });
+        return;
+      }
       const reactionChatId = normalizeOutboundJid(data.chatId);
       await this.sender.sendReaction(resolved.instanceId, reactionChatId, data.messageId, data.emoji);
       log.info("Reaction sent", { chatId: reactionChatId, messageId: data.messageId, emoji: data.emoji });
@@ -1953,14 +1970,14 @@ export class Gateway {
       return;
     }
 
-    const instanceId = resolved.kind === "omni" ? resolved.instanceId : undefined;
-    if (!instanceId) {
+    if (resolved.kind === "unresolved") {
       await emitReply({
         success: false,
-        error: NO_INSTANCE_FOR_ACCOUNT,
+        error: unresolvedAccountError(resolved),
       });
       return;
     }
+    const instanceId = resolved.instanceId;
 
     const chatId = normalizeOutboundJid(data.chatId);
     try {
@@ -1991,6 +2008,7 @@ export class Gateway {
         messageId,
         canonicalMessageId: data.canonicalMessageId,
         error: err instanceof Error ? err.message : String(err),
+        ...(sendErrorCode(err) ? { code: sendErrorCode(err) } : {}),
       });
     }
   }
@@ -2038,14 +2056,14 @@ export class Gateway {
       return;
     }
 
-    const instanceId = resolved.kind === "omni" ? resolved.instanceId : undefined;
-    if (!instanceId) {
+    if (resolved.kind === "unresolved") {
       await emitReply({
         success: false,
-        error: NO_INSTANCE_FOR_ACCOUNT,
+        error: unresolvedAccountError(resolved),
       });
       return;
     }
+    const instanceId = resolved.instanceId;
 
     const chatId = normalizeOutboundJid(data.chatId);
     try {
@@ -2076,6 +2094,7 @@ export class Gateway {
         messageId,
         canonicalMessageId: data.canonicalMessageId,
         error: err instanceof Error ? err.message : String(err),
+        ...(sendErrorCode(err) ? { code: sendErrorCode(err) } : {}),
       });
     }
   }
@@ -2115,7 +2134,10 @@ export class Gateway {
             log.info("Native media sent", { chatId: data.chatId, type: data.type, filename: data.filename });
             return;
           }
-          if (resolved.kind !== "omni") return;
+          if (resolved.kind === "unresolved") {
+            log.warn("Media send skipped", { accountId: data.accountId, reason: resolved.reason });
+            return;
+          }
           const mediaChatId = normalizeOutboundJid(data.chatId);
           await this.sender.sendMedia(
             resolved.instanceId,
@@ -2172,13 +2194,13 @@ export class Gateway {
       channelName: data.channel,
     });
 
-    const stickerInstanceId = resolved.kind === "omni" ? resolved.instanceId : undefined;
-    if (!stickerInstanceId) {
+    if (resolved.kind === "unresolved") {
       if (data.replyTopic) {
-        await this.emitEvent(data.replyTopic, { success: false, error: NO_INSTANCE_FOR_ACCOUNT });
+        await this.emitEvent(data.replyTopic, { success: false, error: unresolvedAccountError(resolved) });
       }
       return;
     }
+    const stickerInstanceId = resolved.instanceId;
 
     const stickerChatId = normalizeOutboundJid(data.chatId);
     const result = await this.sender.sendSticker(stickerInstanceId, stickerChatId, data.filePath);

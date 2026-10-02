@@ -10,22 +10,12 @@ const NATIVE_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const GROUP = "120363400000000002@g.us";
 
 let stateDir: string | null = null;
-const originalOmniUrl = process.env.OMNI_API_URL;
-const originalOmniKey = process.env.OMNI_API_KEY;
-const originalFetch = globalThis.fetch;
 
 beforeEach(async () => {
   stateDir = await createIsolatedRaviState("ravi-gateway-native-mentions-");
-  delete process.env.OMNI_API_URL;
-  delete process.env.OMNI_API_KEY;
 });
 
 afterEach(async () => {
-  globalThis.fetch = originalFetch;
-  if (originalOmniUrl === undefined) delete process.env.OMNI_API_URL;
-  else process.env.OMNI_API_URL = originalOmniUrl;
-  if (originalOmniKey === undefined) delete process.env.OMNI_API_KEY;
-  else process.env.OMNI_API_KEY = originalOmniKey;
   await cleanupIsolatedRaviState(stateDir);
   stateDir = null;
 });
@@ -62,7 +52,7 @@ type PrepareMentions = (input: {
 }) => Promise<{ text: string; mentions?: Array<{ id: string; type: string }> }>;
 
 describe("Gateway outbound mentions for native WhatsApp", () => {
-  it("resolves @Name mentions from group metadata fetched over the runner RPC, without Omni", async () => {
+  it("resolves @Name mentions from group metadata fetched over the runner RPC", async () => {
     const request = mock(async (_ref: string, _method: string, _params: unknown, _options?: unknown) => ({
       groupJid: GROUP,
       subject: "grupo",
@@ -95,10 +85,6 @@ describe("Gateway outbound mentions for native WhatsApp", () => {
   });
 
   it("does not call the runner RPC for instances not bound to a WhatsApp channel", async () => {
-    // A host-level ~/.omni/config.json may still resolve an Omni connection; keep it offline.
-    globalThis.fetch = mock(async () =>
-      Response.json({ error: "offline" }, { status: 503 }),
-    ) as unknown as typeof fetch;
     const request = mock(async () => {
       throw new Error("should not be called");
     });
@@ -107,8 +93,8 @@ describe("Gateway outbound mentions for native WhatsApp", () => {
       .prepareOutboundMentionMessage;
 
     const prepared = await prepare.call(gateway, {
-      accountId: "omni-account",
-      instanceId: "omni-instance",
+      accountId: "unbound-account",
+      instanceId: "unbound-instance",
       chatId: GROUP,
       channel: "whatsapp-baileys",
       text: "oi @Luis Filipe",

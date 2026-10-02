@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { configStore } from "./config-store.js";
 import { createNoopPresenceTargets } from "./channels/inbound/presence-targets.js";
+import type { ChannelPresenceTargets } from "./channels/inbound/types.js";
+import type { ChannelMessageSender } from "./channels/outbound/sender.js";
 import { Gateway } from "./gateway.js";
-import { createStubOmniConsumer } from "./omni/stub-consumer.js";
 import { dbUpsertInstance } from "./router/router-db.js";
 import { getOrCreateSession, updateSessionName } from "./router/sessions.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "./test/ravi-state.js";
@@ -19,7 +20,7 @@ type RuntimePresenceEventData = {
 let stateDir: string | null = null;
 
 beforeEach(async () => {
-  stateDir = await createIsolatedRaviState("ravi-gateway-omni-stub-");
+  stateDir = await createIsolatedRaviState("ravi-gateway-headless-presence-");
 });
 
 afterEach(async () => {
@@ -50,18 +51,24 @@ function makeTarget(): NonNullable<ResponseMessage["target"]> {
   };
 }
 
-function makeGateway(omniConsumer: object, sendTyping = mock(async () => {})) {
+/** Fake transport-neutral sender: only typing is observed. */
+function fakeSender(sendTyping: ChannelMessageSender["sendTyping"]): ChannelMessageSender {
+  return {
+    send: mock(async () => ({})),
+    sendTyping,
+    sendReaction: mock(async () => {}),
+    deleteMessage: mock(async () => {}),
+    editMessage: mock(async () => {}),
+    sendMedia: mock(async () => ({})),
+    sendSticker: mock(async () => ({})),
+    markRead: mock(async () => {}),
+  };
+}
+
+function makeGateway(presenceTargets: ChannelPresenceTargets, sendTyping = mock(async () => {})) {
   const gateway = new Gateway({
-    sender: {
-      send: mock(async () => ({})),
-      sendTyping,
-      sendReaction: mock(async () => {}),
-      deleteMessage: mock(async () => {}),
-      editMessage: mock(async () => {}),
-      sendMedia: mock(async () => ({})),
-      markRead: mock(async () => {}),
-    } as never,
-    presenceTargets: omniConsumer as never,
+    sender: fakeSender(sendTyping),
+    presenceTargets,
   });
   (gateway as unknown as { running: boolean }).running = true;
   return gateway;
@@ -79,21 +86,20 @@ async function handleRuntimePresence(
   ).handleRuntimePresenceEvent(sessionName, data);
 }
 
-/** Pre-fix daemon stub: no renewActiveTarget. */
-function makeLegacyIncompleteStub() {
-  return {
-    start: async () => {},
-    stop: async () => {},
+/** An incomplete presence surface (no renewActiveTarget), as an older headless daemon stub was. */
+function makeIncompletePresenceTargets(): ChannelPresenceTargets {
+  const partial = {
     getActiveTarget: () => undefined,
-    clearActiveTarget: () => {},
+    clearActiveTarget: async () => {},
   };
+  return partial as unknown as ChannelPresenceTargets;
 }
 
-describe("Gateway presence without Omni", () => {
-  it("completes source-less presence renew with the daemon stub consumer", async () => {
+describe("Gateway presence with headless presence targets", () => {
+  it("completes source-less presence renew with the noop presence targets", async () => {
     const { sessionName } = seedSession();
     const sendTyping = mock(async () => {});
-    const gateway = makeGateway(createStubOmniConsumer(), sendTyping);
+    const gateway = makeGateway(createNoopPresenceTargets(), sendTyping);
 
     await expect(handleRuntimePresence(gateway, sessionName, { type: "assistant.message" })).resolves.toBeUndefined();
     await expect(handleRuntimePresence(gateway, sessionName, { type: "stream.chunk" })).resolves.toBeUndefined();
@@ -102,11 +108,11 @@ describe("Gateway presence without Omni", () => {
     expect(sendTyping).not.toHaveBeenCalled();
   });
 
-  it("degrades sourced presence to sendTyping when the stub has no active target", async () => {
+  it("degrades sourced presence to sendTyping when there is no active target", async () => {
     const { sessionName } = seedSession();
     const sendTyping = mock(async () => {});
     const target = makeTarget();
-    const gateway = makeGateway(createStubOmniConsumer(), sendTyping);
+    const gateway = makeGateway(createNoopPresenceTargets(), sendTyping);
 
     await expect(
       handleRuntimePresence(gateway, sessionName, { type: "assistant.message", _source: target }),
@@ -131,7 +137,7 @@ describe("Gateway presence without Omni", () => {
   it("does not throw on source-less presence when renewActiveTarget is missing", async () => {
     const { sessionName } = seedSession();
     const sendTyping = mock(async () => {});
-    const gateway = makeGateway(makeLegacyIncompleteStub(), sendTyping);
+    const gateway = makeGateway(makeIncompletePresenceTargets(), sendTyping);
 
     await expect(handleRuntimePresence(gateway, sessionName, { type: "assistant.message" })).resolves.toBeUndefined();
     await expect(handleRuntimePresence(gateway, sessionName, { type: "turn.interrupted" })).resolves.toBeUndefined();
@@ -146,7 +152,7 @@ describe("Gateway presence without Omni", () => {
         getActiveTarget: () => undefined,
         clearActiveTarget: async () => {},
         renewActiveTarget: async () => {
-          throw new Error("omni down");
+          throw new Error("presence store down");
         },
       },
       sendTyping,
@@ -193,7 +199,7 @@ describe("Gateway presence without Omni", () => {
     );
   });
 
-  it("works with the transport-neutral noop presence targets", async () => {
+  it("sends typing only for a sourced event with the noop presence targets", async () => {
     const { sessionName } = seedSession();
     const sendTyping = mock(async () => {});
     const gateway = makeGateway(createNoopPresenceTargets(), sendTyping);
@@ -205,7 +211,7 @@ describe("Gateway presence without Omni", () => {
     expect(sendTyping).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps real OmniConsumer renew behavior when the active target matches", async () => {
+  it("renews the inbound active target instead of sending typing when it matches", async () => {
     const { sessionName } = seedSession();
     const sendTyping = mock(async () => {});
     const renewActiveTarget = mock(async () => true);
