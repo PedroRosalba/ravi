@@ -307,7 +307,12 @@ export interface WhatsAppRpcResults {
   "connection.disconnect": Record<string, never>;
   "connection.logout": Record<string, never>;
   "connection.pairingCode": { code: string };
-  "groups.list": { items: WhatsAppRpcGroupRecord[] };
+  /**
+   * `participantsTruncated`: the full list would not fit in one NATS message (~1 MB), so
+   * every record's `participants` is empty (`memberCount` stays exact); use
+   * `groups.metadata` for the members of one group.
+   */
+  "groups.list": { items: WhatsAppRpcGroupRecord[]; participantsTruncated?: boolean };
   "groups.create": WhatsAppRpcGroupRecord;
   "groups.addParticipants": { groupJid: string; results: Array<{ jid: string; status: string }> };
   "groups.updateParticipants": { groupJid: string; results: Array<{ jid: string; status: string }> };

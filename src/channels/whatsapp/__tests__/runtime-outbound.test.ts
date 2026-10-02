@@ -459,6 +459,36 @@ describe("groups", () => {
     ]);
   });
 
+  it("omits participant lists (participantsTruncated) when the result would exceed the NATS payload budget", async () => {
+    const big: Record<
+      string,
+      { id: string; subject: string; size?: number; participants: Array<{ id: string; admin: null }> }
+    > = {};
+    for (let g = 0; g < 40; g++) {
+      const id = `1203639${String(g).padStart(11, "0")}@g.us`;
+      big[id] = {
+        id,
+        subject: `Big ${g}`,
+        participants: Array.from({ length: 1_024 }, (_, p) => ({
+          id: `55119${String(g * 10_000 + p).padStart(8, "0")}@s.whatsapp.net`,
+          admin: null,
+        })),
+      };
+    }
+    const h = createHarness({ socket: { groups: big } });
+    await h.connect();
+    const result = await h.runtime.call("groups.list", {});
+    expect(result.participantsTruncated).toBe(true);
+    expect(result.items).toHaveLength(40);
+    expect(result.items.every((item) => item.participants.length === 0 && item.memberCount === 1_024)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(900_000);
+
+    // Small results are untouched (no flag).
+    const small = await h.runtime.call("groups.list", { limit: 1 });
+    expect(small.participantsTruncated).toBeUndefined();
+    expect(small.items[0]?.participants).toHaveLength(1_024);
+  });
+
   it("groups.metadata resolves names and LID phones, honoring maxAgeMs", async () => {
     const h = createHarness({ socket: { groups } });
     const sock = await h.connect();

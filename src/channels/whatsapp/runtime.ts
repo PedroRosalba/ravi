@@ -99,7 +99,7 @@ import {
   reactionIdempotencyKey,
   toWhatsAppInboundEvent,
 } from "./runtime-events.js";
-import { filterGroupRecords, toGroupMetadataResult, toGroupRecord } from "./runtime-groups.js";
+import { boundGroupListResult, filterGroupRecords, toGroupMetadataResult, toGroupRecord } from "./runtime-groups.js";
 import type { WhatsAppLibrary } from "./runtime-library.js";
 import {
   buildVCard,
@@ -2909,7 +2909,14 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
       this.setGroupMetadataCache(jid, metadata);
       return toGroupRecord({ ...metadata, id: metadata.id || jid });
     });
-    return { items: filterGroupRecords(records, { search: params.search, limit: params.limit }) };
+    const result = boundGroupListResult(filterGroupRecords(records, { search: params.search, limit: params.limit }));
+    if (result.participantsTruncated) {
+      this.log.warn("groups.list result too large; participant lists omitted", {
+        instanceId: this.instanceId,
+        groups: result.items.length,
+      });
+    }
+    return result;
   }
 
   async createGroup(subject: string, participants: string[]): Promise<WhatsAppRpcResult<"groups.create">> {

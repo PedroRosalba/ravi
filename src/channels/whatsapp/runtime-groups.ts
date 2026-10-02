@@ -43,6 +43,23 @@ export function filterGroupRecords(
   return options.limit !== undefined ? filtered.slice(0, options.limit) : filtered;
 }
 
+/** Encoded-size budget of a `groups.list` result: NATS max_payload is 1 MB, minus the envelope. */
+export const GROUPS_LIST_MAX_RESULT_BYTES = 900_000;
+
+/**
+ * Keep a `groups.list` result under `maxBytes` of encoded JSON: when the full result is
+ * larger, drop every record's `participants` (memberCount stays) and flag
+ * `participantsTruncated`. Records themselves are never dropped.
+ */
+export function boundGroupListResult(
+  items: WhatsAppRpcGroupRecord[],
+  maxBytes: number = GROUPS_LIST_MAX_RESULT_BYTES,
+): { items: WhatsAppRpcGroupRecord[]; participantsTruncated?: boolean } {
+  const full = { items };
+  if (Buffer.byteLength(JSON.stringify(full), "utf8") <= maxBytes) return full;
+  return { items: items.map((item) => ({ ...item, participants: [] })), participantsTruncated: true };
+}
+
 /** Ported `fetchGroupMembers` role (`admin ?? 'member'`) with `superadmin` mapped to ravi's `owner`. */
 export function participantRole(participant: Pick<GroupParticipant, "admin">): "owner" | "admin" | "member" {
   if (participant.admin === "superadmin") return "owner";
