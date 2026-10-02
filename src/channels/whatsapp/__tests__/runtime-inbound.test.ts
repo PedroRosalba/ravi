@@ -246,24 +246,80 @@ describe("inbound dedup", () => {
 });
 
 describe("offline backlog and history sync", () => {
-  it("messages delivered as an `append` batch are tagged history-sync", async () => {
-    const h = createHarness();
-    const sock = await h.connect();
-    sock.emit("messages.upsert", upsert([textMessage("OFF-1", PLAIN_DM, "while you were away")], "append"));
-    sock.emit("messages.upsert", upsert([textMessage("RT-1", PLAIN_DM, "now")], "notify"));
-    await flush();
-    const modes = Object.fromEntries(
+  const modesOf = (h: ReturnType<typeof createHarness>) =>
+    Object.fromEntries(
       h
         .publishedOfType("message.received")
         .map((record) => [(record.event.payload as { externalId: string }).externalId, record.event.ingestMode]),
     );
-    expect(modes).toEqual({ "OFF-1": "history-sync", "RT-1": "realtime" });
+  /** Seconds-resolution messageTimestamp `ageMs` before the harness clock. */
+  const sentAgo = (h: ReturnType<typeof createHarness>, ageMs: number) => Math.floor((h.clock.now - ageMs) / 1000);
+
+  it("offline backlog (`append`) is age-aware: recent → realtime, older than offlineStaleMs → history-sync", async () => {
+    const h = createHarness();
+    const sock = await h.connect();
+    sock.emit(
+      "messages.upsert",
+      upsert(
+        [
+          textMessage("OFF-RECENT", PLAIN_DM, "sent during a 2 min gap", { messageTimestamp: sentAgo(h, 2 * 60_000) }),
+          textMessage("OFF-EDGE", PLAIN_DM, "just under 10 min", { messageTimestamp: sentAgo(h, 9 * 60_000) }),
+          textMessage("OFF-OLD", PLAIN_DM, "an hour ago", { messageTimestamp: sentAgo(h, 60 * 60_000) }),
+          textMessage("OFF-LONG", PLAIN_DM, "protobuf Long", {
+            messageTimestamp: { toNumber: () => sentAgo(h, 11 * 60_000) },
+          }),
+          textMessage("OFF-NOTS", PLAIN_DM, "no timestamp", { messageTimestamp: undefined }),
+        ],
+        "append",
+      ),
+    );
+    sock.emit("messages.upsert", upsert([textMessage("RT-1", PLAIN_DM, "now")], "notify"));
+    await flush();
+    expect(modesOf(h)).toEqual({
+      "OFF-RECENT": "realtime",
+      "OFF-EDGE": "realtime",
+      "OFF-OLD": "history-sync",
+      "OFF-LONG": "history-sync",
+      "OFF-NOTS": "history-sync",
+      "RT-1": "realtime",
+    });
+  });
+
+  it("offlineStaleMs moves the threshold", async () => {
+    const h = createHarness({ offlineStaleMs: 60_000 });
+    const sock = await h.connect();
+    sock.emit(
+      "messages.upsert",
+      upsert(
+        [
+          textMessage("OFF-30S", PLAIN_DM, "a", { messageTimestamp: sentAgo(h, 30_000) }),
+          textMessage("OFF-2M", PLAIN_DM, "b", { messageTimestamp: sentAgo(h, 2 * 60_000) }),
+        ],
+        "append",
+      ),
+    );
+    await flush();
+    expect(modesOf(h)).toEqual({ "OFF-30S": "realtime", "OFF-2M": "history-sync" });
+  });
+
+  it('offlineIngestMode "history-sync" is the explicit opt-in to never answer offline backlog', async () => {
+    const h = createHarness({ offlineIngestMode: "history-sync" });
+    const sock = await h.connect();
+    sock.emit(
+      "messages.upsert",
+      upsert([textMessage("OFF-1", PLAIN_DM, "1 s ago", { messageTimestamp: sentAgo(h, 1_000) })], "append"),
+    );
+    await flush();
+    expect(modesOf(h)).toEqual({ "OFF-1": "history-sync" });
   });
 
   it("offlineIngestMode can keep offline backlog realtime", async () => {
     const h = createHarness({ offlineIngestMode: "realtime" });
     const sock = await h.connect();
-    sock.emit("messages.upsert", upsert([textMessage("OFF-2", PLAIN_DM, "late")], "append"));
+    sock.emit(
+      "messages.upsert",
+      upsert([textMessage("OFF-2", PLAIN_DM, "late", { messageTimestamp: sentAgo(h, 24 * 3_600_000) })], "append"),
+    );
     await flush();
     expect(h.publishedOfType("message.received")[0]?.event.ingestMode).toBe("realtime");
   });

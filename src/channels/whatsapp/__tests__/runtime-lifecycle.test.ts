@@ -8,7 +8,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { Logger } from "../lib/foundation.js";
 import { WhatsAppRuntimeError } from "../runtime-errors.js";
-import { OWNER_JID, createHarness, flush } from "./runtime-harness.js";
+import { OWNER_JID, createHarness, createMemoryAuthStorage, flush } from "./runtime-harness.js";
 
 function closeWith(statusCode: number, message = "closed") {
   const error = Object.assign(new Error(message), { output: { statusCode, payload: { message } } });
@@ -172,7 +172,8 @@ describe("disconnect / logout", () => {
     await h.runtime.call("connection.disconnect", {});
 
     expect(h.runtime.getState()).toBe("disconnected");
-    expect(h.runtime.health()).toEqual({ status: "disconnected", reason: "user_disconnect" });
+    expect(h.runtime.health()).toEqual({ status: "disconnected", reason: "manual_disconnect" });
+    expect(h.auth.flags.manualDisconnected).toBe(true);
     expect(sock.fake.end).toHaveBeenCalled();
     expect(sock.fake.logout).not.toHaveBeenCalled();
     expect(sock.fake.ev.listenerCount("connection.update")).toBe(0);
@@ -414,5 +415,181 @@ describe("CHANNEL_INBOUND publishing", () => {
     const h = createHarness({ ensureInboundStream: async () => Promise.reject(new Error("jetstream not enabled")) });
     await h.connect();
     expect(h.runtime.getState()).toBe("connected");
+  });
+});
+
+describe("persisted manual disconnect (survives runner restarts)", () => {
+  it("a restarted runtime stays down after connection.disconnect, and connection.connect clears the marker", async () => {
+    const auth = createMemoryAuthStorage({ registered: true });
+    const first = createHarness({ auth });
+    await first.connect();
+    await first.runtime.call("connection.disconnect", {});
+    await first.runtime.stop();
+    expect(auth.flags.manualDisconnected).toBe(true);
+
+    // Runner restart: same auth store, new runtime.
+    const second = createHarness({ auth });
+    second.runtime.start();
+    await flush();
+    expect(second.sockets).toHaveLength(0);
+    expect(second.runtime.getState()).toBe("disconnected");
+    expect(second.runtime.health()).toEqual({ status: "disconnected", reason: "manual_disconnect" });
+    // The supervisor does not bring it back either.
+    second.manual.runAll();
+    await flush();
+    expect(second.sockets).toHaveLength(0);
+
+    await second.runtime.call("connection.connect", {});
+    await flush();
+    expect(auth.flags.manualDisconnected).toBe(false);
+    expect(second.sockets).toHaveLength(1);
+    second.socket().emit("connection.update", { connection: "open" });
+    await flush();
+    expect(second.runtime.health()).toMatchObject({ status: "connected" });
+    await second.runtime.stop();
+
+    // Next restart auto-connects again.
+    const third = createHarness({ auth });
+    await third.startAndWaitForSocket();
+    expect(third.sockets).toHaveLength(1);
+    await third.runtime.stop();
+  });
+
+  it("a pairing-code request clears the marker", async () => {
+    const auth = createMemoryAuthStorage({ registered: false });
+    auth.flags.manualDisconnected = true;
+    const h = createHarness({ auth });
+    h.runtime.start();
+    expect(h.runtime.health()).toEqual({ status: "disconnected", reason: "manual_disconnect" });
+    const pending = h.runtime.call("connection.pairingCode", { phoneNumber: "+55 11 99999-0000" });
+    await flush();
+    expect(auth.flags.manualDisconnected).toBe(false);
+    h.socket().emit("connection.update", { qr: "2@QR" });
+    expect(await pending).toEqual({ code: "ABCD1234" });
+  });
+
+  it("a disconnect issued while Baileys is still loading is honoured: no socket is opened", async () => {
+    let releaseLibrary: () => void = () => {};
+    const libraryGate = new Promise<void>((resolve) => {
+      releaseLibrary = resolve;
+    });
+    const h = createHarness();
+    const loadLibrary = async () => {
+      await libraryGate;
+      return h.library;
+    };
+    const gated = createHarness({ auth: h.auth, loadLibrary });
+    gated.runtime.start();
+    expect(gated.runtime.getState()).toBe("connecting");
+    await gated.runtime.call("connection.disconnect", {});
+    releaseLibrary();
+    await flush(30);
+    expect(h.library.createSocket).not.toHaveBeenCalled();
+    expect(gated.runtime.health()).toEqual({ status: "disconnected", reason: "manual_disconnect" });
+    expect(h.auth.flags.manualDisconnected).toBe(true);
+  });
+});
+
+describe("QR cycle reset failures never escape as unhandled rejections", () => {
+  it("reports qr_reset_failed health when clearing auth throws, and a later connect works", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const clearAuthState = mock(async () => {
+        throw new Error("database is locked");
+      });
+      const h = createHarness({ registered: false, library: { clearAuthState } });
+      h.runtime.start();
+      await h.runtime.call("connection.connect", {});
+      await flush();
+      const sock = h.socket();
+      // 1 fresh QR + 3 expired ones → the handler resets the QR cycle (clear auth + reconnect).
+      for (const qr of ["2@A", "2@B", "2@C", "2@D"]) {
+        sock.emit("connection.update", { qr });
+        await flush();
+      }
+      await flush(30);
+      expect(clearAuthState).toHaveBeenCalledTimes(1);
+      expect(rejections).toEqual([]);
+      expect(h.runtime.getState()).toBe("disconnected");
+      expect(h.runtime.health()).toMatchObject({ status: "disconnected", reason: "qr_reset_failed" });
+      expect(h.publishedOfType("connection.disconnected").at(-1)?.event.payload).toMatchObject({
+        willReconnect: false,
+      });
+      expect(h.sockets).toHaveLength(1);
+
+      // The runtime is not wedged: connection.connect opens a new socket.
+      await h.runtime.call("connection.connect", {});
+      await flush();
+      expect(h.sockets).toHaveLength(2);
+      h.socket().emit("connection.update", { qr: "2@E" });
+      await flush();
+      expect(h.runtime.getState()).toBe("qr");
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
+  it("a throwing host callback inside connection.update is reported as a connection error", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const h = createHarness({ registered: false });
+      h.runtime.start();
+      await h.runtime.call("connection.connect", {});
+      await flush();
+      const original = h.runtime.handleQrCode.bind(h.runtime);
+      h.runtime.handleQrCode = async () => {
+        throw new Error("emit exploded");
+      };
+      h.socket().emit("connection.update", { qr: "2@A" });
+      await flush(30);
+      h.runtime.handleQrCode = original;
+      expect(rejections).toEqual([]);
+      expect(h.runtime.health()).toMatchObject({ status: "disconnected", reason: "connection_error" });
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+});
+
+describe("auth-state write queue across the lifecycle", () => {
+  it("stop() flushes pending auth writes with the configured timeout", async () => {
+    const h = createHarness({ authFlushTimeoutMs: 1234 });
+    await h.connect();
+    await h.runtime.stop();
+    expect(h.authFlush).toHaveBeenCalledWith({ timeoutMs: 1234 });
+  });
+
+  it("a reconnect flushes the previous socket's writes before re-reading the store", async () => {
+    const h = createHarness();
+    const sock = await h.connect();
+    expect(h.authFlush).not.toHaveBeenCalled();
+    sock.emit("connection.update", { connection: "close", lastDisconnect: { error: new Error("stream errored") } });
+    await flush(30);
+    expect(h.sockets.length).toBeGreaterThan(1);
+    expect(h.authFlush).toHaveBeenCalledTimes(1);
+  });
+
+  it("logout and forceNewQr discard pending writes before clearing the auth state", async () => {
+    const order: string[] = [];
+    const h = createHarness({
+      library: {
+        clearAuthState: mock(async () => {
+          order.push("clear");
+        }),
+      },
+    });
+    h.authDiscard.mockImplementation(async () => {
+      order.push("discard");
+    });
+    await h.connect();
+    await h.runtime.call("connection.connect", { forceNewQr: true });
+    await flush();
+    expect(order).toEqual(["discard", "clear"]);
+    await h.runtime.call("connection.logout", {});
+    expect(order).toEqual(["discard", "clear", "discard", "clear"]);
   });
 });

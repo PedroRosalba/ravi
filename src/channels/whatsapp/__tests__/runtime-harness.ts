@@ -174,7 +174,7 @@ export function createFakeJetStream(options: { failTimes?: number } = {}) {
 
 export function createMemoryAuthStorage(options: { registered?: boolean } = {}) {
   const data = new Map<string, unknown>();
-  const flags = { registered: options.registered ?? false };
+  const flags = { registered: options.registered ?? false, manualDisconnected: false };
   const storage: WhatsAppAuthStorage = {
     async get<T>(key: string) {
       return (data.has(key) ? data.get(key) : null) as T | null;
@@ -192,6 +192,10 @@ export function createMemoryAuthStorage(options: { registered?: boolean } = {}) 
       return [...data.keys()];
     },
     hasRegisteredCreds: () => flags.registered,
+    isManuallyDisconnected: () => flags.manualDisconnected,
+    setManuallyDisconnected: (_instanceId: string, disconnected: boolean) => {
+      flags.manualDisconnected = disconnected;
+    },
   };
   return { storage, flags, data };
 }
@@ -239,6 +243,8 @@ export interface HarnessOptions extends Partial<Omit<WhatsAppRuntimeOptions, "in
   socket?: FakeSocketOptions;
   publishFailTimes?: number;
   library?: Partial<WhatsAppLibrary>;
+  /** Share an auth store between harnesses (simulates a runner restart on the same `auth.db`). */
+  auth?: ReturnType<typeof createMemoryAuthStorage>;
 }
 
 export function createHarness(options: HarnessOptions = {}) {
@@ -249,11 +255,12 @@ export function createHarness(options: HarnessOptions = {}) {
     socket: _socket,
     publishFailTimes: _publishFailTimes,
     library: _library,
+    auth: _auth,
     ...runtimeOverrides
   } = options;
   const instanceId = requestedInstanceId ?? uniqueInstanceId();
   const { js, publish, published } = createFakeJetStream({ failTimes: options.publishFailTimes });
-  const auth = createMemoryAuthStorage({ registered: options.registered ?? true });
+  const auth = options.auth ?? createMemoryAuthStorage({ registered: options.registered ?? true });
   const manual = createManualTimers();
   const clock = { now: 1_750_000_000_000 };
   const sockets: FakeSocket[] = [];
@@ -261,6 +268,8 @@ export function createHarness(options: HarnessOptions = {}) {
   const observed: WhatsAppObservedEvent[] = [];
   const ensureInboundStream = mock(async () => {});
   const saveCreds = mock(async () => {});
+  const authFlush = mock(async (_options?: { timeoutMs?: number }) => true);
+  const authDiscard = mock(async () => {});
 
   const library: WhatsAppLibrary = {
     ...whatsappLibrary,
@@ -277,7 +286,13 @@ export function createHarness(options: HarnessOptions = {}) {
     createStorageAuthState: mock(async () => {
       const meId = options.credsMeId === undefined ? (auth.flags.registered ? OWNER_JID : null) : options.credsMeId;
       const state = { creds: meId ? { me: { id: meId }, registered: true } : {}, keys: {} };
-      return { state, saveCreds } as unknown as Awaited<ReturnType<WhatsAppLibrary["createStorageAuthState"]>>;
+      return {
+        state,
+        saveCreds,
+        flush: authFlush,
+        discard: authDiscard,
+        pendingWrites: () => 0,
+      } as unknown as Awaited<ReturnType<WhatsAppLibrary["createStorageAuthState"]>>;
     }),
     clearAuthState: mock(async () => {
       auth.flags.registered = false;
@@ -361,6 +376,8 @@ export function createHarness(options: HarnessOptions = {}) {
     socket,
     ensureInboundStream,
     saveCreds,
+    authFlush,
+    authDiscard,
     startAndWaitForSocket,
     connect,
   };

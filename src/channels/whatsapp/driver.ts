@@ -69,8 +69,13 @@ export const WhatsAppChannelDefaultsSchema = z
     /** Bound instance name when it differs from the channel name. */
     instance: z.string().optional(),
     readReceiptMode: z.enum(["on", "off", "exclude-self"]).optional(),
-    /** ingestMode of Baileys offline backlog (`append`); default "history-sync". */
+    /**
+     * Forces the ingestMode of Baileys offline backlog (`append`). Unset (default):
+     * age-aware, backlog older than `offlineStaleMs` is "history-sync", younger is "realtime".
+     */
     offlineIngestMode: z.enum(["realtime", "history-sync"]).optional(),
+    /** Age (ms, by `messageTimestamp`) from which offline backlog is history. Default 10 minutes. */
+    offlineStaleMs: z.number().int().nonnegative().optional(),
     historyDownloadMedia: z.boolean().optional(),
     /** Connect at start when paired creds exist (default true). */
     autoConnect: z.boolean().optional(),
@@ -200,6 +205,7 @@ export function createWhatsAppChannelDriver(options: WhatsAppChannelDriverOption
         ...(defaults.data.whatsapp ? { socketOptions: defaults.data.whatsapp } : {}),
         ...(defaults.data.readReceiptMode ? { readReceiptMode: defaults.data.readReceiptMode } : {}),
         ...(defaults.data.offlineIngestMode ? { offlineIngestMode: defaults.data.offlineIngestMode } : {}),
+        ...(defaults.data.offlineStaleMs !== undefined ? { offlineStaleMs: defaults.data.offlineStaleMs } : {}),
         ...(defaults.data.historyDownloadMedia !== undefined
           ? { historyDownloadMedia: defaults.data.historyDownloadMedia }
           : {}),

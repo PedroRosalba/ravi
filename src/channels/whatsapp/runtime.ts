@@ -64,6 +64,7 @@ import {
   getWhatsAppOutboundTimingConfig,
   getWhatsAppRateLimitConfig,
 } from "./lib/env.js";
+import type { StorageAuthStateHandle } from "./lib/auth.js";
 import type { ReconnectConfig } from "./lib/handlers/connection.js";
 import type { ExtractedContent } from "./lib/handlers/messages.js";
 import { fromJid, isGroupJid, isLidJid, isUserJid } from "./lib/jid.js";
@@ -135,9 +136,15 @@ export const WhatsAppConnectionOptionsSchema = z.object({
 
 export type WhatsAppConnectionOptions = z.infer<typeof WhatsAppConnectionOptionsSchema>;
 
-/** Persistent auth store: `PluginStorage` plus the paired-creds probe (default: SQLite router DB). */
+/**
+ * Persistent auth store: `PluginStorage` plus the paired-creds probe and the
+ * manual-disconnect marker (default: SQLite `<RAVI_STATE_DIR>/whatsapp/auth.db`, auth-store.ts).
+ */
 export interface WhatsAppAuthStorage extends PluginStorage {
   hasRegisteredCreds(instanceId: string): boolean;
+  /** True when the last lifecycle command was `connection.disconnect` (survives runner restarts). */
+  isManuallyDisconnected(instanceId: string): boolean;
+  setManuallyDisconnected(instanceId: string, disconnected: boolean): void;
 }
 
 /**
@@ -237,13 +244,25 @@ export interface WhatsAppRuntimeOptions {
   onStateChange?: (snapshot: WhatsAppRuntimeSnapshot) => void;
   /** Event types published to CHANNEL_INBOUND. Default: every `WHATSAPP_INBOUND_EVENT_TYPES` type. */
   publishedEventTypes?: readonly WhatsAppInboundEventType[];
-  /** ingestMode for messages Baileys delivered as offline backlog (`append`). Default "history-sync". */
+  /**
+   * Forces the ingestMode of every message Baileys delivered as offline backlog (`append`).
+   * Unset (default): age-aware, see `offlineStaleMs`. "history-sync" restores the old
+   * behaviour (no agent reply to anything that arrived during a socket gap).
+   */
   offlineIngestMode?: WhatsAppIngestMode;
+  /**
+   * Offline backlog older than this (by `messageTimestamp`) is published `history-sync`;
+   * younger backlog is `realtime`, so the agent answers messages that arrived during a
+   * short socket gap. Default 10 minutes. Ignored when `offlineIngestMode` is set.
+   */
+  offlineStaleMs?: number;
   /** Download media of history-sync messages. Default false (they never reach agents). */
   historyDownloadMedia?: boolean;
   readReceiptMode?: ReadReceiptMode;
   /** Connect on `start()` when paired creds exist. Default true. */
   autoConnect?: boolean;
+  /** How long `stop()` (and a reconnect) waits for pending auth-state writes. Default 10 s. */
+  authFlushTimeoutMs?: number;
   /** Sticker converter (default: sharp → 512px webp). */
   convertSticker?: (input: Buffer) => Promise<Buffer>;
 }
@@ -294,6 +313,9 @@ const OFFLINE_ID_TTL_MS = 10 * 60 * 1000;
 const REACTION_EVENT_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_PRESENCE_DURATION_MS = 5_000;
 const PAIRING_SOCKET_WAIT_MS = 30_000;
+/** Default `offlineStaleMs`: offline backlog older than this is history, younger is answered. */
+export const DEFAULT_OFFLINE_STALE_MS = 10 * 60 * 1000;
+const DEFAULT_AUTH_FLUSH_TIMEOUT_MS = 10_000;
 const HISTORY_BATCH_SIZE = 50;
 const DEFAULT_PREWARM_BATCH_SIZE = 500;
 
@@ -329,6 +351,21 @@ function disconnectReasonKind(reason: string): string {
   return "disconnected";
 }
 
+/**
+ * `WAMessage.messageTimestamp` (seconds; number, numeric string, bigint or protobuf Long)
+ * in milliseconds, or null when absent or unusable.
+ */
+export function messageTimestampMs(value: unknown): number | null {
+  let seconds: number;
+  if (typeof value === "number") seconds = value;
+  else if (typeof value === "bigint") seconds = Number(value);
+  else if (typeof value === "string" && value.trim() !== "") seconds = Number(value);
+  else if (value && typeof (value as { toNumber?: unknown }).toNumber === "function") {
+    seconds = (value as { toNumber: () => number }).toNumber();
+  } else return null;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+}
+
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(raw ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -355,7 +392,9 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
   private readonly reconnectConfig: ReconnectConfig;
   private readonly supervisor: Required<WhatsAppSupervisorOptions>;
   private readonly publishedTypes: ReadonlySet<string>;
-  private readonly offlineIngestMode: WhatsAppIngestMode;
+  private readonly offlineIngestMode: WhatsAppIngestMode | undefined;
+  private readonly offlineStaleMs: number;
+  private readonly authFlushTimeoutMs: number;
   private readonly historyDownloadMedia: boolean;
   private readonly readReceiptMode: ReadReceiptMode;
   private readonly autoConnect: boolean;
@@ -380,6 +419,8 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
   private stopped = false;
   private connecting: Promise<void> | null = null;
   private libraryPromise: Promise<WhatsAppLibrary> | null = null;
+  /** Write queue of the current socket's auth state (flushed on stop/reconnect, discarded before a clear). */
+  private authWrites: Pick<StorageAuthStateHandle, "flush" | "discard"> | null = null;
   private loadedLibrary: WhatsAppLibrary | null = null;
   private streamReady: Promise<void> | null = null;
   private lidFirstEnabled: boolean;
@@ -437,7 +478,12 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
       maxDelayMs: options.supervisor?.maxDelayMs ?? 300_000,
     };
     this.publishedTypes = new Set(options.publishedEventTypes ?? DEFAULT_PUBLISHED_EVENT_TYPES);
-    this.offlineIngestMode = options.offlineIngestMode ?? "history-sync";
+    this.offlineIngestMode = options.offlineIngestMode;
+    this.offlineStaleMs =
+      options.offlineStaleMs !== undefined && Number.isFinite(options.offlineStaleMs) && options.offlineStaleMs >= 0
+        ? options.offlineStaleMs
+        : DEFAULT_OFFLINE_STALE_MS;
+    this.authFlushTimeoutMs = options.authFlushTimeoutMs ?? DEFAULT_AUTH_FLUSH_TIMEOUT_MS;
     this.historyDownloadMedia = options.historyDownloadMedia ?? false;
     this.readReceiptMode = options.readReceiptMode ?? "on";
     this.autoConnect = options.autoConnect ?? true;
@@ -544,12 +590,21 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
    * Start the runtime without touching the network: kick off the CHANNEL_INBOUND
    * stream check, then connect in the background when paired creds exist, or wait
    * for `connect()` (health `starting` + `pairing_required`).
+   *
+   * A persisted manual-disconnect marker (`connection.disconnect`, cleared by
+   * `connection.connect`) keeps the instance down across runner restarts:
+   * health `disconnected` / `manual_disconnect`, no socket.
    */
   start(): void {
     if (this.started && !this.stopped) return;
     this.started = true;
     this.stopped = false;
     this.streamReady = this.ensureStream();
+    if (this.readManualDisconnectMarker()) {
+      this.manualDisconnect = true;
+      this.setState("disconnected", "manual_disconnect", "Disconnected by connection.disconnect");
+      return;
+    }
     if (this.autoConnect && this.hasCreds()) {
       this.setState("connecting", "start");
       this.spawnConnection("start");
@@ -571,6 +626,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     } else {
       this.sock = null;
     }
+    await this.flushAuthWrites("stop");
     this.dedupeCache?.dispose();
     this.dedupeCache = null;
     this.activeQr = null;
@@ -588,6 +644,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     if (params.whatsapp) this.applySocketOptions(params.whatsapp);
     this.started = true;
     this.manualDisconnect = false;
+    this.writeManualDisconnectMarker(false);
     this.replaced = false;
     this.clearSupervisor();
     if (!this.streamReady) this.streamReady = this.ensureStream();
@@ -598,7 +655,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
       this.passkeyState = null;
       await this.dropSocket(lib, false);
       lib.resetConnectionState(this.instanceId);
-      await lib.clearAuthState(this.authStorage(), this.instanceId);
+      await this.clearStoredAuth(lib);
       this.pendingLoggedOut = false;
       this.activeQr = null;
       this.log.info("Cleared auth state for fresh QR", { instanceId: this.instanceId });
@@ -626,16 +683,21 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     return { status: "connecting", message: "Connection initiated" };
   }
 
-  /** `connection.disconnect`: close the socket, keep the session. */
+  /**
+   * `connection.disconnect`: close the socket, keep the session. Persisted: the instance
+   * stays down across runner restarts until `connection.connect`. Bumping the generation
+   * also cancels a connection still waiting for Baileys to load.
+   */
   async disconnect(): Promise<void> {
     this.manualDisconnect = true;
+    this.writeManualDisconnectMarker(true);
     this.generation++;
     this.clearSupervisor();
     this.clearPresenceTimers();
     const lib = this.loadedLibrary;
     // Reset tracking even when no socket is live: a reconnect loop drops the socket between attempts (omni#1169).
     lib?.resetConnectionState(this.instanceId);
-    this.setState("disconnected", "user_disconnect", "User requested disconnect");
+    this.setState("disconnected", "manual_disconnect", "User requested disconnect");
     const hadSocket = this.sock !== null;
     if (lib) await this.dropSocket(lib, false);
     else this.sock = null;
@@ -661,7 +723,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     const hadSocket = this.sock !== null;
     await this.dropSocket(lib, this.state === "connected");
     this.clearInstanceCaches();
-    await lib.clearAuthState(this.authStorage(), this.instanceId);
+    await this.clearStoredAuth(lib);
     this.profile = {};
     this.setState("logged_out", "logged_out", "Logged out");
     this.log.info("Instance logged out and auth cleared", { instanceId: this.instanceId });
@@ -685,6 +747,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     }
     if (!this.sock && !this.connecting) {
       this.manualDisconnect = false;
+      this.writeManualDisconnectMarker(false);
       this.replaced = false;
       this.started = true;
       this.setState("connecting", "pairing_code");
@@ -897,9 +960,18 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
       await this.dropSocket(lib, false);
     }
 
-    const storage = this.authStorage();
-    const { state, saveCreds } = await lib.createStorageAuthState(storage, this.instanceId);
+    // The previous socket's queued key writes must land before the store is re-read.
+    await this.flushAuthWrites("reconnect");
     if (generation !== this.generation || this.stopped) return;
+
+    const storage = this.authStorage();
+    const authState = await lib.createStorageAuthState(storage, this.instanceId);
+    const { state, saveCreds } = authState;
+    if (generation !== this.generation || this.stopped) {
+      await authState.flush({ timeoutMs: this.authFlushTimeoutMs });
+      return;
+    }
+    this.authWrites = authState;
 
     // Paired creds → seed the handler's authenticated set so a drop auto-reconnects
     // instead of falling into the QR path (critical after restarts).
@@ -944,12 +1016,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
       this,
       this.instanceId,
       () => this.createConnection(),
-      async () => {
-        // After MAX_QR_ATTEMPTS: drop the socket, clear auth, start a fresh QR cycle.
-        await this.dropSocket(lib, false);
-        await lib.clearAuthState(storage, this.instanceId);
-        await this.createConnection();
-      },
+      () => this.resetQrCycle(lib, sock, generation),
       this.reconnectConfig,
     );
 
@@ -973,7 +1040,12 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
       // The handler returns silently on 440 (no reconnect). Drop the dead socket once the
       // current emit finished, so it does not linger as "connected".
       queueMicrotask(() => {
-        void this.handleConnectionReplaced(lib, sock);
+        this.handleConnectionReplaced(lib, sock).catch((error: unknown) => {
+          this.log.error("Failed to handle replaced WhatsApp connection", {
+            instanceId: this.instanceId,
+            error: errorMessage(error),
+          });
+        });
       });
     }
   }
@@ -989,6 +1061,67 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     });
     this.setState("disconnected", "connection_replaced", reason);
     await this.emit(this.observed("connection.disconnected", connectionDisconnectedPayload(reason, false)));
+  }
+
+  /**
+   * After MAX_QR_ATTEMPTS: drop the socket, clear auth, start a fresh QR cycle.
+   * Never rejects: it runs inside a Baileys event listener, where a rejection would be
+   * unhandled and kill the runner. A failure is reported as health instead
+   * (`disconnected` / `qr_reset_failed`); `connection.connect` starts over.
+   */
+  private async resetQrCycle(lib: WhatsAppLibrary, sock: WASocket, generation: number): Promise<void> {
+    if (generation !== this.generation || this.stopped || sock !== this.sock) return;
+    try {
+      await this.dropSocket(lib, false);
+      await this.clearStoredAuth(lib);
+      if (generation !== this.generation || this.stopped) return;
+      await this.createConnection();
+    } catch (error) {
+      const message = errorMessage(error);
+      this.log.error("WhatsApp QR cycle reset failed", { instanceId: this.instanceId, error: message });
+      if (this.stopped) return;
+      this.generation++;
+      if (this.sock) await this.dropSocket(lib, false);
+      lib.resetConnectionState(this.instanceId);
+      this.activeQr = null;
+      const reason = `QR cycle reset failed: ${message}`;
+      this.setState("disconnected", "qr_reset_failed", reason);
+      await this.emit(this.observed("connection.disconnected", connectionDisconnectedPayload(reason, false))).catch(
+        () => {},
+      );
+    }
+  }
+
+  /** Clear the stored auth state, dropping queued key writes of the current socket first. */
+  private async clearStoredAuth(lib: WhatsAppLibrary): Promise<void> {
+    const writes = this.authWrites;
+    this.authWrites = null;
+    if (writes) await writes.discard();
+    await lib.clearAuthState(this.authStorage(), this.instanceId);
+  }
+
+  /** Wait (bounded) for queued auth-state writes; log when some could not be persisted. */
+  private async flushAuthWrites(trigger: string): Promise<void> {
+    const writes = this.authWrites;
+    if (!writes) return;
+    let flushed = false;
+    try {
+      flushed = await writes.flush({ timeoutMs: this.authFlushTimeoutMs });
+    } catch (error) {
+      this.log.error("WhatsApp auth-state flush failed", {
+        instanceId: this.instanceId,
+        trigger,
+        error: errorMessage(error),
+      });
+    }
+    if (!flushed) {
+      this.log.warn("WhatsApp auth-state writes still pending after flush timeout", {
+        instanceId: this.instanceId,
+        trigger,
+        timeoutMs: this.authFlushTimeoutMs,
+      });
+    }
+    if (this.authWrites === writes) this.authWrites = null;
   }
 
   private observeUpsert(upsert: BaileysEventMap["messages.upsert"]): void {
@@ -1045,6 +1178,30 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     } catch (error) {
       this.log.warn("Could not read WhatsApp auth state", { instanceId: this.instanceId, error: errorMessage(error) });
       return false;
+    }
+  }
+
+  private readManualDisconnectMarker(): boolean {
+    try {
+      return this.authStorage().isManuallyDisconnected(this.instanceId);
+    } catch (error) {
+      this.log.warn("Could not read the WhatsApp manual-disconnect marker", {
+        instanceId: this.instanceId,
+        error: errorMessage(error),
+      });
+      return false;
+    }
+  }
+
+  private writeManualDisconnectMarker(disconnected: boolean): void {
+    try {
+      this.authStorage().setManuallyDisconnected(this.instanceId, disconnected);
+    } catch (error) {
+      this.log.warn("Could not persist the WhatsApp manual-disconnect marker", {
+        instanceId: this.instanceId,
+        disconnected,
+        error: errorMessage(error),
+      });
     }
   }
 
@@ -1197,7 +1354,9 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
   }
 
   private emitObserved(type: string, payload: unknown): void {
-    void this.emit(this.observed(type, payload));
+    this.emit(this.observed(type, payload)).catch((error: unknown) => {
+      this.log.error("WhatsApp event emit failed", { instanceId: this.instanceId, type, error: errorMessage(error) });
+    });
   }
 
   // ==========================================================================
@@ -1262,7 +1421,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
       // WhatsApp unlinked this device: the stored creds are dead, a new pairing is needed.
       if (lib) {
         try {
-          await lib.clearAuthState(this.authStorage(), this.instanceId);
+          await this.clearStoredAuth(lib);
         } catch (error) {
           this.log.warn("Failed to clear auth after logout", {
             instanceId: this.instanceId,
@@ -1356,6 +1515,19 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
   // WhatsAppMessageHost
   // ==========================================================================
 
+  /**
+   * ingestMode of a message Baileys delivered as offline backlog (`append`): the forced
+   * `offlineIngestMode` when set, else `history-sync` only when the message is older than
+   * `offlineStaleMs` (a short socket gap still gets answered). A backlog message without a
+   * usable timestamp is treated as history.
+   */
+  private offlineBacklogIngestMode(rawMessage: WAMessage): WhatsAppIngestMode {
+    if (this.offlineIngestMode) return this.offlineIngestMode;
+    const sentAt = messageTimestampMs(rawMessage.messageTimestamp);
+    if (sentAt === null) return "history-sync";
+    return this.now() - sentAt > this.offlineStaleMs ? "history-sync" : "realtime";
+  }
+
   isBotSentMessage(_instanceId: string, messageId: string): boolean {
     return this.sentIds.has(messageId);
   }
@@ -1428,7 +1600,7 @@ export class WhatsAppRuntime implements WhatsAppHandlerHost {
     this.enrichPayloadWithChatName(extendedPayload, chatId);
 
     const ingestMode: WhatsAppIngestMode =
-      externalId && this.offlineIds.has(externalId) ? this.offlineIngestMode : "realtime";
+      externalId && this.offlineIds.has(externalId) ? this.offlineBacklogIngestMode(rawMessage) : "realtime";
     const payloadContent: MessageReceivedContent = {
       type: content.type,
       text: content.text || content.caption,

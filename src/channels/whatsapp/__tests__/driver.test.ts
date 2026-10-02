@@ -165,6 +165,7 @@ describe("WhatsApp native channel driver: descriptor and binding", () => {
         instance: "vendas",
         readReceiptMode: "off",
         offlineIngestMode: "realtime",
+        offlineStaleMs: 120_000,
         historyDownloadMedia: true,
         autoConnect: false,
         whatsapp: { markOnlineOnConnect: false },
@@ -179,10 +180,18 @@ describe("WhatsApp native channel driver: descriptor and binding", () => {
       accountName: "vendas",
       readReceiptMode: "off",
       offlineIngestMode: "realtime",
+      offlineStaleMs: 120_000,
       historyDownloadMedia: true,
       autoConnect: false,
       socketOptions: { markOnlineOnConnect: false },
     });
+  });
+
+  it("leaves offline backlog age-aware by default (no offlineIngestMode / offlineStaleMs passed)", async () => {
+    const { driver, created } = driverWith(config([channel("main")], [instance("main", UUID_A)]));
+    await driver.createRuntime({ channel: { name: "main", provider: "whatsapp" }, host });
+    expect(created[0]?.offlineIngestMode).toBeUndefined();
+    expect(created[0]?.offlineStaleMs).toBeUndefined();
   });
 
   it("fails invalid_channel_configuration when the instance is missing or has no transport id", async () => {
@@ -336,9 +345,13 @@ describe("WhatsApp native channel driver: real runtime", () => {
       }),
       createStorageAuthState: mock(async () => {
         const state = { creds: { me: { id: OWNER_JID }, registered: true }, keys: {} };
-        return { state, saveCreds: async () => {} } as unknown as Awaited<
-          ReturnType<WhatsAppLibrary["createStorageAuthState"]>
-        >;
+        return {
+          state,
+          saveCreds: async () => {},
+          flush: async () => true,
+          discard: async () => {},
+          pendingWrites: () => 0,
+        } as unknown as Awaited<ReturnType<WhatsAppLibrary["createStorageAuthState"]>>;
       }),
     };
   }
