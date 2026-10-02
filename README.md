@@ -130,6 +130,7 @@ ravi agents list
 ravi sessions list --json
 ravi sessions send main "Check what needs attention today" --wait
 ravi sessions trace main --json
+ravi sessions reset main --execute
 ravi events stream
 ```
 
