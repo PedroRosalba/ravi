@@ -269,15 +269,6 @@ const KNOWN_SETTINGS: Record<string, { description: string; validate?: (value: s
       }
     },
   },
-  "whatsapp.transport": {
-    description:
-      "Default transport for `ravi instances connect` on WhatsApp (native, omni); --transport and an existing native channel win",
-    validate: (value: string) => {
-      if (!["native", "omni"].includes(value)) {
-        throw new Error("Invalid value. Must be one of: native, omni");
-      }
-    },
-  },
 };
 
 function isLegacyAccountSetting(key: string): boolean {

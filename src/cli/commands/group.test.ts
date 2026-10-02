@@ -42,12 +42,7 @@ const publishPromptCalls: Array<Record<string, unknown>> = [];
 let mockAgent: { id: string; cwd: string } | undefined;
 
 let listGroupsResult: Array<Record<string, unknown>> = [];
-// Transport fixtures: which instance ids are owned by a native WhatsApp channel, and
-// whether an Omni API connection is configured.
 let mockInstanceId = "inst-1";
-let nativeInstanceIds = new Set<string>();
-let omniConfigured = true;
-const senderConstructions: unknown[][] = [];
 const listGroupsCalls: Array<{ instanceId: string }> = [];
 let metadataResult: Record<string, unknown> | null = null;
 let historyMock: Array<{ role: string; content: string; created_at: string }> = [];
@@ -166,7 +161,7 @@ mock.module("../../channels/session-prompt.js", () => ({
 }));
 
 // Defines every export of cache.js: group.ts imports resolveGroupMetadata, and the
-// fetcher modules it imports (whatsapp/group-metadata.js, omni/group-metadata.js) import
+// fetcher module it imports (whatsapp/group-metadata.js) imports
 // the rest. The real module cannot be spread here: router-db.js is mocked without getDb.
 mock.module("../../channels/group-metadata/cache.js", () => ({
   resolveGroupMetadata: async (input: Record<string, unknown>) => {
@@ -190,84 +185,106 @@ mock.module("../../channels/mentions.js", () => ({
   }),
 }));
 
-mock.module("../../omni/sender.js", () => ({
-  OmniSender: class OmniSender {
-    constructor(...args: unknown[]) {
-      senderConstructions.push(args);
-    }
-    async send(instanceId: string, to: string, text: string, extra?: Record<string, unknown>) {
-      senderSendCalls.push({ instanceId, to, text, ...(extra ?? {}) });
-      return { messageId: "wamid-1" };
-    }
-  },
-}));
+// The WhatsApp runner client group.ts talks to. Every RPC is recorded; the per-call
+// arrays above keep the shape the assertions below use.
+const whatsappCalls: Array<{ method: string; instanceId: string; params: Record<string, unknown> }> = [];
+let whatsappFailure: Error | null = null;
 
-// The routing client: same instance API for Omni and native instances (the real one
-// dispatches per instance), plus the native ownership probe group.ts branches on.
-const fakeNativeTransport: {
-  isNativeInstance: (ref: string | undefined | null) => boolean;
-  resolveBinding: () => null;
-  request: (...args: unknown[]) => Promise<unknown>;
-} = {
-  isNativeInstance: (ref: string | undefined | null) => Boolean(ref && nativeInstanceIds.has(ref)),
+function whatsappRpc<R>(method: string, record: (instanceId: string, params: Record<string, unknown>) => R) {
+  return async (instanceId: string, params: Record<string, unknown>) => {
+    whatsappCalls.push({ method, instanceId, params });
+    if (whatsappFailure) throw whatsappFailure;
+    return record(instanceId, params);
+  };
+}
+
+const fakeWhatsAppClient = {
   resolveBinding: () => null,
   request: async () => {
-    throw new Error("unexpected native RPC");
+    throw new Error("unexpected raw WhatsApp RPC");
   },
+  connection: {},
+  groups: {
+    list: whatsappRpc("groups.list", (instanceId) => {
+      listGroupsCalls.push({ instanceId });
+      return { items: listGroupsResult };
+    }),
+    create: whatsappRpc("groups.create", (instanceId, params) => {
+      createGroupCalls.push({ instanceId, ...params });
+      const participants = (params.participants as string[]).map((id) => ({ id, admin: null }));
+      return {
+        id: "999@g.us",
+        externalId: "999@g.us",
+        subject: params.subject,
+        name: params.subject,
+        participants,
+        memberCount: participants.length,
+        isCommunity: false,
+      };
+    }),
+    addParticipants: whatsappRpc("groups.addParticipants", (instanceId, params) => {
+      addParticipantCalls.push({ instanceId, ...params });
+      return { groupJid: params.groupJid, results: [] };
+    }),
+    updateParticipants: whatsappRpc("groups.updateParticipants", (instanceId, params) => {
+      updateParticipantCalls.push({ instanceId, ...params });
+      return { groupJid: params.groupJid, results: [] };
+    }),
+    getInvite: whatsappRpc("groups.getInvite", (_instanceId, params) => ({
+      groupJid: params.groupJid,
+      code: "CODE",
+      inviteLink: "https://chat.whatsapp.com/CODE",
+    })),
+    revokeInvite: whatsappRpc("groups.revokeInvite", (instanceId, params) => {
+      revokeInviteCalls.push({ instanceId, ...params });
+      return { groupJid: params.groupJid, code: "NEWCODE", inviteLink: "https://chat.whatsapp.com/NEWCODE" };
+    }),
+    join: whatsappRpc("groups.join", (instanceId, params) => {
+      joinCalls.push({ instanceId, ...params });
+      return { groupJid: "999@g.us", joined: true };
+    }),
+    leave: whatsappRpc("groups.leave", (instanceId, params) => {
+      leaveCalls.push({ instanceId, ...params });
+      return { groupJid: params.groupJid, left: true };
+    }),
+    rename: whatsappRpc("groups.rename", (instanceId, params) => {
+      renameCalls.push({ instanceId, ...params });
+      return { groupJid: params.groupJid, subject: params.subject };
+    }),
+    setDescription: whatsappRpc("groups.setDescription", (instanceId, params) => {
+      setDescriptionCalls.push({ instanceId, ...params });
+      return { groupJid: params.groupJid, description: params.description };
+    }),
+    setSettings: whatsappRpc("groups.setSettings", (instanceId, params) => {
+      setSettingsCalls.push({ instanceId, ...params });
+      return { groupJid: params.groupJid, setting: params.setting };
+    }),
+    metadata: whatsappRpc("groups.metadata", (_instanceId, params) => ({
+      groupJid: params.groupJid,
+      subject: "Equipe",
+      participants: [],
+      fetchedAt: 1,
+    })),
+  },
+  messages: {
+    sendText: whatsappRpc("messages.sendText", (instanceId, params) => {
+      senderSendCalls.push({ instanceId, ...params });
+      return { messageId: "wamid-1", status: "sent" };
+    }),
+  },
+  presence: { set: whatsappRpc("presence.set", () => ({})) },
 };
 
-mock.module("../../channels/whatsapp/transport-client.js", () => ({
-  createChannelTransportClient: () => ({
-    native: fakeNativeTransport,
-    hasOmni: () => omniConfigured,
-    instances: {
-      createGroup: async (instanceId: string, input: Record<string, unknown>) => {
-        createGroupCalls.push({ instanceId, ...input });
-        return { id: "999@g.us", subject: input.subject, participants: input.participants };
-      },
-      listGroups: async (instanceId: string) => {
-        listGroupsCalls.push({ instanceId });
-        return { items: listGroupsResult, meta: {} };
-      },
-      addGroupParticipants: async (instanceId: string, groupJid: string, input: Record<string, unknown>) => {
-        addParticipantCalls.push({ instanceId, groupJid, ...input });
-        return { ok: true };
-      },
-      updateGroupParticipants: async (instanceId: string, groupJid: string, input: Record<string, unknown>) => {
-        updateParticipantCalls.push({ instanceId, groupJid, ...input });
-        return { ok: true };
-      },
-      getGroupInvite: async () => ({ code: "CODE" }),
-      revokeGroupInvite: async (instanceId: string, groupJid: string) => {
-        revokeInviteCalls.push({ instanceId, groupJid });
-        return { code: "NEWCODE" };
-      },
-      joinGroup: async (instanceId: string, input: Record<string, unknown>) => {
-        joinCalls.push({ instanceId, ...input });
-        return { groupJid: "999@g.us" };
-      },
-      leaveGroup: async (instanceId: string, groupJid: string) => {
-        leaveCalls.push({ instanceId, groupJid });
-        return { ok: true };
-      },
-      renameGroup: async (instanceId: string, groupJid: string, input: Record<string, unknown>) => {
-        renameCalls.push({ instanceId, groupJid, ...input });
-        return { ok: true };
-      },
-      setGroupDescription: async (instanceId: string, groupJid: string, input: Record<string, unknown>) => {
-        setDescriptionCalls.push({ instanceId, groupJid, ...input });
-        return { ok: true };
-      },
-      setGroupSettings: async (instanceId: string, groupJid: string, input: Record<string, unknown>) => {
-        setSettingsCalls.push({ instanceId, groupJid, ...input });
-        return { ok: true };
-      },
-    },
-  }),
-}));
-
-mock.module("../../omni-config.js", () => ({
-  resolveOmniConnection: () => (omniConfigured ? { apiUrl: "http://omni.test", apiKey: "key" } : null),
+mock.module("../../channels/whatsapp/client.js", () => ({
+  createWhatsAppClient: () => fakeWhatsAppClient,
+  WHATSAPP_CLIENT_TIMEOUTS_MS: {
+    listStatus: 2_500,
+    status: 10_000,
+    presence: 10_000,
+    markRead: 15_000,
+    media: 120_000,
+  },
+  defaultWhatsAppClientTimeoutMs: () => 60_000,
 }));
 
 mock.module("../../router/session-key.js", () => ({
@@ -340,23 +357,16 @@ type ContractErrorInstance = InstanceType<typeof ContractError>;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** The fetcher group.ts passed calls `groups.metadata` over the routing client's native transport. */
+/** The fetcher group.ts passed calls `groups.metadata` on the WhatsApp runner client. */
 async function expectWhatsAppFetcher(fetcher: unknown): Promise<void> {
   expect(typeof fetcher).toBe("function");
-  const calls: unknown[][] = [];
-  const originalRequest = fakeNativeTransport.request;
-  fakeNativeTransport.request = async (...args: unknown[]) => {
-    calls.push(args);
-    return { groupJid: "111@g.us", subject: "Equipe", participants: [], fetchedAt: 1 };
-  };
-  try {
-    const fetch = fetcher as (input: Record<string, unknown>) => Promise<{ platformMetadata?: unknown } | null>;
-    const fetched = await fetch({ accountId: "main", instanceId: "native-1", chatId: "111", fetchTimeoutMs: 1234 });
-    expect(calls).toEqual([["native-1", "groups.metadata", { groupJid: "111@g.us" }, { timeoutMs: 1234 }]]);
-    expect(fetched?.platformMetadata).toEqual({ transport: "whatsapp" });
-  } finally {
-    fakeNativeTransport.request = originalRequest;
-  }
+  const before = whatsappCalls.length;
+  const fetch = fetcher as (input: Record<string, unknown>) => Promise<{ platformMetadata?: unknown } | null>;
+  const fetched = await fetch({ accountId: "main", instanceId: "wa-1", chatId: "111", fetchTimeoutMs: 1234 });
+  expect(whatsappCalls.slice(before)).toEqual([
+    { method: "groups.metadata", instanceId: "wa-1", params: { groupJid: "111@g.us" } },
+  ]);
+  expect(fetched?.platformMetadata).toEqual({ transport: "whatsapp" });
 }
 
 async function silenced<T>(run: () => Promise<T> | T): Promise<T> {
@@ -411,9 +421,8 @@ beforeEach(() => {
   publishPromptCalls.length = 0;
   mockAgent = undefined;
   mockInstanceId = "inst-1";
-  nativeInstanceIds = new Set();
-  omniConfigured = true;
-  senderConstructions.length = 0;
+  whatsappCalls.length = 0;
+  whatsappFailure = null;
   listGroupsCalls.length = 0;
   listGroupsResult = [];
   metadataResult = null;
@@ -458,7 +467,7 @@ describe("whatsapp group write brake", () => {
     expect(metadataCalls).toHaveLength(0);
   });
 
-  it("send with --execute delivers through the omni sender and strips bash escapes", async () => {
+  it("send with --execute delivers through the WhatsApp runner and strips bash escapes", async () => {
     const commands = new GroupCommands();
     const payload = await silenced(() =>
       commands.send("120363000000000001", "oi\\!", undefined, undefined, true, true),
@@ -516,7 +525,7 @@ describe("whatsapp group write brake", () => {
     expect(addParticipantCalls).toHaveLength(0);
   });
 
-  it("add with --execute calls the omni participants contract", async () => {
+  it("add with --execute calls the WhatsApp participants RPC", async () => {
     const commands = new GroupCommands();
     await silenced(() => commands.add("120363000000000001", "5511999999999", undefined, true, true));
 
@@ -637,7 +646,7 @@ describe("whatsapp group write brake", () => {
     expect(upsertChatCalls).toHaveLength(0);
   });
 
-  it("create with --execute creates the group via omni and registers the local chat", async () => {
+  it("create with --execute creates the group via the WhatsApp runner and registers the local chat", async () => {
     const commands = new GroupCommands();
     await silenced(() =>
       commands.create(
@@ -872,27 +881,37 @@ describe("whatsapp group envelopes and compact mode", () => {
 });
 
 // ---------------------------------------------------------------------------
-// whatsapp.group — native WhatsApp transport
+// whatsapp.group — WhatsApp runner transport
 // ---------------------------------------------------------------------------
 
-describe("whatsapp group on a native WhatsApp instance", () => {
+describe("whatsapp group through the WhatsApp runner", () => {
   beforeEach(() => {
-    mockInstanceId = "native-1";
-    nativeInstanceIds = new Set(["native-1"]);
-    omniConfigured = false;
+    mockInstanceId = "wa-1";
   });
 
-  it("list goes through the routing client without Omni and reports the native source", async () => {
+  it("list calls groups.list and reports the whatsapp.rpc source", async () => {
     listGroupsResult = [{ id: "111@g.us", subject: "Equipe", memberCount: 3, participants: [] }];
 
     const commands = new GroupCommands();
     const payload = await silenced(() => commands.list(undefined, true));
 
-    expect(listGroupsCalls).toEqual([{ instanceId: "native-1" }]);
-    expect(payload).toMatchObject({ instanceId: "native-1", source: "native.rpc", total: 1 });
+    expect(whatsappCalls).toEqual([{ method: "groups.list", instanceId: "wa-1", params: { limit: 500 } }]);
+    expect(payload).toMatchObject({ instanceId: "wa-1", source: "whatsapp.rpc", total: 1 });
   });
 
-  it("info resolves group metadata through the native transport", async () => {
+  it("list falls back to the local chat model when the runner fails", async () => {
+    whatsappFailure = new Error("Instance wa-1 is not bound to a WhatsApp channel. Run: ravi instances connect main");
+
+    const commands = new GroupCommands();
+    const payload = await silenced(() => commands.list(undefined, true));
+
+    expect(payload).toMatchObject({
+      source: "local.chat_model",
+      meta: { fallbackReason: expect.stringContaining("not bound to a WhatsApp channel") },
+    });
+  });
+
+  it("info resolves group metadata through the WhatsApp runner", async () => {
     listGroupsResult = [{ id: "111@g.us", subject: "Equipe", memberCount: 1 }];
     metadataResult = {
       externalId: "111@g.us",
@@ -905,15 +924,15 @@ describe("whatsapp group on a native WhatsApp instance", () => {
     const result = await silenced(() => commands.info("111", undefined, true));
 
     expect(metadataCalls).toHaveLength(1);
-    expect(metadataCalls[0]).toMatchObject({ instanceId: "native-1", chatId: "111@g.us", maxAgeMs: 0 });
+    expect(metadataCalls[0]).toMatchObject({ instanceId: "wa-1", chatId: "111@g.us", maxAgeMs: 0 });
     await expectWhatsAppFetcher(metadataCalls[0]?.fetcher);
     expect(result).toMatchObject({
-      source: "native.rpc",
+      source: "whatsapp.rpc",
       participants: [{ id: "5511999999999@s.whatsapp.net", admin: "admin" }],
     });
   });
 
-  it("send --execute uses OmniSender over the routing client and native group metadata", async () => {
+  it("send --execute sends text over the runner with WhatsApp group metadata", async () => {
     metadataResult = { participants: [] };
 
     const commands = new GroupCommands();
@@ -921,42 +940,93 @@ describe("whatsapp group on a native WhatsApp instance", () => {
       commands.send("120363000000000001", "oi @Joao", undefined, undefined, true, true),
     );
 
-    expect(metadataCalls[0]).toMatchObject({ instanceId: "native-1", chatId: "120363000000000001@g.us" });
+    expect(metadataCalls[0]).toMatchObject({ instanceId: "wa-1", chatId: "120363000000000001@g.us" });
     await expectWhatsAppFetcher(metadataCalls[0]?.fetcher);
-    expect(senderConstructions).toHaveLength(1);
-    expect(senderConstructions[0]?.[0]).toMatchObject({ native: fakeNativeTransport });
-    expect(senderSendCalls[0]).toMatchObject({ instanceId: "native-1", to: "120363000000000001@g.us" });
-    expect(payload).toMatchObject({ status: "sent", transport: "native", instanceId: "native-1" });
+    expect(whatsappCalls.find((call) => call.method === "messages.sendText")).toMatchObject({
+      instanceId: "wa-1",
+      params: { to: "120363000000000001@g.us", text: "oi @Joao" },
+    });
+    expect(payload).toMatchObject({ status: "sent", transport: "whatsapp", instanceId: "wa-1", messageId: "wamid-1" });
   });
 
-  it("participant changes report the native RPC source", async () => {
+  it("participant changes report the whatsapp.rpc source", async () => {
     const commands = new GroupCommands();
     const payload = await silenced(() => commands.add("120363000000000001", "5511999999999", undefined, true, true));
 
-    expect(addParticipantCalls[0]).toMatchObject({ instanceId: "native-1", groupJid: "120363000000000001@g.us" });
-    expect(payload).toMatchObject({ source: "native.rpc.group_participants" });
+    expect(whatsappCalls).toEqual([
+      {
+        method: "groups.addParticipants",
+        instanceId: "wa-1",
+        params: { groupJid: "120363000000000001@g.us", participants: ["5511999999999"] },
+      },
+    ]);
+    expect(payload).toMatchObject({ source: "whatsapp.rpc.group_participants" });
   });
 
-  it("a non-native instance still requires Omni", async () => {
-    nativeInstanceIds = new Set();
-
+  it("invite, revoke and join map the runner records", async () => {
     const commands = new GroupCommands();
-    await expect(silenced(() => commands.list(undefined, true))).rejects.toThrow("Omni API is not configured");
-    expect(listGroupsCalls).toHaveLength(0);
+    const invite = await silenced(() => commands.invite("120363000000000001", undefined, true));
+    const revoked = await silenced(() => commands.revokeInvite("120363000000000001", undefined, true, true));
+    const joined = await silenced(() => commands.join("https://chat.whatsapp.com/ABCDEF", undefined, true, true));
+
+    expect(invite).toMatchObject({
+      source: "whatsapp.rpc.group_invite",
+      invite: { code: "CODE", link: "https://chat.whatsapp.com/CODE" },
+    });
+    expect(revoked).toMatchObject({ source: "whatsapp.rpc.group_invite", invite: { code: "NEWCODE" } });
+    expect(joined).toMatchObject({ source: "whatsapp.rpc.group_join", code: "ABCDEF", groupId: "999@g.us" });
   });
 
-  it("omni instances keep the REST sender and source", async () => {
-    mockInstanceId = "inst-1";
-    nativeInstanceIds = new Set();
-    omniConfigured = true;
+  it("a failed admin promotion after create is reported as whatsapp_group_admin_promotion_failed", async () => {
+    const commands = new GroupCommands();
+    const originalUpdate = fakeWhatsAppClient.groups.updateParticipants;
+    fakeWhatsAppClient.groups.updateParticipants = async () => {
+      throw new Error("not an admin");
+    };
+    try {
+      const lines: string[] = [];
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+      try {
+        await commands.create(
+          "Equipe Teste",
+          "5511999999999",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          "5511999999999",
+          undefined,
+          undefined,
+          true,
+          true,
+        );
+      } finally {
+        console.log = originalLog;
+      }
+      const payload = JSON.parse(lines.join("\n")) as Record<string, unknown>;
+
+      expect(payload.adminPromotion).toMatchObject({
+        status: "failed",
+        source: "whatsapp.rpc.group_participants",
+        reason: "whatsapp_group_admin_promotion_failed",
+        error: "not an admin",
+      });
+    } finally {
+      fakeWhatsAppClient.groups.updateParticipants = originalUpdate;
+    }
+  });
+
+  it("an account without an instance id fails with a WhatsApp message", async () => {
+    mockInstanceId = "";
 
     const commands = new GroupCommands();
-    const sent = await silenced(() => commands.send("120363000000000001", "oi", undefined, undefined, true, true));
-    const listed = await silenced(() => commands.list(undefined, true));
-
-    expect(senderConstructions[0]).toEqual(["http://omni.test", "key"]);
-    expect(sent).toMatchObject({ transport: "omni" });
-    expect(listed).toMatchObject({ source: "omni.rest" });
+    await expect(silenced(() => commands.list("vendas", true))).rejects.toThrow(
+      'No WhatsApp instance mapped for account "vendas".',
+    );
+    expect(whatsappCalls).toHaveLength(0);
   });
 });
 
