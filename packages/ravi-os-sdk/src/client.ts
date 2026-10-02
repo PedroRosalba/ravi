@@ -3369,7 +3369,7 @@ export class RaviClient {
         body: { name, ...(options ?? {}) },
       });
     },
-    /** Delete an instance (soft-delete, recoverable; WhatsApp: also logs out and wipes its credentials) */
+    /** Delete an instance (soft-delete, recoverable; WhatsApp: also logs out, wipes its credentials and disables its channel) */
     delete: async (name: string): Promise<InstancesDeleteReturn> => {
       return this.transport.call({
         groupSegments: ["instances"],
@@ -3430,7 +3430,7 @@ export class RaviClient {
         body: { ...(options ?? {}) },
       });
     },
-    /** Log a WhatsApp instance out: unlink the device and wipe its saved credentials (dry-run without --execute) */
+    /** Log a WhatsApp instance out: wipe its saved credentials and unlink the device when connected (dry-run without --execute) */
     logout: async (name: string, options?: {
       execute?: boolean;
     }): Promise<InstancesLogoutReturn> => {
@@ -3473,7 +3473,7 @@ export class RaviClient {
         });
       }
     },
-    /** Restore a soft-deleted instance */
+    /** Restore a soft-deleted instance (WhatsApp: re-enables its channel when the instance is enabled) */
     restore: async (name: string): Promise<InstancesRestoreReturn> => {
       return this.transport.call({
         groupSegments: ["instances"],

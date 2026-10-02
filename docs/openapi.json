@@ -12,7 +12,7 @@
   "info": {
     "description": "OpenAPI 3.1 spec auto-generated from the Ravi CLI registry. Each operation maps 1:1 to a `ravi <group> <command>` invocation.",
     "title": "Ravi API",
-    "version": "9471cef77bc5a3ce"
+    "version": "e5ac4bcc817dbae6"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -47155,7 +47155,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Delete an instance (soft-delete, recoverable; WhatsApp: also logs out and wipes its credentials)",
+        "summary": "Delete an instance (soft-delete, recoverable; WhatsApp: also logs out, wipes its credentials and disables its channel)",
         "tags": [
           "instances"
         ]
@@ -47649,7 +47649,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Log a WhatsApp instance out: unlink the device and wipe its saved credentials (dry-run without --execute)",
+        "summary": "Log a WhatsApp instance out: wipe its saved credentials and unlink the device when connected (dry-run without --execute)",
         "tags": [
           "instances"
         ]
@@ -47915,7 +47915,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Restore a soft-deleted instance",
+        "summary": "Restore a soft-deleted instance (WhatsApp: re-enables its channel when the instance is enabled)",
         "tags": [
           "instances"
         ]
