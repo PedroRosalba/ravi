@@ -78,8 +78,6 @@ export class TypingPresenceHeartbeat {
     }
 
     const lastActivityAt = this.clock.now();
-    await this.safeSend(sessionName, target, true, "start");
-
     const timer = this.timers.setInterval(() => {
       const current = this.sessions.get(sessionName);
       if (!current) return;
@@ -98,7 +96,18 @@ export class TypingPresenceHeartbeat {
     }, this.refreshMs);
 
     timer.unref?.();
-    this.sessions.set(sessionName, { target, timer, lastActivityAt });
+    // Register before the first send so the stale/inactive safety net is armed
+    // even when that send is slow or never answers.
+    const entry = { target, timer, lastActivityAt };
+    this.sessions.set(sessionName, entry);
+
+    await this.safeSend(sessionName, target, true, "start");
+
+    // A stop that ran while the first send was in flight may have reached the
+    // channel before it; repeat the stop so the indicator does not stay on.
+    if (!this.sessions.has(sessionName)) {
+      await this.safeSend(sessionName, target, false, "stop");
+    }
   }
 
   async renew(sessionName: string): Promise<boolean> {
