@@ -115,8 +115,18 @@ step 3 and step 5 each instance is silent (see below).
 7. Move triggers. Triggers on Omni subjects
    (`message.received.whatsapp-baileys.>`, `reaction.received.whatsapp-baileys.>`,
    `instance.*.whatsapp-baileys.*`) stop firing. List them with
-   `ravi triggers list` and move them to `ravi.inbound.reaction`,
-   `ravi.instances.>` or `ravi.whatsapp.>`.
+   `ravi triggers list` and move each by kind:
+   - message triggers → `ravi.channel.inbound.whatsapp.message.>`. `data` is
+     now a `WhatsAppInboundEvent` (`src/channels/whatsapp/events.ts`), so
+     rewrite `data.*` filters (for example `data.payload.content.type`,
+     `data.payload.chatId`) and add `data.ingestMode == "realtime"` to skip
+     history-sync messages. The CLI warns that the subject is outside the
+     catalog and accepts it; the trigger runner's plain NATS subscription
+     receives the runner's JetStream publishes;
+   - reaction triggers → `ravi.inbound.reaction`;
+   - instance lifecycle triggers → `ravi.instances.>` (unregistered
+     instances) or `ravi.whatsapp.>` (`qr`, `connected` pairing relay).
+     Disconnects are only on `ravi.channel.inbound.whatsapp.connection.>`.
 
 `twilio-whatsapp` and `gupshup` instances are not migrated: the runner speaks
 Baileys only, their Omni events are dropped and their sends fail with

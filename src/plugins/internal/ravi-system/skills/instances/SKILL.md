@@ -161,7 +161,7 @@ ravi instances connect vendas                          # escaneie o QR novo
 ravi instances status vendas --json                    # transport "whatsapp", status "connected"
 ```
 
-Entre o restart e o `connect` a instância fica muda (eventos do Omni são ignorados e o runner ainda não tem socket). Depois teste uma DM e um grupo: devem cair nas mesmas sessões de antes. Triggers em subjects do Omni (`message.received.whatsapp-baileys.>`, ...) param de disparar: mova para `ravi.inbound.reaction`, `ravi.instances.>` ou `ravi.whatsapp.>`.
+Entre o restart e o `connect` a instância fica muda (eventos do Omni são ignorados e o runner ainda não tem socket). Depois teste uma DM e um grupo: devem cair nas mesmas sessões de antes. Triggers em subjects do Omni (`message.received.whatsapp-baileys.>`, ...) param de disparar: mensagens vão para `ravi.channel.inbound.whatsapp.message.>` (o `data` vira um `WhatsAppInboundEvent`: reescreva os filtros e use `data.ingestMode == "realtime"`), reações para `ravi.inbound.reaction` e lifecycle de instância para `ravi.instances.>` ou `ravi.whatsapp.>` (veja a skill `triggers`).
 
 Não há rollback para o Omni no WhatsApp. O procedimento completo está no runbook do adapter: `ravi specs get channels/adapters/whatsapp --mode runbook`.
 

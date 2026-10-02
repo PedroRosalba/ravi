@@ -140,11 +140,12 @@ Aliases como `whatsapp.*.reaction`, `whatsapp.*.inbound` e `matrix.*.inbound` n�
 
 O WhatsApp roda no runner `ravi channels`, sem Omni. Triggers em subjects do Omni para WhatsApp (`message.received.whatsapp-baileys.>`, `reaction.received.whatsapp-baileys.>`, `instance.*.whatsapp-baileys.*`) **não disparam mais**. Mova para:
 
+- `ravi.channel.inbound.whatsapp.message.>` para mensagens: o `data` agora é um `WhatsAppInboundEvent` (abaixo), então reescreva os filtros `data.*` e use `data.ingestMode == "realtime"` para ignorar history-sync;
 - `ravi.inbound.reaction` para reações (mesmo payload para WhatsApp, ponte legada e Slack);
 - `ravi.instances.>` para lifecycle de instâncias (ex.: `ravi.instances.unregistered`);
-- `ravi.whatsapp.>` para pareamento (`ravi.whatsapp.qr.<uuid>`, `ravi.whatsapp.connected.<uuid>`), que é replay-only e fica fora do catálogo.
+- `ravi.whatsapp.>` para pareamento (`ravi.whatsapp.qr.<uuid>`, `ravi.whatsapp.connected.<uuid>`), que é replay-only e fica fora do catálogo. Desconexões só aparecem em `ravi.channel.inbound.whatsapp.connection.>`.
 
-O evento bruto do runner fica em `ravi.channel.inbound.whatsapp.<message|reaction|connection>.<uuid>` (stream `CHANNEL_INBOUND`). É um subject de transporte, fora do catálogo: o CLI aceita com aviso. Se precisar dele, o `data` é um `WhatsAppInboundEvent`:
+O evento bruto do runner fica em `ravi.channel.inbound.whatsapp.<message|reaction|connection>.<uuid>` (stream `CHANNEL_INBOUND`). É um subject de transporte, fora do catálogo: o CLI aceita com aviso, e a assinatura NATS comum do trigger runner recebe o que o runner publica via JetStream. O `data` é um `WhatsAppInboundEvent`:
 
 ```json
 {

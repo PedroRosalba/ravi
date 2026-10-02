@@ -90,7 +90,7 @@ const TOPICS: readonly TriggerTopicCatalogEntry[] = [
     notes: [
       "This is the canonical reaction trigger subject.",
       "Producers: the inbound pipeline for WhatsApp (ravi channels runner) and the legacy Omni bridge (Telegram/Discord), and native Slack `reaction_added`.",
-      "Omni `message.received.whatsapp-baileys.*`/`reaction.received.whatsapp-baileys.*` subjects no longer carry WhatsApp traffic; trigger on `ravi.inbound.reaction` / `ravi.instances.>` instead.",
+      'Omni `message.received.whatsapp-baileys.*`/`reaction.received.whatsapp-baileys.*`/`instance.*.whatsapp-baileys.*` subjects no longer carry WhatsApp traffic. Move message triggers to `ravi.channel.inbound.whatsapp.message.>` (data is a WhatsAppInboundEvent, so rewrite `data.*` filters, e.g. `data.payload.content.type`, and add `data.ingestMode == "realtime"` to skip history-sync), reaction triggers to `ravi.inbound.reaction`, and instance lifecycle triggers to `ravi.instances.>` (unregistered) or `ravi.whatsapp.>` (qr, connected).',
       "The payload identifies the reacted message as targetMessageId. Keep domain mappings keyed by external message id when a routine needs to recover business state.",
     ],
   },

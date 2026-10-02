@@ -62,7 +62,13 @@ Use `ravi triggers topics` to inspect the trigger-ready topic catalog with paylo
 
 Channel message aliases such as `whatsapp.*.inbound` and channel reaction aliases such as `whatsapp.*.reaction` are not trigger-ready subjects. Inbound channel messages are consumed by the inbound pipeline from `CHANNEL_INBOUND` (WhatsApp, `ravi.channel.inbound.whatsapp.*`) or from the legacy Omni bridge streams (Telegram/Discord); reaction triggers use `ravi.inbound.reaction`.
 
-Triggers on the old Omni WhatsApp subjects (`message.received.whatsapp-baileys.>`, `reaction.received.whatsapp-baileys.>`, `instance.*.whatsapp-baileys.*`) no longer fire. Use `ravi.inbound.reaction`, `ravi.instances.>` or `ravi.whatsapp.>` instead. A trigger on `ravi.channel.inbound.whatsapp.message.>` receives the raw `WhatsAppInboundEvent`:
+Triggers on the old Omni WhatsApp subjects (`message.received.whatsapp-baileys.>`, `reaction.received.whatsapp-baileys.>`, `instance.*.whatsapp-baileys.*`) no longer fire. Move each by kind:
+
+- message triggers → `ravi.channel.inbound.whatsapp.message.>` (the payload changed: see below);
+- reaction triggers → `ravi.inbound.reaction`;
+- instance lifecycle triggers → `ravi.instances.>` (unregistered instances) or `ravi.whatsapp.>` (`qr`, `connected` pairing relay); disconnects are only on `ravi.channel.inbound.whatsapp.connection.>`.
+
+A trigger on `ravi.channel.inbound.whatsapp.message.>` receives the raw `WhatsAppInboundEvent`, so filters written for Omni's `data.*` fields must be rewritten (for example `data.payload.content.type == "text"`):
 
 ```json
 {
