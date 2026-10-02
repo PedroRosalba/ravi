@@ -1,8 +1,9 @@
 /**
  * Channel Gateway (omni-backed)
  *
- * Routes bot responses back to channel instances via OmniSender.
- * Inbound message handling is done by OmniConsumer.
+ * Routes bot responses back to channel instances via the channel sender.
+ * Inbound message handling is done by the inbound pipeline, which also owns the
+ * presence targets the gateway renews and clears.
  *
  * Subscriptions maintained here:
  *   ravi.session.*.response    → send via omni HTTP
@@ -28,8 +29,9 @@ import { configStore } from "./config-store.js";
 import { recordDeliveryTrace, recordPresenceTrace, recordResponseEmittedTrace } from "./session-trace/channel-trace.js";
 import { listRecentSessionEventsByType } from "./session-trace/session-trace-db.js";
 import { logger } from "./utils/logger.js";
-import type { OmniSender } from "./omni/sender.js";
-import type { OmniConsumer } from "./omni/consumer.js";
+import type { ChannelPresenceTargets } from "./channels/inbound/types.js";
+import type { ChannelMessageSender } from "./channels/outbound/sender.js";
+import type { GroupMetadataFetcher } from "./channels/group-metadata/types.js";
 import { getAgentPlatformIdentity, recordOutbound } from "./contacts.js";
 import {
   NO_INSTANCE_FOR_ACCOUNT,
@@ -224,9 +226,23 @@ export const SILENT_TOKEN = "@@SILENT@@";
 
 export interface GatewayOptions {
   logLevel?: "debug" | "info" | "warn" | "error";
-  omniSender: OmniSender;
-  omniConsumer: OmniConsumer;
+  sender: ChannelMessageSender;
+  presenceTargets: ChannelPresenceTargets;
+  /** Refresh source for outbound @mention participants (WhatsApp groups only). Null = cache only. */
+  groupMetadataFetcher?: GroupMetadataFetcher | null;
   emitEvent?: typeof nats.emit;
+}
+
+type LegacyNativeWhatsAppTransport = Parameters<typeof resolveOmniGroupMetadata>[0]["nativeTransport"];
+
+/**
+ * Interim (WP-0 step 5 until the group-metadata split): the daemon's sender is still
+ * OmniSender over the routing client, which exposes the native WhatsApp transport used
+ * to refresh group metadata. Any other sender has none.
+ */
+function legacyNativeWhatsApp(sender: ChannelMessageSender): LegacyNativeWhatsAppTransport {
+  const getter = (sender as { getNativeWhatsApp?: () => LegacyNativeWhatsAppTransport }).getNativeWhatsApp;
+  return typeof getter === "function" ? (getter.call(sender) ?? null) : null;
 }
 
 type PresenceTarget = {
@@ -292,8 +308,10 @@ type ReactionRequest = {
 
 export class Gateway {
   private running = false;
-  private omniSender: OmniSender;
-  private omniConsumer: OmniConsumer;
+  private sender: ChannelMessageSender;
+  private presenceTargets: ChannelPresenceTargets;
+  /** Read by prepareOutboundMentionMessage once group metadata is transport-neutral. */
+  private groupMetadataFetcher: GroupMetadataFetcher | null;
   private emitEvent: typeof nats.emit;
   private activeSubscriptions = new Set<string>();
   private presenceRenewedAt = new Map<string, number>();
@@ -309,8 +327,9 @@ export class Gateway {
   private slackThreadReconciliationTimer?: ReturnType<typeof setInterval>;
 
   constructor(options: GatewayOptions) {
-    this.omniSender = options.omniSender;
-    this.omniConsumer = options.omniConsumer;
+    this.sender = options.sender;
+    this.presenceTargets = options.presenceTargets;
+    this.groupMetadataFetcher = options.groupMetadataFetcher ?? null;
     this.emitEvent = options.emitEvent ?? nats.emit;
     if (options.logLevel) {
       logger.setLevel(options.logLevel);
@@ -392,7 +411,7 @@ export class Gateway {
       return;
     }
     try {
-      await this.omniSender.sendTyping(iid, normalizeOutboundJid(target.chatId), active);
+      await this.sender.sendTyping(iid, normalizeOutboundJid(target.chatId), active);
       if (sessionName) {
         await this.emitPresenceDiagnostic(sessionName, {
           active,
@@ -507,7 +526,7 @@ export class Gateway {
     }
 
     // Natively-owned WhatsApp instances refresh group metadata over the runner RPC.
-    const nativeWhatsApp = this.omniSender.getNativeWhatsApp?.() ?? null;
+    const nativeWhatsApp = legacyNativeWhatsApp(this.sender);
     const isNative = nativeWhatsApp?.isNativeInstance(input.instanceId) ?? false;
     const connection = isNative ? null : resolveOmniConnection();
     if (!isNative && !connection) {
@@ -722,49 +741,34 @@ export class Gateway {
     return sourceTarget;
   }
 
-  private getOmniActiveTarget(sessionName: string): PresenceTarget | undefined {
-    const getter = this.omniConsumer?.getActiveTarget;
-    if (typeof getter !== "function") {
-      log.warn("Omni consumer missing getActiveTarget; treating as no active target", { sessionName });
-      return undefined;
-    }
+  private getInboundActiveTarget(sessionName: string): PresenceTarget | undefined {
     try {
-      return getter.call(this.omniConsumer, sessionName) as PresenceTarget | undefined;
+      return this.presenceTargets.getActiveTarget(sessionName) as PresenceTarget | undefined;
     } catch (error) {
-      log.warn("Omni consumer getActiveTarget failed", { sessionName, error });
+      log.warn("Inbound presence getActiveTarget failed", { sessionName, error });
       return undefined;
     }
   }
 
-  private async renewOmniActiveTarget(sessionName: string): Promise<boolean> {
-    const renew = this.omniConsumer?.renewActiveTarget;
-    if (typeof renew !== "function") {
-      log.warn("Omni consumer missing renewActiveTarget; skipping presence renew", { sessionName });
-      return false;
-    }
+  private async renewInboundActiveTarget(sessionName: string): Promise<boolean> {
     try {
-      return await renew.call(this.omniConsumer, sessionName);
+      return await this.presenceTargets.renewActiveTarget(sessionName);
     } catch (error) {
-      log.warn("Omni consumer renewActiveTarget failed", { sessionName, error });
+      log.warn("Inbound presence renewActiveTarget failed", { sessionName, error });
       return false;
     }
   }
 
-  private async clearOmniActiveTarget(sessionName: string): Promise<void> {
-    const clear = this.omniConsumer?.clearActiveTarget;
-    if (typeof clear !== "function") {
-      log.warn("Omni consumer missing clearActiveTarget; skipping active target clear", { sessionName });
-      return;
-    }
+  private async clearInboundActiveTarget(sessionName: string): Promise<void> {
     try {
-      await clear.call(this.omniConsumer, sessionName);
+      await this.presenceTargets.clearActiveTarget(sessionName);
     } catch (error) {
-      log.warn("Omni consumer clearActiveTarget failed", { sessionName, error });
+      log.warn("Inbound presence clearActiveTarget failed", { sessionName, error });
     }
   }
 
   private async renewActiveTargetIfCurrent(sessionName: string, expectedTarget: PresenceTarget): Promise<boolean> {
-    const activeTarget = this.getOmniActiveTarget(sessionName);
+    const activeTarget = this.getInboundActiveTarget(sessionName);
     if (!activeTarget) return false;
     if (!this.targetsMatch(activeTarget, expectedTarget)) {
       if (this.shouldUseNativePresence(expectedTarget) && this.presenceSurfacesMatch(activeTarget, expectedTarget)) {
@@ -777,7 +781,7 @@ export class Gateway {
       });
       return false;
     }
-    return this.renewOmniActiveTarget(sessionName);
+    return this.renewInboundActiveTarget(sessionName);
   }
 
   private async forceRenewTyping(sessionName: string, target: PresenceTarget, reason = "fallback-renew") {
@@ -846,7 +850,7 @@ export class Gateway {
       turnState.activeTarget = undefined;
       turnState.terminal = true;
     }
-    const localTarget = this.getOmniActiveTarget(sessionName);
+    const localTarget = this.getInboundActiveTarget(sessionName);
     if (alreadyStopped && !localTarget) return;
 
     if (localTarget) {
@@ -858,7 +862,7 @@ export class Gateway {
       } else {
         await this.sendTyping(localStopTarget, false, { sessionName, reason: "terminal-clear-active-target" });
       }
-      await this.clearOmniActiveTarget(sessionName);
+      await this.clearInboundActiveTarget(sessionName);
       this.terminalPresenceStopped.add(sessionName);
       if (preferredTarget && !this.targetsMatch(localStopTarget, preferredTarget)) {
         await this.sendTyping(preferredTarget, false, { sessionName, reason: "terminal-fallback-stop" });
@@ -914,7 +918,7 @@ export class Gateway {
     const target = this.runtimePresenceTarget(sessionName, data._source);
     const renewed = target
       ? await this.renewActiveTargetIfCurrent(sessionName, target)
-      : await this.renewOmniActiveTarget(sessionName);
+      : await this.renewInboundActiveTarget(sessionName);
     if (!renewed && target) {
       await this.sendTyping(target, true, { sessionName, reason: `runtime-${data.type ?? "activity"}` });
     }
@@ -1200,7 +1204,7 @@ export class Gateway {
         prepared.mentions?.length || target.threadId
           ? { threadId: target.threadId, mentions: prepared.mentions }
           : undefined;
-      const delivered = await this.omniSender.send(instanceId, chatId, prepared.text, sendOptions);
+      const delivered = await this.sender.send(instanceId, chatId, prepared.text, sendOptions);
       this.saveOutboundMessageActorMetadata(
         sessionName,
         target,
@@ -1307,7 +1311,7 @@ export class Gateway {
       }
 
       const chatId = normalizeOutboundJid(target.chatId);
-      const delivered = await this.omniSender.sendMedia(
+      const delivered = await this.sender.sendMedia(
         instanceId,
         chatId,
         media.filePath,
@@ -1620,7 +1624,7 @@ export class Gateway {
       if (data._source) {
         await this.forceRenewTyping(sessionName, this.runtimePresenceTarget(sessionName, data._source) ?? data._source);
       } else {
-        await this.renewOmniActiveTarget(sessionName);
+        await this.renewInboundActiveTarget(sessionName);
       }
       this.scheduleInterruptedPresenceStop(sessionName, data._source);
       return;
@@ -1713,13 +1717,13 @@ export class Gateway {
         // Poll not supported via omni yet — send as text
         const pollText = `${data.poll.name}\n${data.poll.values.map((v, i) => `${i + 1}. ${v}`).join("\n")}`;
         if (typingDelayMs > 0) {
-          await this.omniSender.sendTyping(instanceId, to, true);
+          await this.sender.sendTyping(instanceId, to, true);
           await new Promise((resolve) => setTimeout(resolve, typingDelayMs));
-          const res = await this.omniSender.send(instanceId, to, pollText);
+          const res = await this.sender.send(instanceId, to, pollText);
           messageId = res.messageId;
-          await this.omniSender.sendTyping(instanceId, to, false);
+          await this.sender.sendTyping(instanceId, to, false);
         } else {
-          const res = await this.omniSender.send(instanceId, to, pollText);
+          const res = await this.sender.send(instanceId, to, pollText);
           messageId = res.messageId;
         }
       } else if (data.text) {
@@ -1733,13 +1737,13 @@ export class Gateway {
         });
         const sendStart = Date.now();
         if (typingDelayMs > 0) {
-          await this.omniSender.sendTyping(instanceId, to, true);
+          await this.sender.sendTyping(instanceId, to, true);
           await new Promise((resolve) => setTimeout(resolve, typingDelayMs));
-          const res = await this.omniSender.send(instanceId, to, prepared.text, { mentions: prepared.mentions });
+          const res = await this.sender.send(instanceId, to, prepared.text, { mentions: prepared.mentions });
           messageId = res.messageId;
-          await this.omniSender.sendTyping(instanceId, to, false);
+          await this.sender.sendTyping(instanceId, to, false);
         } else {
-          const res = await this.omniSender.send(instanceId, to, prepared.text, { mentions: prepared.mentions });
+          const res = await this.sender.send(instanceId, to, prepared.text, { mentions: prepared.mentions });
           messageId = res.messageId;
         }
         log.info("Send HTTP completed", { to, durationMs: Date.now() - sendStart });
@@ -1890,7 +1894,7 @@ export class Gateway {
       }
       if (resolved.kind !== "omni") return;
       const reactionChatId = normalizeOutboundJid(data.chatId);
-      await this.omniSender.sendReaction(resolved.instanceId, reactionChatId, data.messageId, data.emoji);
+      await this.sender.sendReaction(resolved.instanceId, reactionChatId, data.messageId, data.emoji);
       log.info("Reaction sent", { chatId: reactionChatId, messageId: data.messageId, emoji: data.emoji });
     } catch (err) {
       log.error("Failed to send reaction", { error: err });
@@ -1983,7 +1987,7 @@ export class Gateway {
 
     const chatId = normalizeOutboundJid(data.chatId);
     try {
-      await this.omniSender.editMessage(instanceId, chatId, messageId, text);
+      await this.sender.editMessage(instanceId, chatId, messageId, text);
       let editedRecord: unknown = null;
       if (data.canonicalMessageId) {
         editedRecord = dbMarkChatMessageEdited(data.canonicalMessageId, text);
@@ -2068,7 +2072,7 @@ export class Gateway {
 
     const chatId = normalizeOutboundJid(data.chatId);
     try {
-      await this.omniSender.deleteMessage(instanceId, chatId, messageId);
+      await this.sender.deleteMessage(instanceId, chatId, messageId);
       let deletedRecord: unknown = null;
       if (data.canonicalMessageId) {
         deletedRecord = dbMarkChatMessageDeleted(data.canonicalMessageId);
@@ -2136,7 +2140,7 @@ export class Gateway {
           }
           if (resolved.kind !== "omni") return;
           const mediaChatId = normalizeOutboundJid(data.chatId);
-          await this.omniSender.sendMedia(
+          await this.sender.sendMedia(
             resolved.instanceId,
             mediaChatId,
             data.filePath,
@@ -2200,7 +2204,7 @@ export class Gateway {
     }
 
     const stickerChatId = normalizeOutboundJid(data.chatId);
-    const result = await this.omniSender.sendSticker(stickerInstanceId, stickerChatId, data.filePath);
+    const result = await this.sender.sendSticker(stickerInstanceId, stickerChatId, data.filePath);
     log.info("Sticker sent", { chatId: stickerChatId, stickerId: data.stickerId, filename: data.filename });
 
     if (data.replyTopic) {

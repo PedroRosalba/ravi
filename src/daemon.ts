@@ -378,8 +378,8 @@ export async function startDaemon() {
 
   gateway = createGateway({
     logLevel: config.logLevel,
-    omniSender: channelWiring.sender,
-    omniConsumer,
+    sender: channelWiring.sender,
+    presenceTargets: omniConsumer,
   });
 
   await gateway.start();

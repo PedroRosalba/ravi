@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { configStore } from "./config-store.js";
+import { createNoopPresenceTargets } from "./channels/inbound/presence-targets.js";
 import { Gateway } from "./gateway.js";
 import { createStubOmniConsumer } from "./omni/stub-consumer.js";
 import { dbUpsertInstance } from "./router/router-db.js";
@@ -51,7 +52,7 @@ function makeTarget(): NonNullable<ResponseMessage["target"]> {
 
 function makeGateway(omniConsumer: object, sendTyping = mock(async () => {})) {
   const gateway = new Gateway({
-    omniSender: {
+    sender: {
       send: mock(async () => ({})),
       sendTyping,
       sendReaction: mock(async () => {}),
@@ -60,7 +61,7 @@ function makeGateway(omniConsumer: object, sendTyping = mock(async () => {})) {
       sendMedia: mock(async () => ({})),
       markRead: mock(async () => {}),
     } as never,
-    omniConsumer: omniConsumer as never,
+    presenceTargets: omniConsumer as never,
   });
   (gateway as unknown as { running: boolean }).running = true;
   return gateway;
@@ -153,6 +154,55 @@ describe("Gateway presence without Omni", () => {
 
     await expect(handleRuntimePresence(gateway, sessionName, { type: "assistant.message" })).resolves.toBeUndefined();
     expect(sendTyping).not.toHaveBeenCalled();
+  });
+
+  it("degrades to sendTyping when getActiveTarget and clearActiveTarget throw", async () => {
+    const { sessionName } = seedSession();
+    const sendTyping = mock(async () => {});
+    const target = makeTarget();
+    const clearActiveTarget = mock(async () => {
+      throw new Error("presence store down");
+    });
+    const gateway = makeGateway(
+      {
+        getActiveTarget: () => {
+          throw new Error("presence store down");
+        },
+        clearActiveTarget,
+        renewActiveTarget: async () => true,
+      },
+      sendTyping,
+    );
+
+    await expect(
+      handleRuntimePresence(gateway, sessionName, { type: "assistant.message", _source: target }),
+    ).resolves.toBeUndefined();
+    await expect(
+      handleRuntimePresence(gateway, sessionName, { type: "turn.complete", _source: target }),
+    ).resolves.toBeUndefined();
+
+    expect(sendTyping).toHaveBeenCalledWith(
+      "11111111-1111-1111-1111-111111111111",
+      "5511999999999@s.whatsapp.net",
+      true,
+    );
+    expect(sendTyping).toHaveBeenCalledWith(
+      "11111111-1111-1111-1111-111111111111",
+      "5511999999999@s.whatsapp.net",
+      false,
+    );
+  });
+
+  it("works with the transport-neutral noop presence targets", async () => {
+    const { sessionName } = seedSession();
+    const sendTyping = mock(async () => {});
+    const gateway = makeGateway(createNoopPresenceTargets(), sendTyping);
+
+    await expect(handleRuntimePresence(gateway, sessionName, { type: "assistant.message" })).resolves.toBeUndefined();
+    await expect(
+      handleRuntimePresence(gateway, sessionName, { type: "assistant.message", _source: makeTarget() }),
+    ).resolves.toBeUndefined();
+    expect(sendTyping).toHaveBeenCalledTimes(1);
   });
 
   it("keeps real OmniConsumer renew behavior when the active target matches", async () => {

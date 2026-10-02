@@ -127,7 +127,7 @@ async function createGateway() {
   const omniDeleteMessage = mock(async () => {});
   const omniSendSticker = mock(async () => ({ messageId: "omni-sticker-1" }));
   const gateway = new Gateway({
-    omniSender: {
+    sender: {
       send: omniSend,
       sendTyping: mock(async () => {}),
       sendReaction: omniSendReaction,
@@ -137,7 +137,7 @@ async function createGateway() {
       sendSticker: omniSendSticker,
       markRead: mock(async () => {}),
     } as never,
-    omniConsumer: {
+    presenceTargets: {
       getActiveTarget: () => undefined,
       clearActiveTarget: () => {},
       renewActiveTarget: mock(async () => false),

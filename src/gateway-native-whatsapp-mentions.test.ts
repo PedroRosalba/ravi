@@ -28,8 +28,8 @@ afterEach(async () => {
 
 function makeGateway(native: unknown) {
   return new Gateway({
-    omniSender: { getNativeWhatsApp: () => native } as never,
-    omniConsumer: {} as never,
+    sender: { getNativeWhatsApp: () => native } as never,
+    presenceTargets: {} as never,
   });
 }
 

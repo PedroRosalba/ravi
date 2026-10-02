@@ -18,7 +18,7 @@ afterEach(async () => {
 
 function makeGateway(sendSticker: ReturnType<typeof mock>, sendMedia = mock(async () => ({ messageId: "media-1" }))) {
   const gateway = new Gateway({
-    omniSender: {
+    sender: {
       send: mock(async () => ({})),
       sendTyping: mock(async () => {}),
       sendReaction: mock(async () => {}),
@@ -26,7 +26,7 @@ function makeGateway(sendSticker: ReturnType<typeof mock>, sendMedia = mock(asyn
       sendSticker,
       markRead: mock(async () => {}),
     } as never,
-    omniConsumer: {
+    presenceTargets: {
       getActiveTarget: () => undefined,
       clearActiveTarget: () => {},
       renewActiveTarget: mock(async () => false),

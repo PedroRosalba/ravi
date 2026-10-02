@@ -97,7 +97,7 @@ function makeGateway(
   } = {},
 ) {
   const gateway = new Gateway({
-    omniSender: {
+    sender: {
       send,
       sendTyping: overrides.sendTyping ?? mock(async () => {}),
       sendReaction: mock(async () => {}),
@@ -106,7 +106,7 @@ function makeGateway(
       sendMedia: mock(async () => ({})),
       markRead: mock(async () => {}),
     } as never,
-    omniConsumer: {
+    presenceTargets: {
       getActiveTarget: overrides.getActiveTarget ?? (() => undefined),
       clearActiveTarget: overrides.clearActiveTarget ?? (() => {}),
       renewActiveTarget: overrides.renewActiveTarget ?? mock(async () => false),
