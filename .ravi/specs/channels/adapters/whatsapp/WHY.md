@@ -1,23 +1,33 @@
-# Why A Native, Bridge-Compatible WhatsApp Adapter
+# Why WhatsApp Is A First-Class Ravi Channel
 
 Omni is a separate service (API, Postgres, its own NATS streams) that Ravi
-installs and supervises only to hold WhatsApp sockets. Every WhatsApp turn
-depends on that second runtime staying healthy, and most WhatsApp fixes land in
-another repository. Moving the Baileys socket into the `ravi channels` runner
-removes that dependency for WhatsApp while reusing the same patched Baileys
-build and the hard-won fixes Omni carries (write-behind key store, LID-first
-sender keys, decrypt-failure tracking, echo suppression, edit dedupe, reconnect
-rules).
+installed and supervised only to hold WhatsApp sockets. Every WhatsApp turn
+depended on that second runtime staying healthy, and most WhatsApp fixes landed
+in another repository. The owner's requirement was to remove the Omni
+dependency for WhatsApp completely. The Baileys socket now lives in the
+`ravi channels` runner, reusing the same patched Baileys build and the fixes
+Omni carried (write-behind key store, LID-first sender keys, decrypt-failure
+tracking, echo suppression, edit dedupe, reconnect rules).
 
-## Why Keep The Omni Event Contract
+## Why A Ravi-Owned Contract
 
-Every WhatsApp behaviour in Ravi today is defined against Omni's events: the
-consumer pipeline, session keys, chat and contact persistence, LID handling,
-prompt formatting, group metadata, mentions, typing and the tests that pin
-them. Emitting the same envelopes and answering the same client calls makes the
-native transport invisible to that code. An instance can switch transport
-without forking its sessions or chats, and the existing tests keep proving
-parity.
+The first native version (PR #590) published Omni's envelope under an Omni
+subject and kept an Omni-shaped routing client, so "native" WhatsApp still
+spoke Omni on the wire and fell back to Omni for anything it did not own.
+WhatsApp now has its own contract: `ravi.channel.inbound.whatsapp.<kind>.<uuid>`
+subjects with a versioned `WhatsAppInboundEvent` envelope, and an RPC with
+WhatsApp method names (schema version 2, so a runner and a daemon from different
+bundles fail loudly instead of misbehaving). The payload fields did not change,
+so session keys, chats, contacts, prompts and the existing pipeline tests keep
+proving behaviour.
+
+## Why One Shared Inbound Pipeline
+
+`ChannelInboundPipeline` is the only implementation of session keys, contacts,
+chats, mentions, edit-restart and the history ledger. WhatsApp and the legacy
+bridge both feed the same instance through their own sources, so behaviour
+cannot fork, and the history cutoff, reaction dedupe and active-target map stay
+process-global as before.
 
 ## Why Not The Channel Backend (Yet)
 
@@ -31,39 +41,63 @@ would change runtime semantics that WhatsApp users rely on:
 - backend-owned turns skip gateway text delivery, losing outbound `@mention`
   resolution, the TTS emit, contact interaction records and presence renewal;
 - the edit-restart flow needs the in-process daemon session, which the runner
-  does not have.
+  does not have;
+- approvals need the synchronous message id of the direct send path.
 
 Porting those behaviours into the backend is a separate project. Until then the
-adapter keeps the Omni path, and the deviation is written down in the spec with
-its exit condition so it does not become precedent for other providers.
+deviation is written down in the spec with its exit condition so it does not
+become precedent for other providers.
+
+## Why Default-Deny Outbound
+
+The gateway's direct send paths resolve an account to an instance id and pass an
+unknown UUID through. With a routing client that sent "everything not native" to
+Omni, a typo or an unmapped UUID silently went to the bridge. The sender router
+now answers each case explicitly: WhatsApp goes to the runner, an unbound
+WhatsApp instance fails with `WHATSAPP_NOT_BOUND`, a record-less ref fails with
+`INSTANCE_NOT_FOUND`, and only Telegram/Discord records reach the bridge.
+
+## Why Omni WhatsApp Events Are Dropped
+
+An account served by both Omni and the runner is two linked devices delivering
+every message twice. Dropping every WhatsApp-family event from the bridge,
+bound or not, removes that failure mode and the ownership checks it needed.
+`twilio-whatsapp` and `gupshup` only ever worked through Omni; the runner speaks
+Baileys only, so those types are unsupported rather than half-served.
 
 ## Why Ownership Comes From The Channel Row
 
-Ownership has to be decided in three processes (runner, daemon consumer,
-gateway/CLI routing client) from the same data. Deriving it from the existing
-`channels` and `instances` tables means there is no extra flag to drift, a
-config change is one `ravi.config.changed` away from every process, and
-rollback is one `ravi channels set <name> enabled false`.
+Ownership has to be decided in three processes (runner, daemon, gateway/CLI)
+from the same data. Deriving it from the existing `channels` and `instances`
+tables means there is no extra flag to drift, a config change is one
+`ravi.config.changed` away from every process, and `channels.enabled` stays the
+runner's on/off switch (`instances enable/disable` toggle both rows).
 
 Keeping the instance UUID as the transport id is what makes migration lossless:
 sessions, chats, platform identities and `RAVI_INSTANCE_ID` values written under
 Omni stay attached when the instance moves.
 
+## Why Auth State Has Its Own File
+
+The auth state holds the linked device's private keys and is written on every
+message. In the shared router DB, daemon or CLI write locks could stall the
+runner or lose signal keys. A dedicated `auth.db` (0600, WAL) opened only by the
+runner, with a retrying write-behind queue, keeps key writes durable and
+isolated.
+
 ## Why A Single Socket Owner
 
 WhatsApp allows one live session per set of credentials. A second socket with
-the same creds (a probe runner, a second host, a stale process) triggers
+the same creds (a probe runner, a second host, a stale process, Omni) triggers
 `connectionReplaced` and both sides fight. Keeping sockets only in the runner,
 skipping them in `channels probe`, and never reconnecting after a replace keeps
-the failure visible instead of flapping. Omni and native also must not both
-serve one account: they would be two linked devices delivering every message
-twice, which the consumer's native-ownership filter only partially hides.
+the failure visible instead of flapping.
 
-## Why Bundle Baileys Into The CLI
+## Why A Vendored Baileys Bundle
 
 The patched Baileys is a local `file:` tarball. A published package that
-declares a `file:` dependency, even as optional, cannot be installed with
-`bun add`, so the tarball is a build-time input and the bundle carries Baileys
-inline. Code splitting keeps it out of the CLI's startup path: Bun hoists the
-static imports of a dynamically imported module to the top of a single-file
-bundle, which would load Baileys on every CLI command.
+declares a `file:` dependency cannot be installed with `bun add`, so the tarball
+is a build-time input. Code splitting kept Baileys out of the CLI start path but
+left ~30 chunk files that a global `ravi update` deleted under running
+processes. Baileys is now bundled once into `dist/vendor/baileys.js` and loaded
+at run time by the runner only, and the CLI is a single file again.
