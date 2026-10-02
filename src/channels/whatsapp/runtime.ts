@@ -218,7 +218,7 @@ export interface WhatsAppRuntimeOptions {
   jetstream: JetStreamClient | (() => JetStreamClient);
   /** Creates/verifies the CHANNEL_INBOUND stream. Default: `ensureChannelInboundStream()`. */
   ensureInboundStream?: () => Promise<void>;
-  /** Auth state store. Default: SQLite store over the router DB. */
+  /** Auth state store. Default: SQLite store over `<RAVI_STATE_DIR>/whatsapp/auth.db` (lib/auth-store.ts). */
   authStorage?: WhatsAppAuthStorage;
   /** Clock (ms). Default `Date.now`. */
   now?: () => number;
