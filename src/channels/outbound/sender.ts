@@ -1,9 +1,10 @@
 /**
  * Transport-neutral outbound sender contract.
  *
- * Implemented by the WhatsApp sender (runner RPC), the legacy Omni bridge sender
+ * Implemented by the WhatsApp sender (runner RPC), the legacy bridge sender
  * (Telegram/Discord) and the per-instance router that picks between them. The
- * method shapes match `OmniSender`, so callers move to this interface mechanically.
+ * method shapes match the legacy bridge sender, so callers moved to this interface
+ * mechanically.
  */
 
 export interface ChannelUserMention {
@@ -22,7 +23,7 @@ export interface ChannelSendResult {
 
 export type ChannelMediaType = "image" | "video" | "audio" | "document";
 
-/** Instance-keyed sender. Method shapes deliberately match OmniSender so the gateway change is mechanical. */
+/** Instance-keyed sender. Method shapes deliberately match the legacy bridge sender. */
 export interface ChannelMessageSender {
   send(instanceId: string, to: string, text: string, options?: ChannelSendOptions): Promise<ChannelSendResult>;
   /** Best-effort: never throws. active=false sends "paused". */

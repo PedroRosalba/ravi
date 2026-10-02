@@ -1,7 +1,7 @@
 /**
  * WhatsApp `ChannelMessageSender` over the typed WhatsApp client (runner RPC).
  *
- * Retry policy (DESIGN-v2 addendum R2; overrides plain OmniSender parity):
+ * Retry policy (DESIGN-v2 addendum R2; deliberately stricter than the legacy bridge sender):
  * - Non-idempotent sends (`send` text, `sendMedia`, `sendSticker`) never retry an
  *   ambiguous outcome: a 504 `WHATSAPP_RPC_TIMEOUT` or a 502 (transport error or
  *   invalid response) may mean the message went out. They retry (3 attempts, 1s/2s,

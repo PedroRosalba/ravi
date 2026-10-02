@@ -47,7 +47,8 @@ export class ChannelTransportError extends Error {
 
 /**
  * ChannelTransportError → err.retryable. TypeError → true (network). Any other object with numeric
- * `status` → status >= 500 (keeps OmniApiError behaviour for the bridge). Everything else → false.
+ * `status` → status >= 500 (the legacy bridge client's HTTP errors keep their behaviour). Everything
+ * else → false.
  */
 export function isRetryableTransportError(err: unknown): boolean {
   if (err instanceof ChannelTransportError) return err.retryable;
