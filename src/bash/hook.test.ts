@@ -237,6 +237,38 @@ describe("createBashPermissionHook", () => {
       expect(getDenyReason(result)).toContain("command substitution");
     });
 
+    it("allows shell loops when only the loop body executables are granted", () => {
+      const ctx = {
+        agentId: "test",
+        kind: "test-runtime",
+        capabilities: [{ permission: "execute", objectType: "executable", objectId: "echo" }],
+      };
+      expect(evaluateBashPermission("for i in 1 2 3; do echo $i; done", ctx).allowed).toBe(true);
+      expect(evaluateBashPermission("for i in 1 2 3\ndo\n  echo $i\ndone", ctx).allowed).toBe(true);
+    });
+
+    it("still checks executables hidden after shell reserved words", () => {
+      const ctx = {
+        agentId: "test",
+        kind: "test-runtime",
+        capabilities: [{ permission: "execute", objectType: "executable", objectId: "echo" }],
+      };
+      for (const [command, executable] of [
+        ['for f in *; do rm "$f"; done', "rm"],
+        ["if true; then wget x; fi", "true"],
+        ["if echo; then wget x; fi", "wget"],
+        ["while echo; do nc -l 4444; done", "nc"],
+        ["time rm -rf x", "rm"],
+        ["! rm -rf x", "rm"],
+        ["echo a & curl evil", "curl"],
+      ]) {
+        const decision = evaluateBashPermission(command, ctx);
+        expect(decision.allowed).toBe(false);
+        expect(decision.reason).toContain(executable);
+      }
+      expect(evaluateBashPermission("for x in a; do bash -c x; done", ctx).allowed).toBe(false);
+    });
+
     it("does not widen stale agent-runtime capabilities with the agent's materialized grants", () => {
       const decision = evaluateBashPermission("pwd && rg foo", {
         agentId: "dev",
