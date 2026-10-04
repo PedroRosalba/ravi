@@ -478,7 +478,7 @@ export function dbFinalizeTaskAutomationRun(
   getDb()
     .prepare(`
       UPDATE task_automation_runs
-      SET status = ?, spawned_task_id = ?, message = ?, updated_at = ?
+      SET status = ?, spawned_task_id = COALESCE(?, spawned_task_id), message = ?, updated_at = ?
       WHERE id = ?
     `)
     .run(updates.status, updates.spawnedTaskId ?? null, updates.message ?? null, Date.now(), id);
@@ -490,6 +490,100 @@ export function dbFinalizeTaskAutomationRun(
     throw new Error(`Task automation run not found: ${id}`);
   }
   return rowToTaskAutomationRun(row);
+}
+
+/**
+ * Persist the follow-up task id on a still-claimed run as soon as the child task
+ * exists, so stale-claim recovery can link it instead of losing or duplicating it.
+ */
+export function dbBindTaskAutomationRunSpawnedTask(id: number, spawnedTaskId: string): void {
+  ensureTaskAutomationSchema();
+
+  getDb()
+    .prepare(`
+      UPDATE task_automation_runs
+      SET spawned_task_id = ?, updated_at = ?
+      WHERE id = ? AND status = 'claimed'
+    `)
+    .run(spawnedTaskId, Date.now(), id);
+}
+
+export function dbListStaleClaimedTaskAutomationRuns(updatedBefore: number, limit = 100): TaskAutomationRun[] {
+  ensureTaskAutomationSchema();
+
+  const rows = getDb()
+    .prepare(`
+      SELECT *
+      FROM task_automation_runs
+      WHERE status = 'claimed' AND updated_at <= ?
+      ORDER BY updated_at ASC
+      LIMIT ?
+    `)
+    .all(updatedBefore, limit) as TaskAutomationRunRow[];
+  return rows.map(rowToTaskAutomationRun);
+}
+
+/**
+ * Finalize a run only if it is still `claimed` (compare-and-set), so recovery
+ * never overwrites a run that its live executor already finalized.
+ */
+export function dbRecoverClaimedTaskAutomationRun(
+  id: number,
+  updates: {
+    status: Exclude<TaskAutomationRunStatus, "claimed">;
+    spawnedTaskId?: string;
+    message: string;
+  },
+): TaskAutomationRun | null {
+  ensureTaskAutomationSchema();
+
+  getDb()
+    .prepare(`
+      UPDATE task_automation_runs
+      SET status = ?, spawned_task_id = COALESCE(?, spawned_task_id), message = ?, updated_at = ?
+      WHERE id = ? AND status = 'claimed'
+    `)
+    .run(updates.status, updates.spawnedTaskId ?? null, updates.message, Date.now(), id);
+  if (getDbChanges() === 0) {
+    return null;
+  }
+
+  const row = getDb().prepare("SELECT * FROM task_automation_runs WHERE id = ?").get(id) as
+    | TaskAutomationRunRow
+    | undefined;
+  return row ? rowToTaskAutomationRun(row) : null;
+}
+
+/**
+ * Find follow-up tasks an automation created in a time window that no run has
+ * claimed yet. Used to recover runs claimed before the spawned task id was
+ * persisted early. Requires the tasks schema to exist.
+ */
+export function dbFindUnboundTaskAutomationChildTaskIds(input: {
+  automationId: string;
+  createdFrom: number;
+  createdTo: number;
+  parentTaskId?: string;
+  limit?: number;
+}): string[] {
+  ensureTaskAutomationSchema();
+
+  const where = [
+    "created_by = ?",
+    "created_at >= ?",
+    "created_at <= ?",
+    "id NOT IN (SELECT spawned_task_id FROM task_automation_runs WHERE spawned_task_id IS NOT NULL)",
+  ];
+  const values: Array<string | number> = [`task automation:${input.automationId}`, input.createdFrom, input.createdTo];
+  if (input.parentTaskId) {
+    where.push("parent_task_id = ?");
+    values.push(input.parentTaskId);
+  }
+  values.push(input.limit ?? 2);
+  const rows = getDb()
+    .prepare(`SELECT id FROM tasks WHERE ${where.join(" AND ")} ORDER BY created_at ASC LIMIT ?`)
+    .all(...values) as Array<{ id: string }>;
+  return rows.map((row) => row.id);
 }
 
 export function dbRecordTaskAutomationFire(automationId: string, firedAt = Date.now()): void {
