@@ -3321,7 +3321,7 @@ class ChannelsRestartReturn {
   final String action;
   final bool changed;
   final RaviJson? pm2Status;
-  final double? previousPid;
+  final int? previousPid;
   final String? reason;
   final RaviJson? runnerEnv;
   final RaviJson? status;
@@ -3332,7 +3332,7 @@ class ChannelsRestartReturn {
       action: raviJsonAsString(json["action"]),
       changed: raviJsonAsBool(json["changed"]),
       pm2Status: json["pm2Status"] == null ? null : RaviJson.from(json["pm2Status"]),
-      previousPid: json["previousPid"] == null ? null : raviJsonAsDouble(json["previousPid"]),
+      previousPid: json["previousPid"] == null ? null : raviJsonAsInt(json["previousPid"]),
       reason: json["reason"] == null ? null : raviJsonAsString(json["reason"]),
       runnerEnv: json["runnerEnv"] == null ? null : RaviJson.from(json["runnerEnv"]),
       status: json["status"] == null ? null : RaviJson.from(json["status"]),
@@ -3419,7 +3419,7 @@ class ChannelsStartReturn {
   final String action;
   final bool changed;
   final RaviJson? pm2Status;
-  final double? previousPid;
+  final int? previousPid;
   final String? reason;
   final RaviJson? runnerEnv;
   final RaviJson? status;
@@ -3430,7 +3430,7 @@ class ChannelsStartReturn {
       action: raviJsonAsString(json["action"]),
       changed: raviJsonAsBool(json["changed"]),
       pm2Status: json["pm2Status"] == null ? null : RaviJson.from(json["pm2Status"]),
-      previousPid: json["previousPid"] == null ? null : raviJsonAsDouble(json["previousPid"]),
+      previousPid: json["previousPid"] == null ? null : raviJsonAsInt(json["previousPid"]),
       reason: json["reason"] == null ? null : raviJsonAsString(json["reason"]),
       runnerEnv: json["runnerEnv"] == null ? null : RaviJson.from(json["runnerEnv"]),
       status: json["status"] == null ? null : RaviJson.from(json["status"]),
@@ -3479,7 +3479,7 @@ class ChannelsStopReturn {
   final String action;
   final bool changed;
   final RaviJson? pm2Status;
-  final double? previousPid;
+  final int? previousPid;
   final String? reason;
   final RaviJson? runnerEnv;
   final RaviJson? status;
@@ -3490,7 +3490,7 @@ class ChannelsStopReturn {
       action: raviJsonAsString(json["action"]),
       changed: raviJsonAsBool(json["changed"]),
       pm2Status: json["pm2Status"] == null ? null : RaviJson.from(json["pm2Status"]),
-      previousPid: json["previousPid"] == null ? null : raviJsonAsDouble(json["previousPid"]),
+      previousPid: json["previousPid"] == null ? null : raviJsonAsInt(json["previousPid"]),
       reason: json["reason"] == null ? null : raviJsonAsString(json["reason"]),
       runnerEnv: json["runnerEnv"] == null ? null : RaviJson.from(json["runnerEnv"]),
       status: json["status"] == null ? null : RaviJson.from(json["status"]),

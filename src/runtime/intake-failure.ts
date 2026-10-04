@@ -34,6 +34,8 @@ export function reportRuntimePromptIntakeFailure(input: {
   instanceId: string;
   safeEmit: RuntimeSafeEmit;
   details?: Record<string, unknown>;
+  /** False records the drop without a chat notice (one was already sent for this chat). */
+  notifyUser?: boolean;
 }): void {
   const { sessionName, prompt, reason, stage } = input;
   const sessionEntry = getSessionByName(sessionName);
@@ -67,7 +69,7 @@ export function reportRuntimePromptIntakeFailure(input: {
       log.warn("Failed to emit intake failure runtime event", { sessionName, reason, error: emitError });
     });
 
-  if (userFacing && source) {
+  if (userFacing && source && input.notifyUser !== false) {
     nats
       .emit(`ravi.session.${sessionName}.response`, {
         response: formatUserFacingTurnFailure(RUNTIME_PROMPT_INTAKE_FAILED_USER_MESSAGE),

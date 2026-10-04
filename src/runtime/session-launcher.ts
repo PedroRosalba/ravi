@@ -84,16 +84,52 @@ export function updateRuntimeSessionMetadata(sessionKey: string, prompt: Runtime
   }
 }
 
+function intakeNoticeTargetKey(prompt: RuntimeLaunchPrompt): string | undefined {
+  const source = prompt.source;
+  if (!source) return undefined;
+  return [source.channel, source.accountId, source.chatId, source.threadId ?? ""].join(":");
+}
+
+/**
+ * Terminalize every prompt this start was holding: the launch prompt plus any
+ * prompts stashed while it waited for a pool slot or cold start. The stash is
+ * cleared so those prompts are neither silently orphaned nor re-injected into
+ * a later, unrelated start. A resume start's prompt is synthesized from the
+ * stash, so only the stashed originals are reported in that case.
+ */
 function reportLaunchIntakeFailure(options: StartRuntimeSessionOptions): void {
-  reportRuntimePromptIntakeFailure({
-    sessionName: options.sessionName,
-    prompt: options.prompt,
-    reason: "no_agent",
-    stage: "launch",
-    instanceId: options.instanceId,
-    safeEmit: options.safeEmit,
-    ...(options.prompt._agentId ? { details: { agentId: options.prompt._agentId } } : {}),
-  });
+  const held = options.stashedMessages.get(options.sessionName) ?? [];
+  options.stashedMessages.delete(options.sessionName);
+
+  const prompts: RuntimeLaunchPrompt[] = [];
+  if (!(options.prompt._resumeStashedMessages === true && held.length > 0)) {
+    prompts.push(options.prompt);
+  }
+  for (const message of held) {
+    prompts.push(message.launchPrompt ?? { prompt: message.message.content });
+  }
+
+  const notifiedTargets = new Set<string>();
+  for (const prompt of prompts) {
+    // Every held prompt gets its own durable trace; each chat gets one notice.
+    const targetKey = intakeNoticeTargetKey(prompt);
+    const notifyUser = targetKey === undefined || !notifiedTargets.has(targetKey);
+    if (targetKey !== undefined) notifiedTargets.add(targetKey);
+    const agentId = prompt._agentId ?? options.prompt._agentId;
+    reportRuntimePromptIntakeFailure({
+      sessionName: options.sessionName,
+      prompt,
+      reason: "no_agent",
+      stage: "launch",
+      instanceId: options.instanceId,
+      safeEmit: options.safeEmit,
+      notifyUser,
+      details: {
+        ...(agentId ? { agentId } : {}),
+        ...(prompts.length > 1 ? { heldPrompts: prompts.length } : {}),
+      },
+    });
+  }
 }
 
 export async function startRuntimeSession(options: StartRuntimeSessionOptions): Promise<void> {

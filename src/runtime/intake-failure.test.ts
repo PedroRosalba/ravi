@@ -6,7 +6,12 @@ import { listSessionEvents } from "../session-trace/session-trace-db.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
 import type { RuntimeCrashRecoveryCoordinator } from "./crash-recovery.js";
 import { RUNTIME_PROMPT_INTAKE_FAILED_USER_MESSAGE } from "./intake-failure.js";
-import { RuntimeSessionDispatcher } from "./session-dispatcher.js";
+import type { RuntimeUserMessage } from "./host-session.js";
+import {
+  RuntimeSessionDispatcher,
+  buildStashedRestartPrompt,
+  stashPromptForStartingSession,
+} from "./session-dispatcher.js";
 import { startRuntimeSession } from "./session-launcher.js";
 
 const crashRecoveryStub = { acceptingDeliveries: true } as unknown as RuntimeCrashRecoveryCoordinator;
@@ -132,5 +137,73 @@ describe("runtime prompt intake failure", () => {
     expect(event?.payloadJson).toMatchObject({ reason: "no_agent", stage: "launch", agentId: "gone" });
     expect(responses).toHaveLength(1);
     expect(responses[0]?.data.target).toEqual(source);
+  });
+
+  it("terminalizes every prompt held by a pending start, not only the launch prompt", async () => {
+    withoutAgents();
+    const source = { channel: "slack", accountId: "ravi-slack", chatId: "C123" };
+    const otherSource = { channel: "whatsapp", accountId: "main", chatId: "5511999999999" };
+    const stashedMessages = new Map<string, RuntimeUserMessage[]>();
+    stashPromptForStartingSession(
+      "main",
+      { prompt: "second", source, context: { messageId: "m-2" } } as never,
+      stashedMessages,
+    );
+    stashPromptForStartingSession(
+      "main",
+      { prompt: "third", source: otherSource, context: { messageId: "m-3" } } as never,
+      stashedMessages,
+    );
+
+    await startRuntimeSession({
+      sessionName: "main",
+      prompt: { prompt: "first", source, context: { messageId: "m-1" }, _agentId: "gone" } as never,
+      configModel: "test-model",
+      instanceId: "test",
+      streamingSessions: new Map(),
+      stashedMessages,
+      safeEmit: async (topic, data) => {
+        runtimeEvents.push({ topic, data });
+      },
+      drainPendingStarts: () => {},
+      crashRecovery: crashRecoveryStub,
+    });
+
+    expect(
+      intakeFailures()
+        .map((event) => event.messageId)
+        .sort(),
+    ).toEqual(["m-1", "m-2", "m-3"]);
+    expect(stashedMessages.has("main")).toBe(false);
+    expect(runtimeEvents.filter((event) => event.data.type === "dispatch.dropped")).toHaveLength(3);
+    // One notice per conversation, not one per held prompt.
+    expect(responses.map((response) => response.data.target)).toEqual([source, otherSource]);
+  });
+
+  it("reports the stashed originals, not the synthesized prompt, for a resume start", async () => {
+    withoutAgents();
+    const stashedMessages = new Map<string, RuntimeUserMessage[]>();
+    stashPromptForStartingSession("main", { prompt: "a", context: { messageId: "s-1" } } as never, stashedMessages);
+    stashPromptForStartingSession("main", { prompt: "b", context: { messageId: "s-2" } } as never, stashedMessages);
+    const resumePrompt = buildStashedRestartPrompt(stashedMessages.get("main") ?? []);
+
+    await startRuntimeSession({
+      sessionName: "main",
+      prompt: resumePrompt!,
+      configModel: "test-model",
+      instanceId: "test",
+      streamingSessions: new Map(),
+      stashedMessages,
+      safeEmit: async () => {},
+      drainPendingStarts: () => {},
+      crashRecovery: crashRecoveryStub,
+    });
+
+    expect(
+      intakeFailures()
+        .map((event) => event.messageId)
+        .sort(),
+    ).toEqual(["s-1", "s-2"]);
+    expect(stashedMessages.has("main")).toBe(false);
   });
 });

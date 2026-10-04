@@ -3976,13 +3976,13 @@ public struct ChannelsRestartReturn: Codable, Sendable {
   public var action: String
   public var changed: Bool
   public var pm2Status: RaviJSON?
-  public var previousPid: Double?
+  public var previousPid: Int?
   public var reason: String?
   public var runnerEnv: RaviJSON?
   public var status: RaviJSON?
   public var target: RaviJSON?
 
-  public init(action: String, changed: Bool, pm2Status: RaviJSON? = nil, previousPid: Double? = nil, reason: String? = nil, runnerEnv: RaviJSON? = nil, status: RaviJSON? = nil, target: RaviJSON? = nil) {
+  public init(action: String, changed: Bool, pm2Status: RaviJSON? = nil, previousPid: Int? = nil, reason: String? = nil, runnerEnv: RaviJSON? = nil, status: RaviJSON? = nil, target: RaviJSON? = nil) {
     self.action = action
     self.changed = changed
     self.pm2Status = pm2Status
@@ -4078,13 +4078,13 @@ public struct ChannelsStartReturn: Codable, Sendable {
   public var action: String
   public var changed: Bool
   public var pm2Status: RaviJSON?
-  public var previousPid: Double?
+  public var previousPid: Int?
   public var reason: String?
   public var runnerEnv: RaviJSON?
   public var status: RaviJSON?
   public var target: RaviJSON?
 
-  public init(action: String, changed: Bool, pm2Status: RaviJSON? = nil, previousPid: Double? = nil, reason: String? = nil, runnerEnv: RaviJSON? = nil, status: RaviJSON? = nil, target: RaviJSON? = nil) {
+  public init(action: String, changed: Bool, pm2Status: RaviJSON? = nil, previousPid: Int? = nil, reason: String? = nil, runnerEnv: RaviJSON? = nil, status: RaviJSON? = nil, target: RaviJSON? = nil) {
     self.action = action
     self.changed = changed
     self.pm2Status = pm2Status
@@ -4138,13 +4138,13 @@ public struct ChannelsStopReturn: Codable, Sendable {
   public var action: String
   public var changed: Bool
   public var pm2Status: RaviJSON?
-  public var previousPid: Double?
+  public var previousPid: Int?
   public var reason: String?
   public var runnerEnv: RaviJSON?
   public var status: RaviJSON?
   public var target: RaviJSON?
 
-  public init(action: String, changed: Bool, pm2Status: RaviJSON? = nil, previousPid: Double? = nil, reason: String? = nil, runnerEnv: RaviJSON? = nil, status: RaviJSON? = nil, target: RaviJSON? = nil) {
+  public init(action: String, changed: Bool, pm2Status: RaviJSON? = nil, previousPid: Int? = nil, reason: String? = nil, runnerEnv: RaviJSON? = nil, status: RaviJSON? = nil, target: RaviJSON? = nil) {
     self.action = action
     self.changed = changed
     self.pm2Status = pm2Status

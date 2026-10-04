@@ -147,7 +147,7 @@ const channelsMutationReturnSchema = z
     runnerEnv: runnerEnvReturnSchema.optional(),
     status: channelsStatusReturnSchema.optional(),
     reason: z.string().optional(),
-    previousPid: z.number().optional(),
+    previousPid: z.number().int().positive().optional(),
   })
   .strict();
 

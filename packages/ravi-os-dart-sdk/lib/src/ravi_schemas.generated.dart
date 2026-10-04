@@ -16693,7 +16693,9 @@ class RaviSchemas {
       ]
     },
     "previousPid": {
-      "type": "number"
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "type": "integer"
     },
     "reason": {
       "type": "string"
@@ -17392,7 +17394,9 @@ class RaviSchemas {
       ]
     },
     "previousPid": {
-      "type": "number"
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "type": "integer"
     },
     "reason": {
       "type": "string"
@@ -18267,7 +18271,9 @@ class RaviSchemas {
       ]
     },
     "previousPid": {
-      "type": "number"
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "type": "integer"
     },
     "reason": {
       "type": "string"
