@@ -203,7 +203,9 @@ Regras:
 Quando o modal e estatico (o mesmo view JSON para todo clique), nao dependa do
 caminho trigger -> shell -> `modals-open`: ele pode passar dos ~3s do
 `triggerId` e falhar com `expired_trigger_id`. Configure uma regra e o Socket
-Mode chama `views.open` direto, antes de publicar a interacao:
+Mode chama `views.open` direto, antes de publicar a interacao. Se o clique
+vier de dentro de um modal aberto, Ravi usa `views.push` (empilha o novo view
+sobre o modal atual); cliques em mensagens e na App Home usam `views.open`:
 
 ```bash
 ravi settings set slack.immediateModals "$(cat .ravi/workflows/demo/immediate-modals.json)"
@@ -214,7 +216,7 @@ ravi settings set slack.immediateModals "$(cat .ravi/workflows/demo/immediate-mo
   {
     "actionId": "workflow_open",
     "blockId": "workflow_actions",
-    "accountId": "T123",
+    "accountId": "hana-slack",
     "view": {
       "type": "modal",
       "callback_id": "workflow_submit",
@@ -226,16 +228,20 @@ ravi settings set slack.immediateModals "$(cat .ravi/workflows/demo/immediate-mo
 ]
 ```
 
+- `view.title` e obrigatorio: `plain_text` com 1-24 caracteres (limite do
+  Slack); a regra e rejeitada em `ravi settings set` se faltar.
 - Casa apenas `block_actions` com `triggerId`. Exige `actionId` ou `blockId`;
   `callbackId` (callback_id da view onde o botao esta) e `accountId` sao
-  filtros opcionais. Todos os campos presentes precisam bater; vale a primeira
+  filtros opcionais. `accountId` e o id da conta Slack no Ravi (o mesmo
+  `accountId` do payload em `ravi.inbound.interaction`), nao o team id `T...`
+  do Slack. Todos os campos presentes precisam bater; vale a primeira
   regra.
 - Se o view nao tiver `private_metadata`, Ravi preenche com o contexto do
   clique (`channelId`, `messageTs`, `threadTs`, `userId`, `actionId`, `blockId`,
   `value`) em JSON; o `view_submission` recebe isso em `viewPrivateMetadata`.
 - A interacao continua sendo publicada em `ravi.inbound.interaction` com
   `modalOpened: true`, `openedViewId` e `openedViewHash`. Se `views.open`
-  falhar, ela sai com `modalOpened: false` e `modalOpenError`; o trigger pode
+  (ou `views.push`) falhar, ela sai com `modalOpened: false` e `modalOpenError`; o trigger pode
   usar isso como fallback. No trigger que abre o modal via shell, adicione
   `&& !(data.modalOpened == "true")` ao filtro para nao abrir duas vezes.
 - Para modais que dependem de estado dinamico, abra um modal imediato de

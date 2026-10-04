@@ -228,6 +228,11 @@ const TOPICS: readonly TriggerTopicCatalogEntry[] = [
           description: "Provider trigger id for short-lived interactive follow-up flows.",
         },
         {
+          path: "viewType",
+          type: "string",
+          description: "Slack view type (`modal` or `home`) for interactions that happen inside a view.",
+        },
+        {
           path: "viewCallbackId",
           type: "string",
           description: "Slack modal callback_id for interactions that happen inside a view.",
@@ -242,11 +247,15 @@ const TOPICS: readonly TriggerTopicCatalogEntry[] = [
           path: "modalOpened",
           type: "boolean",
           description:
-            "Set when a slack.immediateModals rule matched: true if Ravi already opened the modal, false if views.open failed.",
+            "Set when a slack.immediateModals rule matched: true if Ravi already opened (views.open) or pushed (views.push, for clicks inside a modal) the modal, false if that call failed.",
         },
         { path: "openedViewId", type: "string", description: "View id of the modal Ravi opened immediately." },
         { path: "openedViewHash", type: "string", description: "View hash of the modal Ravi opened immediately." },
-        { path: "modalOpenError", type: "string", description: "views.open error when modalOpened is false." },
+        {
+          path: "modalOpenError",
+          type: "string",
+          description: "views.open/views.push error when modalOpened is false.",
+        },
         { path: "actionId", type: "string", description: "Block Kit action_id or equivalent provider action id." },
         { path: "blockId", type: "string", description: "Block Kit block_id or equivalent provider block id." },
         { path: "value", type: "string", description: "Action value when the provider includes one." },

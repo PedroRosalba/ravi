@@ -5,12 +5,15 @@
  * trigger -> shell -> `ravi slack modals-open` path. Rules stored in the
  * `slack.immediateModals` setting let the Socket Mode service call views.open
  * itself, before the interaction is published to `ravi.inbound.interaction`.
+ * Clicks from inside an open modal use views.push instead, stacking the new view.
  */
 
 export const SLACK_IMMEDIATE_MODALS_SETTING = "slack.immediateModals";
 
 /** Slack caps view.private_metadata at 3000 characters. */
 const SLACK_PRIVATE_METADATA_MAX = 3000;
+/** Slack caps modal view.title.text at 24 characters. */
+const SLACK_MODAL_TITLE_MAX = 24;
 
 export interface SlackImmediateModalRule {
   readonly actionId?: string;
@@ -59,6 +62,18 @@ export function parseSlackImmediateModalRules(raw: string | null | undefined): S
     if (!isRecord(view) || view.type !== "modal" || !Array.isArray(view.blocks)) {
       throw new Error(`${SLACK_IMMEDIATE_MODALS_SETTING}[${index}].view must be a Slack modal view with blocks`);
     }
+    const title = view.title;
+    if (
+      !isRecord(title) ||
+      title.type !== "plain_text" ||
+      typeof title.text !== "string" ||
+      !title.text.trim() ||
+      title.text.length > SLACK_MODAL_TITLE_MAX
+    ) {
+      throw new Error(
+        `${SLACK_IMMEDIATE_MODALS_SETTING}[${index}].view.title must be a plain_text object with 1-${SLACK_MODAL_TITLE_MAX} characters`,
+      );
+    }
     return {
       ...(actionId ? { actionId } : {}),
       ...(blockId ? { blockId } : {}),
@@ -85,7 +100,7 @@ export function matchSlackImmediateModalRule(
 }
 
 /**
- * Copy of the rule view ready for views.open. When the stored view has no
+ * Copy of the rule view ready for views.open/views.push. When the stored view has no
  * private_metadata, Ravi fills it with the click context so the later
  * view_submission handler can find the originating message.
  */

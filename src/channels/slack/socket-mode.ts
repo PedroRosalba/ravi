@@ -1277,17 +1277,22 @@ export class SlackSocketModeService {
 
   /**
    * Open a configured modal with the interaction trigger_id before publishing,
-   * because Slack trigger_ids expire in ~3s. Failures fall back to the plain
-   * publish so trigger-driven workflows still see the click.
+   * because Slack trigger_ids expire in ~3s. Clicks from inside an open modal
+   * push the view onto that modal's stack (views.push); other clicks, including
+   * App Home, use views.open. Failures fall back to the plain publish so
+   * trigger-driven workflows still see the click.
    */
   private async openImmediateModal(interaction: Record<string, unknown>): Promise<Record<string, unknown>> {
     const rule = matchSlackImmediateModalRule(this.immediateModalRules(), interaction);
     if (!rule) return interaction;
+    const fromModal = typeof interaction.viewId === "string" && interaction.viewType === "modal";
+    const method = fromModal ? "views.push" : "views.open";
     try {
-      const result = await this.webClient.viewsOpen({
+      const request = {
         triggerId: interaction.triggerId as string,
         view: buildSlackImmediateModalView(rule, interaction),
-      });
+      };
+      const result = fromModal ? await this.webClient.viewsPush(request) : await this.webClient.viewsOpen(request);
       return compactInteractionPayload({
         ...interaction,
         modalOpened: true,
@@ -1298,6 +1303,7 @@ export class SlackSocketModeService {
       const message = error instanceof Error ? error.message : String(error);
       log.warn("Slack immediate modal open failed; publishing interaction only", {
         accountId: this.options.accountId,
+        method,
         actionId: interaction.actionId,
         blockId: interaction.blockId,
         error: message,
@@ -1353,6 +1359,7 @@ export class SlackSocketModeService {
       triggerId: stringField(record, "trigger_id"),
       containerType: stringField(container, "type"),
       viewId: stringField(view, "id"),
+      viewType: stringField(view, "type"),
       viewCallbackId: stringField(view, "callback_id"),
       viewPrivateMetadata: stringField(view, "private_metadata"),
       viewHash: stringField(view, "hash"),
