@@ -44,7 +44,8 @@ The user should not see the raw provider error as an assistant reply.
 
 If the error was classified but no restart happened, the failure surfaces as a
 normal `turn.failed` (no `autoRecovered` / `recoveryKind` in the payload, no
-`session.*` recovery event, raw error delivered to the chat) and one of these
+`session.*` recovery event, the chat gets the generic `safe_error`, not the raw
+provider error) and one of these
 warnings in the daemon log:
 
 - `Skipping runtime session auto-recovery because the current turn is not replay-safe`:
