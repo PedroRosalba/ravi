@@ -49,7 +49,10 @@ channel-backed turn gets the generic `safe_error` from the runtime channel
 projection, while a classic chat turn gets `Error: <detail>`, the first line of
 the provider error after `publicRuntimeFailureDetail`
 (`src/runtime/public-failure.ts`) masks credential and account failures and
-truncates long text. The daemon log shows one of these warnings:
+truncates long text. A classic turn gets no chat reply at all when the failure
+is suppressed: sentinel agents, recoverable open-tool or interrupt failures
+(`shouldEmitUserFacingTurnFailure`), and repeated runtime-limit failures. The
+daemon log shows one of these warnings:
 
 - `Skipping runtime session auto-recovery because the current turn is not replay-safe`:
   the failed turn had a started tool, materialized output, or a durable binding
