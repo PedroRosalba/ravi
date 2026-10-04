@@ -151,7 +151,7 @@ const chatReadingListMembershipDiffSchema = z.object({
 
 export const chatReadingListCreateReturnSchema = z
   .object({
-    list: chatReadingListReturnSchema.strict(),
+    list: chatReadingListPublicReturnSchema.strict(),
     selectorValidation: chatReadingListSelectorValidationSchema.strict().optional(),
   })
   .strict();
@@ -1263,7 +1263,8 @@ EXAMPLES
       selector,
       metadata,
     });
-    const payload = selectorValidation ? { list, selectorValidation } : { list };
+    const publicList = publicReadingList(list);
+    const payload = selectorValidation ? { list: publicList, selectorValidation } : { list: publicList };
     if (asJson) {
       printJson(payload);
       return payload;

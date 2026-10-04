@@ -3546,12 +3546,10 @@ export type ChatsListsCreateReturn = {
     createdAt: number;
     description?: string;
     id: string;
-    metadata?: Record<string, unknown>;
     mode: string;
     name: string;
     ownerId: string;
     ownerType: string;
-    selector?: Record<string, unknown>;
     updatedAt: number;
     visibility: string;
   };

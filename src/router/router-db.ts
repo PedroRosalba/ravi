@@ -8144,7 +8144,15 @@ export function dbUpdateChatReadingList(id: string, patch: ChatReadingListPatch)
 
   sets.push("updated_at = ?");
   params.push(Date.now());
-  database.prepare(`UPDATE chat_reading_lists SET ${sets.join(", ")} WHERE id = ?`).run(...params, id);
+  try {
+    database.prepare(`UPDATE chat_reading_lists SET ${sets.join(", ")} WHERE id = ?`).run(...params, id);
+  } catch (error) {
+    // A concurrent rename can pass the pre-check above; report it like the pre-check does.
+    if (patch.name !== undefined && error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
+      throw new Error("Another active reading list with this owner already uses that name");
+    }
+    throw error;
+  }
   const updated = database.prepare("SELECT * FROM chat_reading_lists WHERE id = ?").get(id) as ChatReadingListRow;
   return rowToChatReadingList(updated);
 }

@@ -1057,8 +1057,8 @@ describe("chats lists create/set write path", () => {
     );
     expect(chatReadingListCreateReturnSchema.safeParse(payload).success).toBe(true);
     const list = payload.list as Record<string, unknown>;
-    expect(list.selector).toEqual(SAFE_SELECTOR);
-    expect(list.metadata).toEqual({ pipeline: "cobranca" });
+    expect(list).not.toHaveProperty("selector");
+    expect(list).not.toHaveProperty("metadata");
     expect((payload.selectorValidation as Record<string, unknown>).canApply).toBe(true);
 
     const stored = dbGetChatReadingList({ id: list.id as string });

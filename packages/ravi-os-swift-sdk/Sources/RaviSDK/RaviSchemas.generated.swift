@@ -19598,39 +19598,6 @@ public enum RaviSchemas {
 
   public static let ChatsListsCreateReturnSchema = #"""
   {
-    "$defs": {
-      "__schema0": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "number"
-          },
-          {
-            "type": "boolean"
-          },
-          {
-            "type": "null"
-          },
-          {
-            "items": {
-              "$ref": "#/$defs/__schema0"
-            },
-            "type": "array"
-          },
-          {
-            "additionalProperties": {
-              "$ref": "#/$defs/__schema0"
-            },
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          }
-        ]
-      }
-    },
     "additionalProperties": false,
     "properties": {
       "list": {
@@ -19648,15 +19615,6 @@ public enum RaviSchemas {
           "id": {
             "type": "string"
           },
-          "metadata": {
-            "additionalProperties": {
-              "$ref": "#/$defs/__schema0"
-            },
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
           "mode": {
             "type": "string"
           },
@@ -19668,15 +19626,6 @@ public enum RaviSchemas {
           },
           "ownerType": {
             "type": "string"
-          },
-          "selector": {
-            "additionalProperties": {
-              "$ref": "#/$defs/__schema0"
-            },
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
           },
           "updatedAt": {
             "type": "number"

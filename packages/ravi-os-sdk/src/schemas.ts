@@ -19446,39 +19446,6 @@ export const ChatsListsCreateInputSchema = {
 
 /** JSON Schema for the return shape of `chats.lists.create`. */
 export const ChatsListsCreateReturnSchema = {
-  "$defs": {
-    "__schema0": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "number"
-        },
-        {
-          "type": "boolean"
-        },
-        {
-          "type": "null"
-        },
-        {
-          "items": {
-            "$ref": "#/$defs/__schema0"
-          },
-          "type": "array"
-        },
-        {
-          "additionalProperties": {
-            "$ref": "#/$defs/__schema0"
-          },
-          "propertyNames": {
-            "type": "string"
-          },
-          "type": "object"
-        }
-      ]
-    }
-  },
   "additionalProperties": false,
   "properties": {
     "list": {
@@ -19496,15 +19463,6 @@ export const ChatsListsCreateReturnSchema = {
         "id": {
           "type": "string"
         },
-        "metadata": {
-          "additionalProperties": {
-            "$ref": "#/$defs/__schema0"
-          },
-          "propertyNames": {
-            "type": "string"
-          },
-          "type": "object"
-        },
         "mode": {
           "type": "string"
         },
@@ -19516,15 +19474,6 @@ export const ChatsListsCreateReturnSchema = {
         },
         "ownerType": {
           "type": "string"
-        },
-        "selector": {
-          "additionalProperties": {
-            "$ref": "#/$defs/__schema0"
-          },
-          "propertyNames": {
-            "type": "string"
-          },
-          "type": "object"
         },
         "updatedAt": {
           "type": "number"
