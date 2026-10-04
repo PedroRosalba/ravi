@@ -64946,7 +64946,7 @@ public enum RaviSchemas {
         "type": "string"
       },
       "raw": {
-        "description": "Send the prompt without [System] Inform wrapping (target treats it as a normal message and replies in its chat)",
+        "description": "Send the prompt without [System] Inform wrapping (the target handles it as a normal message)",
         "type": "boolean"
       },
       "steer": {
