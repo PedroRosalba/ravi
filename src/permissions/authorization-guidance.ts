@@ -20,9 +20,17 @@ export interface ProviderOwnedPermissionTagSuggestion {
   capabilities: string[];
 }
 
+/**
+ * Whether the denied check was about a concrete target resource or a global
+ * capability. A global check never inspected a target (session, chat, agent...),
+ * so delegation on a target cannot satisfy it.
+ */
+export type AuthorizationResourceScope = { kind: "global" } | { kind: "resource"; checkedResource: string };
+
 export interface AuthorizationGuidance {
   canonicalCapability: string;
   candidateCapabilities: string[];
+  resourceScope?: AuthorizationResourceScope;
   subject?: AuthorizationSubject;
   scope: "current-context" | "recurring" | "diagnostic";
   inspectCommands: string[];
@@ -53,6 +61,7 @@ export function buildAuthorizationGuidance(input: {
   candidates?: AuthorizationCapability[];
   subject?: AuthorizationSubject;
   scope?: AuthorizationGuidance["scope"];
+  resourceScope?: AuthorizationResourceScope;
   reason?: string;
   includeProviderOwnedTags?: boolean;
 }): AuthorizationGuidance {
@@ -89,6 +98,7 @@ export function buildAuthorizationGuidance(input: {
   return {
     canonicalCapability,
     candidateCapabilities,
+    ...(input.resourceScope ? { resourceScope: input.resourceScope } : {}),
     ...(subject ? { subject } : {}),
     scope: input.scope ?? "diagnostic",
     inspectCommands,
@@ -116,6 +126,9 @@ export function formatAuthorizationGuidanceLines(guidance: AuthorizationGuidance
   if (guidance.candidateCapabilities.length > 1) {
     lines.push(`Required candidates: ${guidance.candidateCapabilities.join(", ")}`);
   }
+  if (guidance.resourceScope) {
+    lines.push(formatAuthorizationResourceScopeLine(guidance.resourceScope));
+  }
   lines.push(
     `Inspect: ${guidance.inspectCommands[0]}`,
     `Recurring access: ${guidance.preferredPath.message}`,
@@ -123,6 +136,13 @@ export function formatAuthorizationGuidanceLines(guidance: AuthorizationGuidance
     `Break-glass: ${guidance.breakGlass}`,
   );
   return lines;
+}
+
+export function formatAuthorizationResourceScopeLine(resourceScope: AuthorizationResourceScope): string {
+  if (resourceScope.kind === "resource") {
+    return `Scope: resource check on ${resourceScope.checkedResource}; a grant for that resource or one of the candidates above is required.`;
+  }
+  return "Scope: global capability check; no target resource (session, chat, agent) was checked, so delegation on a target will not help. Grant one of the candidates above.";
 }
 
 export function derivePermissionProfileSlug(capability: AuthorizationCapability): string {
