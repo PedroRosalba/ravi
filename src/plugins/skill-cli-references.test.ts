@@ -1,9 +1,8 @@
-import "reflect-metadata";
 import { describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getRegistry } from "../cli/registry-snapshot.js";
 
 /**
  * Guard against "phantom capabilities" (issue #63): a shipped SKILL.md must not
@@ -15,6 +14,7 @@ import { getRegistry } from "../cli/registry-snapshot.js";
  */
 
 const INTERNAL_PLUGINS_DIR = fileURLToPath(new URL("./internal", import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 /** Top-level commands registered directly on the Commander program in src/cli/index.ts. */
 const TOP_LEVEL_COMMANDS = [
@@ -56,15 +56,29 @@ function listSkillFiles(dir: string): string[] {
   return out;
 }
 
+/**
+ * Load the registry in a fresh process: other test files in the same `bun test`
+ * run replace modules with `mock.module`, which breaks importing every command.
+ */
 function knownGroups(): Set<string> {
-  const registry = getRegistry();
-  const names = new Set<string>(TOP_LEVEL_COMMANDS);
-  for (const group of registry.groups) {
-    names.add(group.segments[0]);
-    for (const alias of group.aliases ?? []) names.add(alias.split(".")[0]);
+  const script = `
+    import "reflect-metadata";
+    import { getRegistry } from "./src/cli/registry-snapshot.ts";
+    const registry = getRegistry();
+    const names = [];
+    for (const group of registry.groups) {
+      names.push(group.segments[0]);
+      for (const alias of group.aliases ?? []) names.push(alias.split(".")[0]);
+    }
+    for (const command of registry.commands) names.push(command.groupSegments[0]);
+    console.log(JSON.stringify(names));
+  `;
+  const result = spawnSync(process.execPath, ["-e", script], { cwd: REPO_ROOT, encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`Failed to load the CLI registry: ${result.stderr}`);
   }
-  for (const command of registry.commands) names.add(command.groupSegments[0]);
-  return names;
+  const lines = result.stdout.trim().split("\n");
+  return new Set<string>([...TOP_LEVEL_COMMANDS, ...(JSON.parse(lines[lines.length - 1]) as string[])]);
 }
 
 /** `ravi <word>` where `ravi` is a standalone token (not `ravi-system`, `~/.ravi`, `./bin/ravi`). */
