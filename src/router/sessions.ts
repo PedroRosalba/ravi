@@ -27,6 +27,7 @@ import {
   type SessionChatSubscriptionRecord,
 } from "./router-db.js";
 import { executeWrite } from "../db/write-retry.js";
+import { buildSessionCreatedEvent, emitSessionCreated } from "../events/lifecycle-events.js";
 import { logger } from "../utils/logger.js";
 
 const log = logger.child("router:sessions");
@@ -383,7 +384,23 @@ export function getOrCreateSession(
 
   log.debug("Created session", { sessionKey, agentId });
 
-  return getOrCreateSession(sessionKey, agentId, agentCwd);
+  const created = getOrCreateSession(sessionKey, agentId, agentCwd);
+  // The upsert can resolve to an update when another writer inserted the same
+  // key in between; only the writer whose row carries this created_at emits.
+  if (created.createdAt === now) {
+    emitSessionCreated(
+      buildSessionCreatedEvent({
+        sessionKey: created.sessionKey,
+        name: created.name ?? null,
+        agentId: created.agentId,
+        channel: created.channel ?? null,
+        accountId: created.accountId ?? null,
+        chatType: created.chatType ?? null,
+        createdAt: created.createdAt,
+      }),
+    );
+  }
+  return created;
 }
 
 /**
