@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -107,11 +107,15 @@ mock.module("../context.js", () => ({
   },
 }));
 
+let scopeEnforced = false;
+let canAccessSessionResult = true;
+let canModifySessionResult = true;
+
 mock.module("../../permissions/scope.js", () => ({
-  getScopeContext: () => undefined,
-  isScopeEnforced: () => false,
-  canAccessSession: () => true,
-  canModifySession: () => true,
+  getScopeContext: () => (scopeEnforced ? { agentId: "dev" } : undefined),
+  isScopeEnforced: () => scopeEnforced,
+  canAccessSession: () => canAccessSessionResult,
+  canModifySession: () => canModifySessionResult,
   canAccessContact: () => true,
   canAccessResource: () => true,
   filterVisibleAgents: <T>(_: unknown, agents: T[]) => agents,
@@ -2018,3 +2022,148 @@ describe("agents agent-first contract", () => {
 });
 
 afterAll(() => mock.restore());
+
+describe("AgentsCommands session ownership and scope", () => {
+  const foreignSession: SessionLike = {
+    sessionKey: "agent:other:main",
+    name: "other-main",
+    agentId: "other",
+    agentCwd: "/tmp/other",
+    providerSessionId: "provider-other",
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const ownSession: SessionLike = {
+    sessionKey: "agent:dev:main",
+    name: "dev-main",
+    agentId: "dev",
+    agentCwd: "/tmp/dev",
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  beforeEach(() => {
+    currentAgent = { id: "dev", cwd: "/tmp/dev" };
+    resolvedSession = null;
+    mainSession = null;
+    sessionsByAgent = [];
+    deleteSessionCalls = [];
+    natsEmitCalls = [];
+    scopeEnforced = false;
+    canAccessSessionResult = true;
+    canModifySessionResult = true;
+  });
+
+  afterEach(() => {
+    scopeEnforced = false;
+    canAccessSessionResult = true;
+    canModifySessionResult = true;
+  });
+
+  async function runQuiet<T>(fn: () => T | Promise<T>): Promise<T> {
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      return await fn();
+    } finally {
+      console.log = originalLog;
+    }
+  }
+
+  it("refuses to reset a session that belongs to another agent", async () => {
+    resolvedSession = foreignSession;
+    const payload = await runQuiet(() => new AgentsCommands().reset("dev", "other-main", true, true));
+    expect(payload).toMatchObject({ action: "reset", changed: false, reason: "not_found", target: "other-main" });
+    expect(natsEmitCalls).toHaveLength(0);
+    expect(deleteSessionCalls).toHaveLength(0);
+  });
+
+  it("refuses to reset an own-agent session the caller's scope cannot modify", async () => {
+    resolvedSession = ownSession;
+    scopeEnforced = true;
+    canModifySessionResult = false;
+    const payload = await runQuiet(() => new AgentsCommands().reset("dev", "dev-main", true, true));
+    expect(payload).toMatchObject({ changed: false, reason: "not_found" });
+    expect(deleteSessionCalls).toHaveLength(0);
+  });
+
+  it("still resets an own-agent session the caller can modify", async () => {
+    resolvedSession = ownSession;
+    scopeEnforced = true;
+    const payload = await runQuiet(() => new AgentsCommands().reset("dev", "dev-main", true, true));
+    expect(payload).toMatchObject({ action: "reset", changed: true });
+    expect(deleteSessionCalls).toEqual(["agent:dev:main"]);
+  });
+
+  it("answers not found when debugging a session that belongs to another agent", async () => {
+    resolvedSession = foreignSession;
+    const payload = await runQuiet(() => new AgentsCommands().debug("dev", "other-main", undefined, true));
+    expect(payload).toMatchObject({ error: "No session found: other-main", agentId: "dev" });
+    expect(payload).not.toHaveProperty("session");
+  });
+
+  it("answers not found when debugging a session outside the caller's scope", async () => {
+    resolvedSession = ownSession;
+    scopeEnforced = true;
+    canAccessSessionResult = false;
+    const payload = await runQuiet(() => new AgentsCommands().debug("dev", "dev-main", undefined, true));
+    expect(payload).toMatchObject({ error: "No session found: dev-main" });
+  });
+});
+
+describe("AgentsCommands set defaults authority keys", () => {
+  beforeEach(() => {
+    currentAgent = {
+      id: "dev",
+      cwd: "/tmp/dev",
+      defaults: {
+        tts_voice: "old",
+        runtimePermissions: { profile: "bootstrap" },
+        modelBroker: { brokerId: "hub", profileRef: "p1" },
+      },
+    };
+    updateAgentCalls = [];
+  });
+
+  it("rejects a defaults write that changes runtimePermissions", async () => {
+    await expect(
+      new AgentsCommands().set(
+        "dev",
+        "defaults",
+        JSON.stringify({ runtimePermissions: { profile: "full-access" } }),
+        true,
+      ),
+    ).rejects.toThrow(
+      "defaults.runtimePermissions cannot be changed with 'agents set'. Use 'ravi agents permissions dev",
+    );
+    expect(updateAgentCalls).toHaveLength(0);
+  });
+
+  it("rejects a defaults write that changes modelBroker", async () => {
+    await expect(
+      new AgentsCommands().set(
+        "dev",
+        "defaults",
+        JSON.stringify({ modelBroker: { brokerId: "evil", profileRef: "p2", required: true } }),
+        true,
+      ),
+    ).rejects.toThrow("defaults.modelBroker cannot be changed with 'agents set'. Use 'ravi agents model-broker dev");
+    expect(updateAgentCalls).toHaveLength(0);
+  });
+
+  it("allows a defaults write that round-trips the authority keys unchanged", async () => {
+    const next = {
+      tts_voice: "new",
+      runtimePermissions: { profile: "bootstrap" },
+      modelBroker: { brokerId: "hub", profileRef: "p1" },
+    };
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      await new AgentsCommands().set("dev", "defaults", JSON.stringify(next), true);
+    } finally {
+      console.log = originalLog;
+    }
+    expect(updateAgentCalls).toEqual([{ id: "dev", partial: { defaults: next } }]);
+  });
+});
