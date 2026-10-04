@@ -287,6 +287,24 @@ describe("createBashPermissionHook", () => {
       expect(evaluateBashPermission('"ls" -la', ctx).allowed).toBe(true);
     });
 
+    it("blocks shells hidden behind $'...' quoting or an escaped space before '#'", () => {
+      const wildcard = {
+        agentId: "test",
+        kind: "test-runtime",
+        capabilities: [{ permission: "execute", objectType: "executable", objectId: "*" }],
+      };
+      expect(evaluateBashPermission("$'bash' -c id", wildcard).allowed).toBe(false);
+      expect(evaluateBashPermission('$"bash" -c id', wildcard).allowed).toBe(false);
+      expect(evaluateBashPermission("$'\\x62ash' -c id", wildcard).allowed).toBe(false);
+      const echoOnly = {
+        agentId: "test",
+        kind: "test-runtime",
+        capabilities: [{ permission: "execute", objectType: "executable", objectId: "echo" }],
+      };
+      expect(evaluateBashPermission("echo x\\ #; bash -c 'id'", echoOnly).allowed).toBe(false);
+      expect(evaluateBashPermission("if [[ a == a || b == b ]]; then echo ok; fi", echoOnly).allowed).toBe(true);
+    });
+
     it("does not widen stale agent-runtime capabilities with the agent's materialized grants", () => {
       const decision = evaluateBashPermission("pwd && rg foo", {
         agentId: "dev",

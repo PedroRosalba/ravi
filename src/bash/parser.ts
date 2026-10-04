@@ -115,6 +115,8 @@ interface DequotedCommand {
   text: string;
   /** Rebuild the literal (dequoted) word for a token of `text`. */
   decode: (token: string) => string;
+  /** True when the token holds `$'...'` text with a backslash escape, which is kept raw (not decoded). */
+  hasRawEscape: (token: string) => boolean;
 }
 
 /**
@@ -139,10 +141,16 @@ function dequoteCommand(command: string): DequotedCommand {
   let text = "";
   let literal = "";
   let quote: "single" | "ansi" | "double" | null = null;
+  let literalHasEscape = false;
+  const rawEscapeLiterals = new Set<number>();
+  // Whether the next character starts a new shell word (an unquoted `#` there starts a comment).
+  let atWordStart = true;
 
-  const pushLiteral = (value: string) => {
+  const pushLiteral = (value: string, rawEscape = false) => {
     literals.push(value);
+    if (rawEscape) rawEscapeLiterals.add(literals.length - 1);
     text += `${QUOTE_OPEN}${literals.length - 1}${QUOTE_CLOSE}`;
+    atWordStart = false;
   };
 
   // `${...}` or `$[...]` starting at `start` (the `$`): return its raw text.
@@ -171,11 +179,13 @@ function dequoteCommand(command: string): DequotedCommand {
 
     if (quote === "single" || quote === "ansi") {
       if (char === "'") {
+        pushLiteral(literal, quote === "ansi" && literalHasEscape);
         quote = null;
-        pushLiteral(literal);
       } else if (quote === "ansi" && char === "\\" && next !== undefined) {
-        // Keep the escape raw: `$'\x72m'` stays `$\x72m`, never `rm`.
+        // Keep the escape raw: `$'\x72m'` stays `\x72m`, never `rm`. A command
+        // word holding such text is refused (see hasRawEscape).
         literal += char + next;
+        literalHasEscape = true;
         i++;
       } else {
         literal += char;
@@ -186,7 +196,10 @@ function dequoteCommand(command: string): DequotedCommand {
     if (char === "$" && (next === "{" || next === "[")) {
       const expansion = readExpansion(i);
       if (quote === "double") literal += expansion;
-      else text += expansion;
+      else {
+        text += expansion;
+        atWordStart = false;
+      }
       i += expansion.length - 1;
       continue;
     }
@@ -214,10 +227,15 @@ function dequoteCommand(command: string): DequotedCommand {
       continue;
     }
 
+    // An unquoted, unescaped `$` right before a quote makes it `$'...'` (ANSI-C)
+    // or `$"..."` (locale). Bash drops that `$`, so `$'bash'` runs `bash`.
+    const dollarQuote = (char === "'" || char === '"') && command[i - 1] === "$" && text.endsWith("$");
+    if (dollarQuote) text = text.slice(0, -1);
+
     if (char === "'") {
-      // An unquoted, unescaped `$` right before the quote makes it `$'...'`.
-      quote = command[i - 1] === "$" && text.endsWith("$") ? "ansi" : "single";
+      quote = dollarQuote ? "ansi" : "single";
       literal = "";
+      literalHasEscape = false;
       continue;
     }
 
@@ -232,7 +250,7 @@ function dequoteCommand(command: string): DequotedCommand {
       if (prev === "<" || prev === ">") {
         throw new Error("'#' right after a redirection is not allowed");
       }
-      if (prev === undefined || /[\s;&|()]/.test(prev)) {
+      if (atWordStart) {
         // Comment: skip to the end of the line; the newline still separates commands.
         const newline = command.indexOf("\n", i);
         if (newline === -1) break;
@@ -242,6 +260,7 @@ function dequoteCommand(command: string): DequotedCommand {
     }
 
     text += char === "\n" ? " ; " : char;
+    atWordStart = /[\s;&|()]/.test(char);
   }
 
   if (quote !== null) {
@@ -251,6 +270,12 @@ function dequoteCommand(command: string): DequotedCommand {
   return {
     text,
     decode: (token) => token.replace(PLACEHOLDER_PATTERN, (_, index: string) => literals[Number(index)] ?? ""),
+    hasRawEscape: (token) => {
+      for (const match of token.matchAll(PLACEHOLDER_PATTERN)) {
+        if (rawEscapeLiterals.has(Number(match[1]))) return true;
+      }
+      return false;
+    },
   };
 }
 
@@ -325,6 +350,8 @@ interface SimpleCommandOptions {
   caseArmStart?: boolean;
   /** Rebuild the dequoted word of a token (see dequoteCommand). */
   decode?: (token: string) => string;
+  /** See DequotedCommand.hasRawEscape. */
+  hasRawEscape?: (token: string) => boolean;
 }
 
 interface SimpleCommandResult {
@@ -431,7 +458,8 @@ function parseSimpleCommandTokens(tokens: string[], options: SimpleCommandOption
       if (token === "[[") {
         // Conditional expression: its words are tested, never executed.
         const close = tokens.indexOf("]]", i + 1);
-        if (close === -1) return none();
+        // Without its `]]` the words cannot be bounded (bash would refuse it): fail closed.
+        if (close === -1) throw new Error("unterminated [[ conditional");
         keywords = false;
         i = close + 1;
         continue;
@@ -448,6 +476,10 @@ function parseSimpleCommandTokens(tokens: string[], options: SimpleCommandOption
       keywords = false;
       i += isBareRedirection(token) ? 2 : 1;
       continue;
+    }
+
+    if (options.hasRawEscape?.(token)) {
+      throw new Error("ANSI-C escapes in a command name are not allowed");
     }
 
     const word = decode(token);
@@ -482,18 +514,51 @@ function splitByOperators(cleaned: string): CommandSegment[] {
   let caseArmStart = false;
   let i = 0;
 
+  // Inside `[[ ... ]]`, `&&` and `||` are part of the test, not command separators.
+  let inConditional = false;
+
   const flush = () => {
     if (current.trim()) {
       commands.push({ text: current.trim(), caseArmStart });
       caseArmStart = false;
     }
     current = "";
+    inConditional = false;
   };
+
+  const isWordBoundary = (c: string | undefined) => c === undefined || /[\s;&|()]/.test(c);
 
   while (i < cleaned.length) {
     const char = cleaned[i];
     const next = cleaned[i + 1];
     const prev = cleaned[i - 1];
+
+    if (
+      !inConditional &&
+      char === "[" &&
+      next === "[" &&
+      isWordBoundary(prev) &&
+      /\s/.test(cleaned[i + 2] ?? "") &&
+      current
+        .trim()
+        .split(/\s+/)
+        .every((word) => word === "" || PREFIX_KEYWORDS.has(word))
+    ) {
+      // `[[` in command position (only reserved words before it in this segment).
+      inConditional = true;
+    } else if (
+      inConditional &&
+      char === "]" &&
+      next === "]" &&
+      /\s/.test(prev ?? "") &&
+      isWordBoundary(cleaned[i + 2])
+    ) {
+      inConditional = false;
+    } else if (inConditional && ((char === "&" && next === "&") || (char === "|" && next === "|"))) {
+      current += char + next;
+      i += 2;
+      continue;
+    }
 
     // Handle operators
     if (char === "|" && next !== "|") {
@@ -588,7 +653,7 @@ function isInlineCodeExecution(
 export function parseBashCommand(command: string): ParsedCommand {
   try {
     // Dequote (quoted text becomes placeholders, newlines become `;`), then split by operators
-    const { text, decode } = dequoteCommand(command);
+    const { text, decode, hasRawEscape } = dequoteCommand(command);
     const simpleCommands = splitByOperators(text);
 
     // Extract executables from each command
@@ -602,6 +667,7 @@ export function parseBashCommand(command: string): ParsedCommand {
       const parsed = parseSimpleCommandTokens(tokens, {
         caseArmStart: segment.caseArmStart || opensCaseArm,
         decode,
+        hasRawEscape,
       });
       opensCaseArm = parsed.opensCaseArm;
       const exec = parsed.executable;
@@ -613,6 +679,7 @@ export function parseBashCommand(command: string): ParsedCommand {
           const actualExec = parseSimpleCommandTokens(tokens.slice(parsed.index + 1), {
             keywords: false,
             decode,
+            hasRawEscape,
           }).executable;
           if (actualExec) {
             executables.push(actualExec);

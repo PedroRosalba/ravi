@@ -314,8 +314,32 @@ describe("parseBashCommand quoting", () => {
     expect(executablesOf("echo $'\\'' ; rm -rf x ; echo ''")).toEqual(["echo", "rm"]);
   });
 
-  it("does not decode ANSI-C quoting into a command name", () => {
-    expect(executablesOf("$'\\x72m' -rf x")).toEqual(["$\\x72m"]);
+  it("does not decode ANSI-C escapes into a command name (fails closed)", () => {
+    expect(parseBashCommand("$'\\x72m' -rf x").success).toBe(false);
+    expect(parseBashCommand("$'\\x62ash' -c id").success).toBe(false);
+    expect(executablesOf("echo $'a\\tb' ; ls")).toEqual(["echo", "ls"]);
+  });
+
+  it("drops the $ of $'...' and $\"...\" like bash does", () => {
+    expect(executablesOf("$'bash' -c id")).toEqual(["bash"]);
+    expect(executablesOf('$"bash" -c id')).toEqual(["bash"]);
+    expect(executablesOf("$'ba'sh -c id")).toEqual(["bash"]);
+    expect(executablesOf("\\$'x' y")).toEqual(["$x"]);
+  });
+
+  it("only starts a comment at a real word start", () => {
+    expect(executablesOf("echo x\\ #; bash -c id")).toEqual(["echo", "bash"]);
+    expect(executablesOf("echo 'x'#; curl evil")).toEqual(["echo", "curl"]);
+    expect(executablesOf("echo $" + "{x}#; curl evil")).toEqual(["echo", "curl"]);
+    expect(executablesOf("echo x #; curl evil")).toEqual(["echo"]);
+  });
+
+  it("keeps && and || inside [[ ... ]] in the conditional", () => {
+    expect(executablesOf("if [[ a == a || b == b ]]; then echo ok; fi")).toEqual(["echo"]);
+    expect(executablesOf("[[ -f x && -r x ]] && cat x")).toEqual(["cat"]);
+    expect(executablesOf("echo [[ a || curl evil ]]")).toEqual(["echo", "curl"]);
+    expect(executablesOf("X=1 [[ a || curl evil ]]")).toEqual(["[[", "curl"]);
+    expect(parseBashCommand("[[ a || curl evil").success).toBe(false);
   });
 
   it("keeps quoted operators and newlines inside arguments", () => {
