@@ -3623,6 +3623,8 @@ describe("SessionCommands recap", () => {
 
 describe("SessionCommands subscriptions", () => {
   beforeEach(() => {
+    scopeEnforced = false;
+    canAccess = true;
     resolvedSession = {
       sessionKey: "agent:dev:main",
       name: "dev",

@@ -110,12 +110,15 @@ mock.module("../context.js", () => ({
 let scopeEnforced = false;
 let canAccessSessionResult = true;
 let canModifySessionResult = true;
+let allowedSessionRefs: string[] | null = null;
 
 mock.module("../../permissions/scope.js", () => ({
   getScopeContext: () => (scopeEnforced ? { agentId: "dev" } : undefined),
   isScopeEnforced: () => scopeEnforced,
-  canAccessSession: () => canAccessSessionResult,
-  canModifySession: () => canModifySessionResult,
+  canAccessSession: (_ctx: unknown, ref: string) =>
+    allowedSessionRefs ? allowedSessionRefs.includes(ref) : canAccessSessionResult,
+  canModifySession: (_ctx: unknown, ref: string) =>
+    allowedSessionRefs ? allowedSessionRefs.includes(ref) : canModifySessionResult,
   canAccessContact: () => true,
   canAccessResource: () => true,
   filterVisibleAgents: <T>(_: unknown, agents: T[]) => agents,
@@ -2052,12 +2055,14 @@ describe("AgentsCommands session ownership and scope", () => {
     scopeEnforced = false;
     canAccessSessionResult = true;
     canModifySessionResult = true;
+    allowedSessionRefs = null;
   });
 
   afterEach(() => {
     scopeEnforced = false;
     canAccessSessionResult = true;
     canModifySessionResult = true;
+    allowedSessionRefs = null;
   });
 
   async function runQuiet<T>(fn: () => T | Promise<T>): Promise<T> {
@@ -2109,6 +2114,28 @@ describe("AgentsCommands session ownership and scope", () => {
     const payload = await runQuiet(() => new AgentsCommands().debug("dev", "dev-main", undefined, true));
     expect(payload).toMatchObject({ error: "No session found: dev-main" });
   });
+
+  it("accepts a session the caller's scope matches only by session key", async () => {
+    resolvedSession = ownSession;
+    scopeEnforced = true;
+    allowedSessionRefs = ["agent:dev:main"];
+    const payload = await runQuiet(() => new AgentsCommands().reset("dev", "dev-main", true, true));
+    expect(payload).toMatchObject({ action: "reset", changed: true });
+    const debugPayload = await runQuiet(() => new AgentsCommands().debug("dev", "dev-main", undefined, true));
+    expect(debugPayload).not.toHaveProperty("error");
+  });
+
+  it("does not list out-of-scope sessions in not-found hints", async () => {
+    resolvedSession = ownSession;
+    sessionsByAgent = [ownSession];
+    scopeEnforced = true;
+    canAccessSessionResult = false;
+    canModifySessionResult = false;
+    const resetPayload = await runQuiet(() => new AgentsCommands().reset("dev", "dev-main", true, true));
+    expect(resetPayload).toMatchObject({ reason: "not_found", availableSessions: [] });
+    const debugPayload = await runQuiet(() => new AgentsCommands().debug("dev", "dev-main", undefined, true));
+    expect(debugPayload).toMatchObject({ availableSessions: [] });
+  });
 });
 
 describe("AgentsCommands set defaults authority keys", () => {
@@ -2144,10 +2171,25 @@ describe("AgentsCommands set defaults authority keys", () => {
       new AgentsCommands().set(
         "dev",
         "defaults",
-        JSON.stringify({ modelBroker: { brokerId: "evil", profileRef: "p2", required: true } }),
+        JSON.stringify({
+          runtimePermissions: { profile: "bootstrap" },
+          modelBroker: { brokerId: "evil", profileRef: "p2", required: true },
+        }),
         true,
       ),
     ).rejects.toThrow("defaults.modelBroker cannot be changed with 'agents set'. Use 'ravi agents model-broker dev");
+    expect(updateAgentCalls).toHaveLength(0);
+  });
+
+  it("rejects a defaults write that drops runtimePermissions", async () => {
+    await expect(
+      new AgentsCommands().set(
+        "dev",
+        "defaults",
+        JSON.stringify({ tts_voice: "new", modelBroker: { brokerId: "hub", profileRef: "p1" } }),
+        true,
+      ),
+    ).rejects.toThrow("defaults.runtimePermissions cannot be changed with 'agents set'");
     expect(updateAgentCalls).toHaveLength(0);
   });
 

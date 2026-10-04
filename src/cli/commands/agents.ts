@@ -113,13 +113,16 @@ function resolveAgentOwnedSession(
 ): SessionEntry | null {
   const session = nameOrKey ? resolveSession(nameOrKey) : getMainSession(agentId);
   if (!session || session.agentId !== agentId) return null;
+  return isSessionInCallerScope(session, access) ? session : null;
+}
+
+/** True when the caller's scope (if enforced) allows `access` on the session by name or key. */
+function isSessionInCallerScope(session: SessionEntry, access: "access" | "modify"): boolean {
   const scopeCtx = getScopeContext();
-  if (isScopeEnforced(scopeCtx)) {
-    const ref = session.name ?? session.sessionKey;
-    const allowed = access === "modify" ? canModifySession(scopeCtx, ref) : canAccessSession(scopeCtx, ref);
-    if (!allowed) return null;
-  }
-  return session;
+  if (!isScopeEnforced(scopeCtx)) return true;
+  const check = access === "modify" ? canModifySession : canAccessSession;
+  const refs = [session.name, session.sessionKey].filter((ref): ref is string => Boolean(ref));
+  return refs.some((ref) => check(scopeCtx, ref));
 }
 
 function emitConfigChanged() {
@@ -1346,13 +1349,11 @@ SOURCES
       }
       // runtimePermissions and modelBroker carry agent authority and have
       // dedicated commands with their own --execute brake. A raw defaults
-      // write may round-trip them unchanged but must not change them.
+      // write may round-trip them unchanged but must not change or drop them
+      // (dropping a narrow profile would fall back to wider bootstrap authority).
       const nextDefaults = parsedValue as Record<string, unknown>;
       for (const [guardedKey, command] of AGENT_SET_DEFAULTS_GUARDED_KEYS) {
-        if (
-          Object.hasOwn(nextDefaults, guardedKey) &&
-          !isDeepStrictEqual(nextDefaults[guardedKey], agent.defaults?.[guardedKey])
-        ) {
+        if (!isDeepStrictEqual(nextDefaults[guardedKey], agent.defaults?.[guardedKey])) {
           fail(
             `defaults.${guardedKey} cannot be changed with 'agents set'. Use '${command.replace("<id>", id)}' instead.`,
           );
@@ -2086,8 +2087,8 @@ SOURCES
       }
       return sessionPayload;
     } else {
-      // Show available sessions as hint
-      const sessions = getSessionsByAgent(id);
+      // Show available sessions as hint, limited to what the caller may modify
+      const sessions = getSessionsByAgent(id).filter((s) => isSessionInCallerScope(s, "modify"));
       const notFoundPayload = {
         action: "reset" as const,
         changed: false,
@@ -2149,7 +2150,7 @@ SOURCES
     const session = resolveAgentOwnedSession(id, nameOrKey, "access");
 
     if (!session) {
-      const sessions = getSessionsByAgent(id);
+      const sessions = getSessionsByAgent(id).filter((s) => isSessionInCallerScope(s, "access"));
       const notFoundPayload = {
         error: `No session found: ${nameOrKey ?? "(main)"}` as const,
         agentId: id,
