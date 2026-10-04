@@ -44,9 +44,12 @@ The user should not see the raw provider error as an assistant reply.
 
 If the error was classified but no restart happened, the failure surfaces as a
 normal `turn.failed` (no `autoRecovered` / `recoveryKind` in the payload, no
-`session.*` recovery event, the chat gets the generic `safe_error`, not the raw
-provider error) and one of these
-warnings in the daemon log:
+`session.*` recovery event). What the chat shows depends on the turn: a
+channel-backed turn gets the generic `safe_error` from the runtime channel
+projection, while a classic chat turn gets `Error: <detail>`, the first line of
+the provider error after `publicRuntimeFailureDetail`
+(`src/runtime/public-failure.ts`) masks credential and account failures and
+truncates long text. The daemon log shows one of these warnings:
 
 - `Skipping runtime session auto-recovery because the current turn is not replay-safe`:
   the failed turn had a started tool, materialized output, or a durable binding
