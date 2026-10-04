@@ -227,6 +227,26 @@ const TOPICS: readonly TriggerTopicCatalogEntry[] = [
           type: "string",
           description: "Provider trigger id for short-lived interactive follow-up flows.",
         },
+        {
+          path: "viewCallbackId",
+          type: "string",
+          description: "Slack modal callback_id for interactions that happen inside a view.",
+        },
+        {
+          path: "viewPrivateMetadata",
+          type: "string",
+          description: "Slack view.private_metadata as sent by the workflow that opened the modal.",
+        },
+        { path: "viewHash", type: "string", description: "Slack view.hash, for `ravi slack modals-update --hash`." },
+        {
+          path: "modalOpened",
+          type: "boolean",
+          description:
+            "Set when a slack.immediateModals rule matched: true if Ravi already opened the modal, false if views.open failed.",
+        },
+        { path: "openedViewId", type: "string", description: "View id of the modal Ravi opened immediately." },
+        { path: "openedViewHash", type: "string", description: "View hash of the modal Ravi opened immediately." },
+        { path: "modalOpenError", type: "string", description: "views.open error when modalOpened is false." },
         { path: "actionId", type: "string", description: "Block Kit action_id or equivalent provider action id." },
         { path: "blockId", type: "string", description: "Block Kit block_id or equivalent provider block id." },
         { path: "value", type: "string", description: "Action value when the provider includes one." },

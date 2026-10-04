@@ -20,6 +20,7 @@ import {
   isChatCompatibleWithSession,
 } from "../../router/index.js";
 import {
+  dbGetSetting,
   dbListChatParticipants,
   dbUpsertChat,
   dbUpsertChatMessage,
@@ -71,6 +72,13 @@ import {
   type SlackInstanceAliasResolution,
   type SlackScopedIdentityResolution,
 } from "./instance-alias.js";
+import {
+  buildSlackImmediateModalView,
+  matchSlackImmediateModalRule,
+  parseSlackImmediateModalRules,
+  SLACK_IMMEDIATE_MODALS_SETTING,
+  type SlackImmediateModalRule,
+} from "./immediate-modals.js";
 import { storeSlackInteractionResponseUrl } from "./interactions.js";
 import { slackInboundReactionFromEnvelope } from "./reactions.js";
 import {
@@ -202,6 +210,8 @@ export interface SlackSocketModeServiceOptions {
   /** Clock injection for bounded auth.test retry tests. */
   readonly now?: () => number;
   readonly transcribeAudio?: typeof transcribeAudio;
+  /** Immediate modal rules; defaults to the `slack.immediateModals` setting. */
+  readonly getImmediateModalRules?: () => readonly SlackImmediateModalRule[];
 }
 
 export interface SlackNativeRuntime {
@@ -746,7 +756,7 @@ export class SlackSocketModeService {
 
     const interaction = this.normalizeInteractionEnvelope(envelope);
     if (interaction) {
-      await this.publishInteraction("ravi.inbound.interaction", interaction);
+      await this.publishInteraction("ravi.inbound.interaction", await this.openImmediateModal(interaction));
       return "processed";
     }
 
@@ -1252,6 +1262,50 @@ export class SlackSocketModeService {
     }
   }
 
+  private immediateModalRules(): readonly SlackImmediateModalRule[] {
+    if (this.options.getImmediateModalRules) return this.options.getImmediateModalRules();
+    try {
+      return parseSlackImmediateModalRules(dbGetSetting(SLACK_IMMEDIATE_MODALS_SETTING));
+    } catch (error) {
+      log.warn("Slack immediate modal rules unavailable; skipping", {
+        setting: SLACK_IMMEDIATE_MODALS_SETTING,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Open a configured modal with the interaction trigger_id before publishing,
+   * because Slack trigger_ids expire in ~3s. Failures fall back to the plain
+   * publish so trigger-driven workflows still see the click.
+   */
+  private async openImmediateModal(interaction: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const rule = matchSlackImmediateModalRule(this.immediateModalRules(), interaction);
+    if (!rule) return interaction;
+    try {
+      const result = await this.webClient.viewsOpen({
+        triggerId: interaction.triggerId as string,
+        view: buildSlackImmediateModalView(rule, interaction),
+      });
+      return compactInteractionPayload({
+        ...interaction,
+        modalOpened: true,
+        openedViewId: stringField(result.view, "id"),
+        openedViewHash: stringField(result.view, "hash"),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.warn("Slack immediate modal open failed; publishing interaction only", {
+        accountId: this.options.accountId,
+        actionId: interaction.actionId,
+        blockId: interaction.blockId,
+        error: message,
+      });
+      return { ...interaction, modalOpened: false, modalOpenError: message };
+    }
+  }
+
   private normalizeInteractionEnvelope(envelope: SlackSocketEnvelope): Record<string, unknown> | null {
     const payload = envelope.payload;
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
@@ -1300,6 +1354,8 @@ export class SlackSocketModeService {
       containerType: stringField(container, "type"),
       viewId: stringField(view, "id"),
       viewCallbackId: stringField(view, "callback_id"),
+      viewPrivateMetadata: stringField(view, "private_metadata"),
+      viewHash: stringField(view, "hash"),
       actionId: stringField(firstAction, "action_id"),
       blockId: stringField(firstAction, "block_id"),
       actionType: stringField(firstAction, "type"),
