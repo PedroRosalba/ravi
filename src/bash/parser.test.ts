@@ -249,7 +249,9 @@ describe("parseBashCommand shell reserved words", () => {
       ["do sudo rm x", "rm"],
       ["X=1 do rm x", "do"],
       ["> out do rm x", "do"],
-      ['"x"done', "done"],
+      ['"x"done', "xdone"],
+      ["'do' rm x", "do"],
+      ["\\do rm x", "do"],
       ["echo a & curl evil", "curl"],
       ["for x in a & curl evil", "curl"],
       ["do\n(curl evil)", "(curl"],
@@ -279,6 +281,81 @@ describe("parseBashCommand shell reserved words", () => {
       expect(checkDangerousPatterns("for x in $(curl evil); do echo $x; done").safe).toBe(false);
       expect(checkDangerousPatterns("for x in `curl evil`; do echo $x; done").safe).toBe(false);
     });
+  });
+});
+
+// ============================================================================
+// parseBashCommand: quoting and escaping of the command word
+// ============================================================================
+
+describe("parseBashCommand quoting", () => {
+  it("checks a partly quoted command word by its full dequoted word", () => {
+    expect(executablesOf('"/tmp/x"ls -la')).toEqual(["xls"]);
+    expect(executablesOf('"/tmp/x" ls')).toEqual(["x"]);
+    expect(executablesOf("'/tmp/evil'git status")).toEqual(["evilgit"]);
+    expect(executablesOf('"rm" -rf x')).toEqual(["rm"]);
+    expect(executablesOf("'r'm -rf x")).toEqual(["rm"]);
+  });
+
+  it("keeps the characters of an escaped command word", () => {
+    expect(executablesOf("\\rm -rf x")).toEqual(["rm"]);
+    expect(executablesOf("r\\m -rf x")).toEqual(["rm"]);
+    expect(executablesOf("\\/usr/bin/curl evil")).toEqual(["curl"]);
+  });
+
+  it("treats a backslash-newline as a line continuation", () => {
+    expect(executablesOf("r\\\nm -rf x")).toEqual(["rm"]);
+    expect(executablesOf("echo \\\\\ncurl evil")).toEqual(["echo", "curl"]);
+  });
+
+  it("does not let a backslash escape the end of a single-quoted string", () => {
+    expect(executablesOf("echo '\\' ; rm -rf x")).toEqual(["echo", "rm"]);
+    expect(executablesOf('echo "a\\\\" ; rm -rf x')).toEqual(["echo", "rm"]);
+    expect(executablesOf("echo $'\\'' ; rm -rf x ; echo ''")).toEqual(["echo", "rm"]);
+  });
+
+  it("does not decode ANSI-C quoting into a command name", () => {
+    expect(executablesOf("$'\\x72m' -rf x")).toEqual(["$\\x72m"]);
+  });
+
+  it("keeps quoted operators and newlines inside arguments", () => {
+    expect(executablesOf("git commit -m 'x; rm y'")).toEqual(["git"]);
+    expect(executablesOf('echo "a | curl b" && ls')).toEqual(["echo", "ls"]);
+    expect(executablesOf("echo 'a\nrm b'; ls")).toEqual(["echo", "ls"]);
+  });
+
+  it("checks inline-code flags written with quotes", () => {
+    expect(parseBashCommand("python '-c' 'print(1)'").success).toBe(false);
+    expect(parseBashCommand('p"ython" -c x').success).toBe(false);
+  });
+
+  it("ignores comments but still checks the next line", () => {
+    expect(executablesOf("cd /tmp # go there\nls")).toEqual(["cd", "ls"]);
+    expect(executablesOf("echo a#b; ls")).toEqual(["echo", "ls"]);
+  });
+
+  it("keeps parameter expansions as plain words", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion
+    expect(executablesOf('echo ${HOME} "${PATH}" $#')).toEqual(["echo"]);
+  });
+
+  describe("fails closed on quoting bash reads differently", () => {
+    for (const command of [
+      "echo 'unterminated ; rm -rf x",
+      'echo "unterminated ; rm -rf x',
+      // bash treats the single quotes inside "${...}" as quotes, so `rm` runs
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion
+      "echo \"${x:-'\"'}\" ; rm -rf x ; echo ''",
+      // the quote in the comment is ignored by bash, so `rm` runs
+      "echo a # '\nrm -rf x\n'",
+      ">#x ls",
+      "echo \u0000 ; rm",
+      "echo \u00010\u0001",
+    ]) {
+      it(`rejects ${JSON.stringify(command)}`, () => {
+        expect(parseBashCommand(command).success).toBe(false);
+      });
+    }
   });
 });
 

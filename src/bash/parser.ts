@@ -95,69 +95,163 @@ export function checkDangerousPatterns(command: string): PatternCheckResult {
 // ============================================================================
 
 /**
- * Normalize command by replacing newlines with semicolons.
- * This ensures multi-line commands are properly parsed.
- */
-function normalizeCommand(command: string): string {
-  return command.replace(/\n/g, " ; ");
-}
-
-/**
- * Placeholder left where quoted or escaped text was removed.
+ * Quoted and escaped text is replaced by a placeholder `OPEN <index> CLOSE`
+ * that points into a table of literal strings. This keeps quoted operators,
+ * whitespace and newlines from splitting the command, while the full
+ * dequoted word can still be rebuilt for the command position
+ * (`"/tmp/x"ls` -> `/tmp/xls`, `\rm` -> `rm`).
  *
  * Bash only recognizes reserved words (`do`, `done`, `if`, ...) when they are
- * unquoted, so `"x"done` or `\do` are ordinary command words. Keeping a marker
- * lets the parser tell a real keyword from one that only looks like a keyword
- * after the quotes were stripped. NUL cannot appear in a bash argument.
+ * unquoted, so `"x"done` or `\do` are ordinary command words: a token holding
+ * a placeholder is never a keyword. Commands that already contain these
+ * control characters are rejected so placeholders cannot be forged.
  */
-const QUOTE_MARK = "\u0000";
+const QUOTE_OPEN = "\u0000";
+const QUOTE_CLOSE = "\u0001";
+const PLACEHOLDER_PATTERN = /\u0000(\d+)\u0001/g;
 
-function stripQuoteMarks(token: string): string {
-  return token.split(QUOTE_MARK).join("");
+interface DequotedCommand {
+  /** The command with quoted/escaped text replaced by placeholders and newlines by ` ; `. */
+  text: string;
+  /** Rebuild the literal (dequoted) word for a token of `text`. */
+  decode: (token: string) => string;
 }
 
 /**
- * Remove quoted strings from command to avoid false positives.
- * Replaces both single and double quoted strings with a QUOTE_MARK placeholder.
+ * Remove shell quoting the way bash does, for the purpose of finding commands:
+ * - `'...'` is literal (a backslash inside does not escape anything)
+ * - `$'...'` is literal, but `\'` does not end it
+ * - `"..."` is literal except `\$`, `` \` ``, `\"`, `\\` and `\<newline>`
+ * - `\c` outside quotes is the literal `c`; `\<newline>` is a line continuation
+ * - an unquoted newline separates commands (normalized to ` ; `)
+ * - an unquoted `#` at the start of a word starts a comment up to the newline
+ *
+ * Constructs whose quoting bash reads differently (quotes or backslashes
+ * inside `${...}` / `$[...]`, `#` right after a redirection, an unterminated
+ * quote) are rejected so the permission check fails closed.
  */
-function removeQuotedStrings(command: string): string {
-  let result = "";
-  let inSingle = false;
-  let inDouble = false;
-  let escape = false;
+function dequoteCommand(command: string): DequotedCommand {
+  if (command.includes(QUOTE_OPEN) || command.includes(QUOTE_CLOSE)) {
+    throw new Error("command contains control characters that are not allowed");
+  }
+
+  const literals: string[] = [];
+  let text = "";
+  let literal = "";
+  let quote: "single" | "ansi" | "double" | null = null;
+
+  const pushLiteral = (value: string) => {
+    literals.push(value);
+    text += `${QUOTE_OPEN}${literals.length - 1}${QUOTE_CLOSE}`;
+  };
+
+  // `${...}` or `$[...]` starting at `start` (the `$`): return its raw text.
+  // Quotes and backslashes inside are refused: bash parses them differently.
+  const readExpansion = (start: number): string => {
+    const open = command[start + 1];
+    const close = open === "{" ? "}" : "]";
+    let depth = 0;
+    for (let j = start + 1; j < command.length; j++) {
+      const c = command[j];
+      if (c === "'" || c === '"' || c === "\\" || c === "`") {
+        throw new Error("quotes or backslashes inside a parameter expansion are not allowed");
+      }
+      if (c === open) depth++;
+      if (c === close) {
+        depth--;
+        if (depth === 0) return command.slice(start, j + 1);
+      }
+    }
+    throw new Error("unterminated parameter expansion");
+  };
 
   for (let i = 0; i < command.length; i++) {
     const char = command[i];
+    const next = command[i + 1];
 
-    if (escape) {
-      escape = false;
+    if (quote === "single" || quote === "ansi") {
+      if (char === "'") {
+        quote = null;
+        pushLiteral(literal);
+      } else if (quote === "ansi" && char === "\\" && next !== undefined) {
+        // Keep the escape raw: `$'\x72m'` stays `$\x72m`, never `rm`.
+        literal += char + next;
+        i++;
+      } else {
+        literal += char;
+      }
+      continue;
+    }
+
+    if (char === "$" && (next === "{" || next === "[")) {
+      const expansion = readExpansion(i);
+      if (quote === "double") literal += expansion;
+      else text += expansion;
+      i += expansion.length - 1;
+      continue;
+    }
+
+    if (quote === "double") {
+      if (char === '"') {
+        quote = null;
+        pushLiteral(literal);
+      } else if (char === "\\" && next !== undefined && '$`"\\\n'.includes(next)) {
+        if (next !== "\n") literal += next;
+        i++;
+      } else {
+        literal += char;
+      }
       continue;
     }
 
     if (char === "\\") {
-      escape = true;
-      if (!inSingle && !inDouble) result += QUOTE_MARK;
+      if (next === undefined) {
+        pushLiteral("\\");
+      } else if (next !== "\n") {
+        pushLiteral(next);
+      }
+      i++;
       continue;
     }
 
-    if (char === "'" && !inDouble) {
-      if (!inSingle) result += QUOTE_MARK;
-      inSingle = !inSingle;
+    if (char === "'") {
+      // An unquoted, unescaped `$` right before the quote makes it `$'...'`.
+      quote = command[i - 1] === "$" && text.endsWith("$") ? "ansi" : "single";
+      literal = "";
       continue;
     }
 
-    if (char === '"' && !inSingle) {
-      if (!inDouble) result += QUOTE_MARK;
-      inDouble = !inDouble;
+    if (char === '"') {
+      quote = "double";
+      literal = "";
       continue;
     }
 
-    if (!inSingle && !inDouble) {
-      result += char;
+    if (char === "#") {
+      const prev = command[i - 1];
+      if (prev === "<" || prev === ">") {
+        throw new Error("'#' right after a redirection is not allowed");
+      }
+      if (prev === undefined || /[\s;&|()]/.test(prev)) {
+        // Comment: skip to the end of the line; the newline still separates commands.
+        const newline = command.indexOf("\n", i);
+        if (newline === -1) break;
+        i = newline - 1;
+        continue;
+      }
     }
+
+    text += char === "\n" ? " ; " : char;
   }
 
-  return result;
+  if (quote !== null) {
+    throw new Error("unterminated quote");
+  }
+
+  return {
+    text,
+    decode: (token) => token.replace(PLACEHOLDER_PATTERN, (_, index: string) => literals[Number(index)] ?? ""),
+  };
 }
 
 /**
@@ -166,7 +260,8 @@ function removeQuotedStrings(command: string): string {
  */
 function extractExecutableName(path: string): string {
   const parts = path.split("/");
-  return parts[parts.length - 1];
+  // A trailing slash would leave an empty name; keep the full word (fail closed).
+  return parts[parts.length - 1] || path;
 }
 
 /**
@@ -228,6 +323,8 @@ interface SimpleCommandOptions {
   keywords?: boolean;
   /** The segment starts a `case` arm, so a leading pattern token is not a command. */
   caseArmStart?: boolean;
+  /** Rebuild the dequoted word of a token (see dequoteCommand). */
+  decode?: (token: string) => string;
 }
 
 interface SimpleCommandResult {
@@ -256,6 +353,7 @@ function parseSimpleCommandTokens(tokens: string[], options: SimpleCommandOption
   // Bash only reads reserved words in command position: once an assignment,
   // redirection or ordinary word has been seen, `if`/`do`/... are plain words.
   let keywords = options.keywords ?? true;
+  const decode = options.decode ?? ((token: string) => token);
   let casePattern: RegExp | null = options.caseArmStart ? CASE_PATTERN : null;
   let i = 0;
 
@@ -278,7 +376,7 @@ function parseSimpleCommandTokens(tokens: string[], options: SimpleCommandOption
     }
 
     // Keywords are matched against the raw token: a quoted or escaped word
-    // (marked with QUOTE_MARK) is never a reserved word.
+    // (holding a quote placeholder) is never a reserved word.
     if (keywords) {
       if (PREFIX_KEYWORDS.has(token)) {
         i++;
@@ -352,7 +450,7 @@ function parseSimpleCommandTokens(tokens: string[], options: SimpleCommandOption
       continue;
     }
 
-    const word = stripQuoteMarks(token);
+    const word = decode(token);
     if (!word) {
       // The whole word was quoted text; keep scanning like before, but bash
       // would no longer treat a following reserved word as a keyword.
@@ -443,12 +541,16 @@ function splitByOperators(cleaned: string): CommandSegment[] {
 /**
  * Check if an executable with its arguments represents inline code execution.
  */
-function isInlineCodeExecution(executable: string, command: string): { blocked: boolean; reason?: string } {
+function isInlineCodeExecution(
+  executable: string,
+  command: string,
+  decode: (token: string) => string,
+): { blocked: boolean; reason?: string } {
   const flags = INLINE_CODE_INTERPRETERS[executable];
   if (!flags) return { blocked: false };
 
   // Check if any inline code flag is present in the command
-  const tokens = command.split(/\s+/).map(stripQuoteMarks);
+  const tokens = command.split(/\s+/).map(decode);
   const execIndex = tokens.findIndex((t) => extractExecutableName(t) === executable);
 
   if (execIndex === -1) return { blocked: false };
@@ -485,8 +587,9 @@ function isInlineCodeExecution(executable: string, command: string): { blocked: 
  */
 export function parseBashCommand(command: string): ParsedCommand {
   try {
-    // Normalize newlines, drop quoted text, then split by operators
-    const simpleCommands = splitByOperators(removeQuotedStrings(normalizeCommand(command)));
+    // Dequote (quoted text becomes placeholders, newlines become `;`), then split by operators
+    const { text, decode } = dequoteCommand(command);
+    const simpleCommands = splitByOperators(text);
 
     // Extract executables from each command
     const executables: string[] = [];
@@ -498,6 +601,7 @@ export function parseBashCommand(command: string): ParsedCommand {
       const tokens = tokenizeSegment(cmd);
       const parsed = parseSimpleCommandTokens(tokens, {
         caseArmStart: segment.caseArmStart || opensCaseArm,
+        decode,
       });
       opensCaseArm = parsed.opensCaseArm;
       const exec = parsed.executable;
@@ -506,14 +610,17 @@ export function parseBashCommand(command: string): ParsedCommand {
 
         // Check for sudo - also extract the actual command
         if (exec === "sudo") {
-          const actualExec = parseSimpleCommandTokens(tokens.slice(parsed.index + 1), { keywords: false }).executable;
+          const actualExec = parseSimpleCommandTokens(tokens.slice(parsed.index + 1), {
+            keywords: false,
+            decode,
+          }).executable;
           if (actualExec) {
             executables.push(actualExec);
           }
         }
 
         // Check for inline code execution
-        const inlineCheck = isInlineCodeExecution(exec, cmd);
+        const inlineCheck = isInlineCodeExecution(exec, cmd, decode);
         if (inlineCheck.blocked) {
           seenInline.push(inlineCheck.reason || `${exec} inline code`);
         }

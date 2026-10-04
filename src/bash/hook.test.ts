@@ -269,6 +269,24 @@ describe("createBashPermissionHook", () => {
       expect(evaluateBashPermission("for x in a; do bash -c x; done", ctx).allowed).toBe(false);
     });
 
+    it("checks quoted and escaped command words by their full dequoted word", () => {
+      const ctx = {
+        agentId: "test",
+        kind: "test-runtime",
+        capabilities: [
+          { permission: "execute", objectType: "executable", objectId: "ls" },
+          { permission: "execute", objectType: "executable", objectId: "echo" },
+        ],
+      };
+      expect(evaluateBashPermission('"/tmp/x"ls', ctx).allowed).toBe(false);
+      expect(evaluateBashPermission('"/tmp/x" ls', ctx).allowed).toBe(false);
+      const escaped = evaluateBashPermission("\\rm -rf x", ctx);
+      expect(escaped.allowed).toBe(false);
+      expect(escaped.reason).toContain("rm");
+      expect(evaluateBashPermission("echo '\\' ; rm -rf x", ctx).allowed).toBe(false);
+      expect(evaluateBashPermission('"ls" -la', ctx).allowed).toBe(true);
+    });
+
     it("does not widen stale agent-runtime capabilities with the agent's materialized grants", () => {
       const decision = evaluateBashPermission("pwd && rg foo", {
         agentId: "dev",
