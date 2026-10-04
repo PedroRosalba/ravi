@@ -16692,6 +16692,9 @@ class RaviSchemas {
         }
       ]
     },
+    "previousPid": {
+      "type": "number"
+    },
     "reason": {
       "type": "string"
     },
@@ -17387,6 +17390,9 @@ class RaviSchemas {
           "type": "null"
         }
       ]
+    },
+    "previousPid": {
+      "type": "number"
     },
     "reason": {
       "type": "string"
@@ -18259,6 +18265,9 @@ class RaviSchemas {
           "type": "null"
         }
       ]
+    },
+    "previousPid": {
+      "type": "number"
     },
     "reason": {
       "type": "string"

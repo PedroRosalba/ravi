@@ -69,6 +69,7 @@ import type { RuntimeSafeEmit } from "./host-event-loop.js";
 import { markRuntimeLiveIdle, updateRuntimeLiveState } from "./live-state.js";
 import { FATAL_TOOL_FAILURE_REASON } from "./fatal-tool-failure.js";
 import { formatUserFacingTurnFailure } from "./public-failure.js";
+import { isUserFacingPromptSource, reportRuntimePromptIntakeFailure } from "./intake-failure.js";
 import {
   startRuntimeSession,
   updateRuntimeSessionMetadata,
@@ -844,7 +845,7 @@ export class RuntimeSessionDispatcher {
     const agentId = prompt._agentId ?? sessionEntry?.agentId ?? routerConfig.defaultAgent;
     const agent = routerConfig.agents[agentId] ?? routerConfig.agents[routerConfig.defaultAgent];
     if (!agent) {
-      log.error("No agent found for prompt", { sessionName, agentId });
+      this.reportPromptIntakeFailure(sessionName, prompt, agentId);
       return;
     }
 
@@ -953,7 +954,7 @@ export class RuntimeSessionDispatcher {
     const agentId = prompt._agentId ?? sessionEntry?.agentId ?? routerConfig.defaultAgent;
     const agent = routerConfig.agents[agentId] ?? routerConfig.agents[routerConfig.defaultAgent];
     if (!agent) {
-      log.error("No agent found for prompt", { sessionName, agentId });
+      this.reportPromptIntakeFailure(sessionName, prompt, agentId);
       return;
     }
     prompt = this.consumeHeldSkipTurnMessages(sessionName, prompt);
@@ -1526,6 +1527,20 @@ export class RuntimeSessionDispatcher {
     await this.startStreamingSession(sessionName, prompt, { retainReleasedSlot });
   }
 
+  // A missing agent is permanent: acknowledge the prompt (no throw, so JetStream
+  // does not redeliver it) but leave a durable trace and tell the chat user.
+  private reportPromptIntakeFailure(sessionName: string, prompt: RuntimeLaunchPrompt, agentId: string): void {
+    reportRuntimePromptIntakeFailure({
+      sessionName,
+      prompt,
+      reason: "no_agent",
+      stage: "dispatch",
+      instanceId: this.options.instanceId,
+      safeEmit: this.options.safeEmit,
+      details: { agentId },
+    });
+  }
+
   private prepareDaemonRestartResumePrompt(
     sessionName: string,
     prompt: RuntimeLaunchPrompt,
@@ -1968,7 +1983,7 @@ export class RuntimeSessionDispatcher {
       // stashed turn available for an explicit retry and never publish the
       // technical failure onto the session's user-facing response subject;
       // a chat user only gets a generic notice so the turn doesn't look hung.
-      if (prompt.source && isUserFacingPendingStartSource(prompt.source)) {
+      if (prompt.source && isUserFacingPromptSource(prompt.source)) {
         await nats
           .emit(`ravi.session.${sessionName}.response`, {
             response: formatUserFacingTurnFailure(RUNTIME_RECOVERY_EXHAUSTED_USER_MESSAGE),
@@ -2392,7 +2407,7 @@ export class RuntimeSessionDispatcher {
     const prompt = pendingStart.prompt;
     const lane = this.resolveStartLane(sessionName, prompt, pendingStart.lane);
     const source = prompt.source;
-    const userFacing = lane === "interactive" || isUserFacingPendingStartSource(source);
+    const userFacing = lane === "interactive" || isUserFacingPromptSource(source);
     pendingStart.cancelled = true;
     this.clearPendingStartTimeout(pendingStart);
     const index = this.pendingStarts.indexOf(pendingStart);
@@ -3550,9 +3565,4 @@ function describeSessionState(session: RuntimeHostStreamingSession): Record<stri
     tool: session.currentToolName ?? null,
     idleMs: session.lastActivity ? Date.now() - session.lastActivity : null,
   };
-}
-
-function isUserFacingPendingStartSource(source: RuntimeLaunchPrompt["source"] | undefined): boolean {
-  const channel = source?.channel?.trim().toLowerCase();
-  return channel === "whatsapp" || channel === "slack" || channel === "telegram" || channel === "discord";
 }

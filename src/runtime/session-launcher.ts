@@ -43,6 +43,7 @@ import { updateRuntimeLiveState } from "./live-state.js";
 import { isClaudeModelAlias, resolvePreferredRuntimeModel } from "./model-catalog.js";
 import { ensureObserverBindingsForSession } from "./observation-plane.js";
 import { formatUserFacingTurnFailure, publicRuntimeFailureDetail } from "./public-failure.js";
+import { reportRuntimePromptIntakeFailure } from "./intake-failure.js";
 
 const log = logger.child("runtime:session-launcher");
 
@@ -83,6 +84,18 @@ export function updateRuntimeSessionMetadata(sessionKey: string, prompt: Runtime
   }
 }
 
+function reportLaunchIntakeFailure(options: StartRuntimeSessionOptions): void {
+  reportRuntimePromptIntakeFailure({
+    sessionName: options.sessionName,
+    prompt: options.prompt,
+    reason: "no_agent",
+    stage: "launch",
+    instanceId: options.instanceId,
+    safeEmit: options.safeEmit,
+    ...(options.prompt._agentId ? { details: { agentId: options.prompt._agentId } } : {}),
+  });
+}
+
 export async function startRuntimeSession(options: StartRuntimeSessionOptions): Promise<void> {
   const {
     sessionName,
@@ -101,7 +114,12 @@ export async function startRuntimeSession(options: StartRuntimeSessionOptions): 
   const resumeStashedMessages = prompt._resumeStashedMessages === true;
 
   const sessionIdentity = resolveRuntimeSessionIdentity({ sessionName, prompt });
-  if (!sessionIdentity) return;
+  if (!sessionIdentity) {
+    // The agent disappeared between dispatch and launch. Permanent, so record
+    // and acknowledge instead of throwing into a JetStream redelivery loop.
+    reportLaunchIntakeFailure(options);
+    return;
+  }
   let modelBrokerPlanClaim: ClaimedRuntimeModelBrokerPlan | undefined;
   if (prompt._modelBrokerTurnId) {
     const selection = resolveRequiredRuntimeModelBrokerSelection(
@@ -145,6 +163,7 @@ export async function startRuntimeSession(options: StartRuntimeSessionOptions): 
     throw error;
   }
   if (!resolvedSession) {
+    reportLaunchIntakeFailure(options);
     return;
   }
 
