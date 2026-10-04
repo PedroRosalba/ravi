@@ -8,7 +8,7 @@
  * of exiting the process.
  */
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,6 +16,8 @@ afterAll(() => mock.restore());
 
 const transcribeCalls: Array<Record<string, unknown>> = [];
 let transcribeFailure: unknown;
+let runtimeInvocation = false;
+let callerCwd: string | undefined;
 
 mock.module("../decorators.js", () => ({
   Group: () => () => {},
@@ -29,7 +31,8 @@ mock.module("../decorators.js", () => ({
 }));
 
 mock.module("../context.js", () => ({
-  getContext: () => undefined,
+  getContext: () => (callerCwd ? { cwd: callerCwd } : undefined),
+  hasRuntimeInvocationContext: () => runtimeInvocation,
   // Real hasContext checks RAVI_* envs; the contract helpers use it to throw
   // ContractError instead of process.exit, which is what tests need.
   hasContext: () => true,
@@ -40,6 +43,7 @@ mock.module("../context.js", () => ({
 
 mock.module("../../transcribe/service.js", () => ({
   SUPPORTED_AUDIO_EXTENSIONS: [".ogg", ".mp3", ".m4a", ".wav"],
+  MAX_TRANSCRIBE_FILE_BYTES: 200 * 1024 * 1024,
   inferAudioMimeType: (filePath: string) => (filePath.toLowerCase().endsWith(".mp3") ? "audio/mpeg" : undefined),
   transcribeFile: mock(async (input: Record<string, unknown>) => {
     transcribeCalls.push(input);
@@ -103,6 +107,8 @@ let audioDir: string;
 beforeEach(() => {
   transcribeCalls.length = 0;
   transcribeFailure = undefined;
+  runtimeInvocation = false;
+  callerCwd = undefined;
 });
 
 function seedAudioFile(name = "voz.mp3"): string {
@@ -152,25 +158,92 @@ describe("transcribe file contract", () => {
     expect(transcribeCalls).toHaveLength(0);
   });
 
-  it.each([
-    new Error("PRIVATE_MESSAGE_8K2R"),
-    "SENTINEL_SECRET_7M4Q",
-  ])("does not expose a provider rejection in the TRANSCRIBE_FAILED envelope", async (providerFailure) => {
+  it.each([new Error("PRIVATE_MESSAGE_8K2R"), "SENTINEL_SECRET_7M4Q"])(
+    "does not expose a provider rejection in the TRANSCRIBE_FAILED envelope",
+    async (providerFailure) => {
+      const filePath = seedAudioFile();
+      transcribeFailure = providerFailure;
+      try {
+        const error = await expectContractError(
+          () => new TranscribeCommands().file(filePath, "pt", true),
+          "TRANSCRIBE_FAILED",
+          1,
+        );
+
+        expect(error.message).toBe("Audio transcription failed.");
+        expect(error.details.retryable).toBe(true);
+        const serialized = JSON.stringify(error.envelope());
+        expect(serialized).not.toContain("PRIVATE_MESSAGE_8K2R");
+        expect(serialized).not.toContain("SENTINEL_SECRET_7M4Q");
+        expect(transcribeCalls).toHaveLength(1);
+      } finally {
+        rmSync(audioDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("passes the local CLI ceiling to the service and transcribes the resolved real path", async () => {
     const filePath = seedAudioFile();
-    transcribeFailure = providerFailure;
+    try {
+      await captureConsole(() => new TranscribeCommands().file(filePath, "pt", true));
+      expect(transcribeCalls).toHaveLength(1);
+      expect(transcribeCalls[0]?.maxBytes).toBe(200 * 1024 * 1024);
+    } finally {
+      rmSync(audioDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves relative paths against the caller cwd instead of the daemon cwd", async () => {
+    seedAudioFile("rel.mp3");
+    callerCwd = audioDir;
+    try {
+      await captureConsole(() => new TranscribeCommands().file("rel.mp3", "pt", true));
+      expect(transcribeCalls).toHaveLength(1);
+      expect(String(transcribeCalls[0]?.filePath)).toEndWith("/rel.mp3");
+    } finally {
+      rmSync(audioDir, { recursive: true, force: true });
+    }
+  });
+
+  it("caps agent/gateway callers at the inbound audio limit before reading the file", async () => {
+    const filePath = seedAudioFile("grande.mp3");
+    truncateSync(filePath, 20 * 1024 * 1024 + 1);
+    runtimeInvocation = true;
     try {
       const error = await expectContractError(
         () => new TranscribeCommands().file(filePath, "pt", true),
-        "TRANSCRIBE_FAILED",
-        1,
+        "FILE_TOO_LARGE",
+        2,
       );
+      expect(error.details).toMatchObject({ maxBytes: 20 * 1024 * 1024, sizeBytes: 20 * 1024 * 1024 + 1 });
+      expect(transcribeCalls).toHaveLength(0);
+    } finally {
+      rmSync(audioDir, { recursive: true, force: true });
+    }
+  });
 
-      expect(error.message).toBe("Audio transcription failed.");
-      expect(error.details.retryable).toBe(true);
-      const serialized = JSON.stringify(error.envelope());
-      expect(serialized).not.toContain("PRIVATE_MESSAGE_8K2R");
-      expect(serialized).not.toContain("SENTINEL_SECRET_7M4Q");
-      expect(transcribeCalls).toHaveLength(1);
+  it("rejects a directory named like audio with INVALID_FILE", async () => {
+    audioDir = mkdtempSync(join(tmpdir(), "ravi-transcribe-test-"));
+    const dirPath = join(audioDir, "pasta.mp3");
+    mkdirSync(dirPath);
+    try {
+      await expectContractError(() => new TranscribeCommands().file(dirPath, "pt", true), "INVALID_FILE", 2);
+      expect(transcribeCalls).toHaveLength(0);
+    } finally {
+      rmSync(audioDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an audio-named symlink that points at a non-audio host file", async () => {
+    audioDir = mkdtempSync(join(tmpdir(), "ravi-transcribe-test-"));
+    const target = join(audioDir, "segredo.env");
+    writeFileSync(target, "OPENAI_API_KEY=SENTINEL_KEY_4Q2W");
+    const link = join(audioDir, "voz.mp3");
+    symlinkSync(target, link);
+    try {
+      const error = await expectContractError(() => new TranscribeCommands().file(link, "pt", true), "INVALID_FILE", 2);
+      expect(JSON.stringify(error.envelope())).not.toContain("SENTINEL_KEY_4Q2W");
+      expect(transcribeCalls).toHaveLength(0);
     } finally {
       rmSync(audioDir, { recursive: true, force: true });
     }

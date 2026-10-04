@@ -14,9 +14,31 @@ const EXT_MIME: Record<string, string> = {
 
 export const SUPPORTED_AUDIO_EXTENSIONS = Object.keys(EXT_MIME);
 
+/**
+ * Hard ceiling for any local file handed to transcription. The file is read
+ * fully into memory, so callers must never hand an unbounded path here.
+ * Callers acting for an agent (gateway/tool) should pass a tighter `maxBytes`.
+ */
+export const MAX_TRANSCRIBE_FILE_BYTES = 200 * 1024 * 1024;
+
+export type TranscribeFileErrorCode = "NOT_A_REGULAR_FILE" | "FILE_TOO_LARGE";
+
+export class TranscribeFileError extends Error {
+  constructor(
+    readonly code: TranscribeFileErrorCode,
+    message: string,
+    readonly details: { sizeBytes?: number; maxBytes?: number } = {},
+  ) {
+    super(message);
+    this.name = "TranscribeFileError";
+  }
+}
+
 export interface TranscribeFileInput extends TranscriptionOptions {
   filePath: string;
   mimeType?: string;
+  /** Upper bound in bytes; defaults to (and is clamped by) MAX_TRANSCRIBE_FILE_BYTES. */
+  maxBytes?: number;
 }
 
 export interface TranscribeFileResult extends TranscriptionResult {
@@ -38,7 +60,19 @@ export async function transcribeFile(input: TranscribeFileInput): Promise<Transc
     throw new Error(`Unsupported audio format: ${extname(input.filePath) || "<none>"}`);
   }
 
-  const [stats, buffer] = await Promise.all([stat(input.filePath), readFile(input.filePath)]);
+  // Stat before reading so oversized or non-regular files are never loaded into memory.
+  const stats = await stat(input.filePath);
+  if (!stats.isFile()) {
+    throw new TranscribeFileError("NOT_A_REGULAR_FILE", "Audio path is not a regular file.");
+  }
+  const maxBytes = Math.min(input.maxBytes ?? MAX_TRANSCRIBE_FILE_BYTES, MAX_TRANSCRIBE_FILE_BYTES);
+  if (stats.size > maxBytes) {
+    throw new TranscribeFileError("FILE_TOO_LARGE", "Audio file exceeds the transcription size limit.", {
+      sizeBytes: stats.size,
+      maxBytes,
+    });
+  }
+  const buffer = await readFile(input.filePath);
   const result = await transcribeAudio(buffer, mimeType, {
     language: input.language,
     durationHintSec: input.durationHintSec,
