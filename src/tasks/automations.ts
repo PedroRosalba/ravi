@@ -493,7 +493,7 @@ export async function executeTaskAutomation(
       });
     }
     if (!filter.evaluate(context.data)) {
-      const run = dbFinalizeTaskAutomationRun(claimedRun.id, {
+      const { run } = dbFinalizeTaskAutomationRun(claimedRun.id, {
         status: "skipped",
         message: filter.valid ? "Filter did not match." : `Filter is invalid: ${filter.error ?? "unknown error"}`,
       });
@@ -566,14 +566,15 @@ export async function executeTaskAutomation(
       dispatchSessionName = dispatched.sessionName;
     }
 
-    dbRecordTaskAutomationFire(automation.id);
-    const run = dbFinalizeTaskAutomationRun(claimedRun.id, {
+    const { run, finalized } = dbFinalizeTaskAutomationRun(claimedRun.id, {
       status: "spawned",
       spawnedTaskId: spawnedTask.id,
       message: normalizedAgentId
         ? `Spawned ${spawnedTask.id} and dispatched to ${normalizedAgentId}/${dispatchSessionName ?? "-"}`
         : `Spawned ${spawnedTask.id}`,
     });
+    // Stale-claim recovery may have settled (and counted) this run already.
+    if (finalized) dbRecordTaskAutomationFire(automation.id);
 
     return {
       automation,
@@ -582,7 +583,7 @@ export async function executeTaskAutomation(
       ...(dispatchSessionName ? { dispatchSessionName } : {}),
     };
   } catch (error) {
-    const run = dbFinalizeTaskAutomationRun(claimedRun.id, {
+    const { run } = dbFinalizeTaskAutomationRun(claimedRun.id, {
       status: "failed",
       message: error instanceof Error ? error.message : String(error),
     });

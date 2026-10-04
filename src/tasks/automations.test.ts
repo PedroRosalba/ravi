@@ -29,7 +29,12 @@ mock.module("../nats.js", () => ({
 
 const { TASK_AUTOMATION_STALE_CLAIM_MS, createTaskAutomation, listTaskAutomationRuns, recoverStaleTaskAutomationRuns } =
   await import("./automations.js");
-const { dbBindTaskAutomationRunSpawnedTask, dbClaimTaskAutomationRun } = await import("./automations-db.js");
+const {
+  dbBindTaskAutomationRunSpawnedTask,
+  dbClaimTaskAutomationRun,
+  dbFinalizeTaskAutomationRun,
+  dbGetTaskAutomation,
+} = await import("./automations-db.js");
 const { completeTask, createTask, dispatchTask, emitTaskEvent, listTasks } = await import("./service.js");
 const { setTaskSessionPromptPublisherForTests } = await import("./session-publisher.js");
 const { dbCreateAgent, dbDeleteAgent } = await import("../router/router-db.js");
@@ -355,6 +360,30 @@ describe("task automation stale-claim recovery", () => {
     expect(listTasks({ archiveMode: "include" })).toHaveLength(2);
     expect(listTaskAutomationRuns(automation.id, 10)[0]?.status).toBe("spawned");
     expect(publishedPrompts).toHaveLength(0);
+  });
+
+  it("does not let a late executor overwrite or re-count a recovered run", () => {
+    const automation = createRecoveryAutomation();
+    const trigger = createTask({ title: "Trigger", instructions: "Trigger.", priority: "normal" });
+    const run = claim(automation.id, trigger.task.id, 1);
+    const child = createTask({
+      title: "Child",
+      instructions: "Child.",
+      priority: "normal",
+      parentTaskId: trigger.task.id,
+      createdBy: `task automation:${automation.id}`,
+    });
+    dbBindTaskAutomationRunSpawnedTask(run.id, child.task.id);
+
+    expect(recoverStaleTaskAutomationRuns({ now: staleNow() })).toHaveLength(1);
+    const firesAfterRecovery = dbGetTaskAutomation(automation.id)?.fireCount;
+
+    // The executor resumes after recovery and tries to settle the run itself.
+    const late = dbFinalizeTaskAutomationRun(run.id, { status: "failed", message: "late executor" });
+    expect(late.finalized).toBe(false);
+    expect(late.run.status).toBe("spawned");
+    expect(late.run.message).toContain("Recovered stale claim");
+    expect(dbGetTaskAutomation(automation.id)?.fireCount).toBe(firesAfterRecovery);
   });
 
   it("marks a stale claim with no child as failed without re-spawning", () => {

@@ -472,14 +472,16 @@ export function dbFinalizeTaskAutomationRun(
     spawnedTaskId?: string;
     message?: string | null;
   },
-): TaskAutomationRun {
+): { run: TaskAutomationRun; finalized: boolean } {
   ensureTaskAutomationSchema();
 
-  getDb()
+  // Compare-and-set on `claimed`, like stale-claim recovery: if recovery already
+  // settled this run, the executor must not overwrite it (or count the fire twice).
+  const result = getDb()
     .prepare(`
       UPDATE task_automation_runs
       SET status = ?, spawned_task_id = COALESCE(?, spawned_task_id), message = ?, updated_at = ?
-      WHERE id = ?
+      WHERE id = ? AND status = 'claimed'
     `)
     .run(updates.status, updates.spawnedTaskId ?? null, updates.message ?? null, Date.now(), id);
 
@@ -489,7 +491,7 @@ export function dbFinalizeTaskAutomationRun(
   if (!row) {
     throw new Error(`Task automation run not found: ${id}`);
   }
-  return rowToTaskAutomationRun(row);
+  return { run: rowToTaskAutomationRun(row), finalized: result.changes > 0 };
 }
 
 /**
