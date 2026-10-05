@@ -470,6 +470,16 @@ describe("SessionRuntimeCommands return contracts", () => {
       rolledBackTurns: 2,
     });
 
+    // A count outside the safe-integer range is not trusted.
+    reply({
+      ok: true,
+      operation: "thread.rollback",
+      data: { thread: { id: "thread_1" }, rolledBackTurns: 2 ** 53 },
+      state: codexState,
+    });
+    const unsafeRollback = await captureLogs(() => commands.rollback("dev-main", "2", undefined, true, true));
+    expect(runtimeThreadRollbackReturnSchema.parse(unsafeRollback.result).rolledBackTurns).toBeNull();
+
     reply({
       ok: true,
       operation: "thread.fork",

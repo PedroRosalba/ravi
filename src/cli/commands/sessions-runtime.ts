@@ -234,7 +234,7 @@ function normalizeThreadRollback(result: RuntimeControlResult) {
     ...runtimeControlEnvelope(result),
     operation: "thread.rollback" as const,
     thread: normalizeRuntimeThread(data?.thread),
-    rolledBackTurns: rolledBackTurns !== null && Number.isInteger(rolledBackTurns) ? rolledBackTurns : null,
+    rolledBackTurns: rolledBackTurns !== null && Number.isSafeInteger(rolledBackTurns) ? rolledBackTurns : null,
   };
 }
 
