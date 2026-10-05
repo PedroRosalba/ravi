@@ -24,7 +24,6 @@ import {
   dbListStaleClaimedTaskAutomationRuns,
   dbListTaskAutomationRuns,
   dbListTaskAutomations,
-  dbRecordTaskAutomationFire,
   dbRecoverClaimedTaskAutomationRun,
   dbUpdateTaskAutomation,
 } from "./automations-db.js";
@@ -566,15 +565,15 @@ export async function executeTaskAutomation(
       dispatchSessionName = dispatched.sessionName;
     }
 
-    const { run, finalized } = dbFinalizeTaskAutomationRun(claimedRun.id, {
+    const { run } = dbFinalizeTaskAutomationRun(claimedRun.id, {
       status: "spawned",
       spawnedTaskId: spawnedTask.id,
       message: normalizedAgentId
         ? `Spawned ${spawnedTask.id} and dispatched to ${normalizedAgentId}/${dispatchSessionName ?? "-"}`
         : `Spawned ${spawnedTask.id}`,
+      // Counted only if this call settles the run: stale-claim recovery may have already.
+      recordFire: true,
     });
-    // Stale-claim recovery may have settled (and counted) this run already.
-    if (finalized) dbRecordTaskAutomationFire(automation.id);
 
     return {
       automation,
@@ -634,6 +633,7 @@ export function recoverStaleTaskAutomationRuns(
           status: "spawned",
           spawnedTaskId: childTaskId,
           message: `Recovered stale claim: ${childTaskId} was created before the process exited; dispatch not confirmed.`,
+          recordFireAt: now,
         })
       : dbRecoverClaimedTaskAutomationRun(run.id, {
           status: "failed",
@@ -641,9 +641,6 @@ export function recoverStaleTaskAutomationRuns(
         });
     if (!next) {
       continue;
-    }
-    if (childTaskId) {
-      dbRecordTaskAutomationFire(run.automationId, now);
     }
     log.warn("Recovered stale task automation run", {
       runId: run.id,

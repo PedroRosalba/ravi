@@ -37,7 +37,7 @@ const {
 } = await import("./automations-db.js");
 const { completeTask, createTask, dispatchTask, emitTaskEvent, listTasks } = await import("./service.js");
 const { setTaskSessionPromptPublisherForTests } = await import("./session-publisher.js");
-const { dbCreateAgent, dbDeleteAgent } = await import("../router/router-db.js");
+const { dbCreateAgent, dbDeleteAgent, getDb } = await import("../router/router-db.js");
 
 function writeVideoProfileFixture(stateRoot: string): void {
   const profileDir = join(stateRoot, "task-profiles", "video-rapha");
@@ -384,6 +384,33 @@ describe("task automation stale-claim recovery", () => {
     expect(late.run.status).toBe("spawned");
     expect(late.run.message).toContain("Recovered stale claim");
     expect(dbGetTaskAutomation(automation.id)?.fireCount).toBe(firesAfterRecovery);
+  });
+
+  it("settles a run and counts its fire atomically", () => {
+    const automation = createRecoveryAutomation();
+    const trigger = createTask({ title: "Trigger", instructions: "Trigger.", priority: "normal" });
+    const run = claim(automation.id, trigger.task.id, 1);
+    const firesBefore = dbGetTaskAutomation(automation.id)?.fireCount;
+
+    // The fire counter write fails after the run update: both must roll back.
+    getDb().exec(`
+      CREATE TEMP TRIGGER fail_fire_count BEFORE UPDATE OF fire_count ON task_automations
+      BEGIN SELECT RAISE(ABORT, 'fire count write failed'); END;
+    `);
+    try {
+      expect(() =>
+        dbFinalizeTaskAutomationRun(run.id, { status: "spawned", message: "done", recordFire: true }),
+      ).toThrow("fire count write failed");
+    } finally {
+      getDb().exec("DROP TRIGGER IF EXISTS fail_fire_count");
+    }
+    expect(listTaskAutomationRuns(automation.id, 10)[0]?.status).toBe("claimed");
+    expect(dbGetTaskAutomation(automation.id)?.fireCount).toBe(firesBefore);
+
+    // With the counter writable again, the same settle commits both writes.
+    const settled = dbFinalizeTaskAutomationRun(run.id, { status: "spawned", message: "done", recordFire: true });
+    expect(settled.finalized).toBe(true);
+    expect(dbGetTaskAutomation(automation.id)?.fireCount).toBe((firesBefore ?? 0) + 1);
   });
 
   it("marks a stale claim with no child as failed without re-spawning", () => {

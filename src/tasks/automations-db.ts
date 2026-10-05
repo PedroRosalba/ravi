@@ -471,19 +471,21 @@ export function dbFinalizeTaskAutomationRun(
     status: Exclude<TaskAutomationRunStatus, "claimed">;
     spawnedTaskId?: string;
     message?: string | null;
+    /** Count the fire on the automation in the same transaction, only if this call settles the run. */
+    recordFire?: boolean;
   },
 ): { run: TaskAutomationRun; finalized: boolean } {
   ensureTaskAutomationSchema();
 
   // Compare-and-set on `claimed`, like stale-claim recovery: if recovery already
   // settled this run, the executor must not overwrite it (or count the fire twice).
-  const result = getDb()
-    .prepare(`
-      UPDATE task_automation_runs
-      SET status = ?, spawned_task_id = COALESCE(?, spawned_task_id), message = ?, updated_at = ?
-      WHERE id = ? AND status = 'claimed'
-    `)
-    .run(updates.status, updates.spawnedTaskId ?? null, updates.message ?? null, Date.now(), id);
+  const now = Date.now();
+  const finalized = settleClaimedRun(
+    id,
+    { status: updates.status, spawnedTaskId: updates.spawnedTaskId, message: updates.message ?? null },
+    updates.recordFire ? now : null,
+    now,
+  );
 
   const row = getDb().prepare("SELECT * FROM task_automation_runs WHERE id = ?").get(id) as
     | TaskAutomationRunRow
@@ -491,7 +493,49 @@ export function dbFinalizeTaskAutomationRun(
   if (!row) {
     throw new Error(`Task automation run not found: ${id}`);
   }
-  return { run: rowToTaskAutomationRun(row), finalized: result.changes > 0 };
+  return { run: rowToTaskAutomationRun(row), finalized };
+}
+
+/**
+ * Settle a still-`claimed` run and, when `firedAt` is set, count the fire on its
+ * automation in one transaction, so a crash between the two writes can never
+ * leave a settled run whose fire was not counted. Returns whether the run was settled.
+ */
+function settleClaimedRun(
+  id: number,
+  updates: { status: Exclude<TaskAutomationRunStatus, "claimed">; spawnedTaskId?: string; message: string | null },
+  firedAt: number | null,
+  now: number,
+): boolean {
+  const db = getDb();
+  return db.transaction(() => {
+    const settled = db
+      .prepare(`
+        UPDATE task_automation_runs
+        SET status = ?, spawned_task_id = COALESCE(?, spawned_task_id), message = ?, updated_at = ?
+        WHERE id = ? AND status = 'claimed'
+        RETURNING automation_id
+      `)
+      .get(updates.status, updates.spawnedTaskId ?? null, updates.message, now, id) as
+      | { automation_id: string }
+      | undefined
+      | null;
+    if (!settled) return false;
+    if (firedAt !== null) {
+      recordFire(db, settled.automation_id, firedAt);
+    }
+    return true;
+  })();
+}
+
+function recordFire(db: ReturnType<typeof getDb>, automationId: string, firedAt: number): void {
+  db.prepare(`
+    UPDATE task_automations
+    SET fire_count = fire_count + 1,
+        last_fired_at = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(firedAt, firedAt, automationId);
 }
 
 /**
@@ -535,18 +579,19 @@ export function dbRecoverClaimedTaskAutomationRun(
     status: Exclude<TaskAutomationRunStatus, "claimed">;
     spawnedTaskId?: string;
     message: string;
+    /** Count the fire at this time in the same transaction, only if this call settles the run. */
+    recordFireAt?: number;
   },
 ): TaskAutomationRun | null {
   ensureTaskAutomationSchema();
 
-  getDb()
-    .prepare(`
-      UPDATE task_automation_runs
-      SET status = ?, spawned_task_id = COALESCE(?, spawned_task_id), message = ?, updated_at = ?
-      WHERE id = ? AND status = 'claimed'
-    `)
-    .run(updates.status, updates.spawnedTaskId ?? null, updates.message, Date.now(), id);
-  if (getDbChanges() === 0) {
+  const settled = settleClaimedRun(
+    id,
+    { status: updates.status, spawnedTaskId: updates.spawnedTaskId, message: updates.message },
+    updates.recordFireAt ?? null,
+    Date.now(),
+  );
+  if (!settled) {
     return null;
   }
 
@@ -591,13 +636,5 @@ export function dbFindUnboundTaskAutomationChildTaskIds(input: {
 export function dbRecordTaskAutomationFire(automationId: string, firedAt = Date.now()): void {
   ensureTaskAutomationSchema();
 
-  getDb()
-    .prepare(`
-      UPDATE task_automations
-      SET fire_count = fire_count + 1,
-          last_fired_at = ?,
-          updated_at = ?
-      WHERE id = ?
-    `)
-    .run(firedAt, firedAt, automationId);
+  recordFire(getDb(), automationId, firedAt);
 }
