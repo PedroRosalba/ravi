@@ -1,4 +1,5 @@
-import { stat, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 import { extname } from "node:path";
 import { transcribeAudio, type TranscriptionOptions, type TranscriptionResult } from "./openai.js";
 
@@ -60,19 +61,41 @@ export async function transcribeFile(input: TranscribeFileInput): Promise<Transc
     throw new Error(`Unsupported audio format: ${extname(input.filePath) || "<none>"}`);
   }
 
-  // Stat before reading so oversized or non-regular files are never loaded into memory.
-  const stats = await stat(input.filePath);
-  if (!stats.isFile()) {
-    throw new TranscribeFileError("NOT_A_REGULAR_FILE", "Audio path is not a regular file.");
-  }
+  // Open once and validate that handle, so the path cannot be swapped between
+  // the check and the read. O_NONBLOCK keeps a FIFO from blocking the open;
+  // it is rejected as non-regular right after.
   const maxBytes = Math.min(input.maxBytes ?? MAX_TRANSCRIBE_FILE_BYTES, MAX_TRANSCRIBE_FILE_BYTES);
-  if (stats.size > maxBytes) {
-    throw new TranscribeFileError("FILE_TOO_LARGE", "Audio file exceeds the transcription size limit.", {
-      sizeBytes: stats.size,
-      maxBytes,
-    });
+  const file = await open(input.filePath, constants.O_RDONLY | constants.O_NONBLOCK);
+  let buffer: Buffer;
+  try {
+    const stats = await file.stat();
+    if (!stats.isFile()) {
+      throw new TranscribeFileError("NOT_A_REGULAR_FILE", "Audio path is not a regular file.");
+    }
+    if (stats.size > maxBytes) {
+      throw new TranscribeFileError("FILE_TOO_LARGE", "Audio file exceeds the transcription size limit.", {
+        sizeBytes: stats.size,
+        maxBytes,
+      });
+    }
+    // Read at most maxBytes + 1 so a file that grows after the stat is still caught.
+    const chunk = Buffer.alloc(Math.min(stats.size, maxBytes) + 1);
+    let total = 0;
+    while (total < chunk.length) {
+      const { bytesRead } = await file.read(chunk, total, chunk.length - total, total);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    if (total > maxBytes) {
+      throw new TranscribeFileError("FILE_TOO_LARGE", "Audio file exceeds the transcription size limit.", {
+        sizeBytes: total,
+        maxBytes,
+      });
+    }
+    buffer = chunk.subarray(0, total);
+  } finally {
+    await file.close();
   }
-  const buffer = await readFile(input.filePath);
   const result = await transcribeAudio(buffer, mimeType, {
     language: input.language,
     durationHintSec: input.durationHintSec,
@@ -82,8 +105,8 @@ export async function transcribeFile(input: TranscribeFileInput): Promise<Transc
     source: {
       filePath: input.filePath,
       mimeType,
-      sizeBytes: stats.size,
-      sizeMB: Number((stats.size / 1024 / 1024).toFixed(1)),
+      sizeBytes: buffer.byteLength,
+      sizeMB: Number((buffer.byteLength / 1024 / 1024).toFixed(1)),
     },
   };
 }

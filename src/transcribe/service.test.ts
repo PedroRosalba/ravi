@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,6 +51,14 @@ describe("transcribe service", () => {
       const dirPath = join(dir, "pasta.mp3");
       mkdirSync(dirPath);
       const error = await transcribeFile({ filePath: dirPath }).catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(TranscribeFileError);
+      expect((error as TranscribeFileError).code).toBe("NOT_A_REGULAR_FILE");
+    }));
+  test("rejects a FIFO without blocking on open", () =>
+    withTempDir(async (dir) => {
+      const fifoPath = join(dir, "fila.mp3");
+      execFileSync("mkfifo", [fifoPath]);
+      const error = await transcribeFile({ filePath: fifoPath }).catch((err: unknown) => err);
       expect(error).toBeInstanceOf(TranscribeFileError);
       expect((error as TranscribeFileError).code).toBe("NOT_A_REGULAR_FILE");
     }));

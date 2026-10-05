@@ -94,7 +94,9 @@ export class TranscribeCommands {
         },
       });
     }
-    if (!inferAudioMimeType(realPath)) {
+    // Use the resolved file's type: `voice.mp3` may link to `recording.wav`.
+    const resolvedMimeType = inferAudioMimeType(realPath);
+    if (!resolvedMimeType) {
       contractFail("transcribe file", "INVALID_FILE", "Audio path must resolve to a supported audio file.", {
         asJson,
         exitCode: 2,
@@ -115,12 +117,17 @@ export class TranscribeCommands {
     }
 
     if (!asJson) {
-      console.log(`Transcribing ${absPath} (${mimetype})...`);
+      console.log(`Transcribing ${absPath} (${resolvedMimeType})...`);
     }
 
     let result: Awaited<ReturnType<typeof transcribeFile>>;
     try {
-      result = await transcribeFile({ filePath: realPath, mimeType: mimetype, language: _lang ?? "pt", maxBytes });
+      result = await transcribeFile({
+        filePath: realPath,
+        mimeType: resolvedMimeType,
+        language: _lang ?? "pt",
+        maxBytes,
+      });
     } catch {
       contractFail("transcribe file", "TRANSCRIBE_FAILED", "Audio transcription failed.", {
         asJson,

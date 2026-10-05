@@ -44,7 +44,12 @@ mock.module("../context.js", () => ({
 mock.module("../../transcribe/service.js", () => ({
   SUPPORTED_AUDIO_EXTENSIONS: [".ogg", ".mp3", ".m4a", ".wav"],
   MAX_TRANSCRIBE_FILE_BYTES: 200 * 1024 * 1024,
-  inferAudioMimeType: (filePath: string) => (filePath.toLowerCase().endsWith(".mp3") ? "audio/mpeg" : undefined),
+  inferAudioMimeType: (filePath: string) => {
+    const lower = filePath.toLowerCase();
+    if (lower.endsWith(".mp3")) return "audio/mpeg";
+    if (lower.endsWith(".wav")) return "audio/wav";
+    return undefined;
+  },
   transcribeFile: mock(async (input: Record<string, unknown>) => {
     transcribeCalls.push(input);
     if (transcribeFailure !== undefined) throw transcribeFailure;
@@ -244,6 +249,20 @@ describe("transcribe file contract", () => {
       const error = await expectContractError(() => new TranscribeCommands().file(link, "pt", true), "INVALID_FILE", 2);
       expect(JSON.stringify(error.envelope())).not.toContain("SENTINEL_KEY_4Q2W");
       expect(transcribeCalls).toHaveLength(0);
+    } finally {
+      rmSync(audioDir, { recursive: true, force: true });
+    }
+  });
+  it("sends the MIME type of the resolved file, not of the link name", async () => {
+    audioDir = mkdtempSync(join(tmpdir(), "ravi-transcribe-test-"));
+    const target = join(audioDir, "gravacao.wav");
+    writeFileSync(target, "RIFF");
+    const link = join(audioDir, "voz.mp3");
+    symlinkSync(target, link);
+    try {
+      await captureConsole(() => new TranscribeCommands().file(link, "pt", true));
+      expect(transcribeCalls).toHaveLength(1);
+      expect(transcribeCalls[0]).toMatchObject({ mimeType: "audio/wav" });
     } finally {
       rmSync(audioDir, { recursive: true, force: true });
     }
