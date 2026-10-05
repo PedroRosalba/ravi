@@ -25,7 +25,10 @@ export interface ProviderOwnedPermissionTagSuggestion {
  * capability. A global check never inspected a target (session, chat, agent...),
  * so delegation on a target cannot satisfy it.
  */
-export type AuthorizationResourceScope = { kind: "global" } | { kind: "resource"; checkedResource: string };
+export type AuthorizationResourceScope =
+  | { kind: "global" }
+  | { kind: "resource"; checkedResource: string }
+  | { kind: "missing_resource"; resourceType: string };
 
 export interface AuthorizationGuidance {
   canonicalCapability: string;
@@ -141,6 +144,9 @@ export function formatAuthorizationGuidanceLines(guidance: AuthorizationGuidance
 export function formatAuthorizationResourceScopeLine(resourceScope: AuthorizationResourceScope): string {
   if (resourceScope.kind === "resource") {
     return `Scope: resource check on ${resourceScope.checkedResource}; a grant for that resource or one of the candidates above is required.`;
+  }
+  if (resourceScope.kind === "missing_resource") {
+    return `Scope: this command needs a concrete ${resourceScope.resourceType} id, and none (or an invalid one) was given, so no grant can allow it. Pass a valid ${resourceScope.resourceType} id.`;
   }
   return "Scope: global capability check; no target resource (session, chat, agent) was checked, so delegation on a target will not help. Grant one of the candidates above.";
 }

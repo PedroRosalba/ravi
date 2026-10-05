@@ -426,7 +426,9 @@ function buildCommandAccessGuidance(
     scope: "recurring",
     resourceScope: checkedResource
       ? { kind: "resource", checkedResource: `${checkedResource.objectType}:${checkedResource.objectId}` }
-      : { kind: "global" },
+      : input.access.requireConcreteResource
+        ? { kind: "missing_resource", resourceType: input.access.resource }
+        : { kind: "global" },
     reason: `Needs ${formatCommand(input)} command access.`,
     includeProviderOwnedTags: true,
   });

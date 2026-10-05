@@ -621,6 +621,8 @@ describe("CLI command access enforcement", () => {
 
     expect(result.allowed).toBe(false);
     expect(result.attempted).toEqual([]);
+    expect(result.errorMessage).toContain("Scope: this command needs a concrete chats.lists id");
+    expect(result.errorMessage).not.toContain("Scope: global capability check");
   });
 
   it("falls back to legacy command-specific execute capabilities", () => {

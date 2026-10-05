@@ -250,11 +250,23 @@ function normalizeThreadFork(result: RuntimeControlResult, request: RuntimeContr
   };
 }
 
+const RUNTIME_CONTROL_RETURN_SCHEMAS: Partial<Record<RuntimeControlOperation, z.ZodTypeAny>> = {
+  "thread.list": runtimeThreadListReturnSchema,
+  "thread.read": runtimeThreadReadReturnSchema,
+  "turn.steer": runtimeTurnSteerReturnSchema,
+  "turn.follow_up": runtimeTurnFollowUpReturnSchema,
+  "turn.interrupt": runtimeTurnInterruptReturnSchema,
+  "thread.rollback": runtimeThreadRollbackReturnSchema,
+  "thread.fork": runtimeThreadForkReturnSchema,
+};
+
 function printRuntimeControlResult<T extends RuntimeControlEnvelope & { operation: RuntimeControlOperation }>(
   payload: T,
   asJson: boolean | undefined,
   successMessage?: string,
 ): T {
+  // Fail at the CLI boundary if normalization ever drifts from the declared contract.
+  RUNTIME_CONTROL_RETURN_SCHEMAS[payload.operation]?.parse(payload);
   if (asJson) {
     console.log(JSON.stringify(payload, null, 2));
     return payload;
