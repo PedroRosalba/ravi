@@ -285,6 +285,7 @@ describe("createBashPermissionHook", () => {
       expect(escaped.reason).toContain("rm");
       expect(evaluateBashPermission("echo '\\' ; rm -rf x", ctx).allowed).toBe(false);
       expect(evaluateBashPermission('"ls" -la', ctx).allowed).toBe(true);
+      expect(evaluateBashPermission("echo \v# ; bash -c id", ctx).allowed).toBe(false);
     });
 
     it("blocks shells hidden behind $'...' quoting or an escaped space before '#'", () => {

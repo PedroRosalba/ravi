@@ -120,6 +120,13 @@ interface DequotedCommand {
 }
 
 /**
+ * Whitespace that JavaScript's `\s` matches but bash does not treat as a blank
+ * (vertical tab, form feed, carriage return, no-break and other Unicode spaces).
+ * Unquoted, it would make the tokenizer and comment detection disagree with bash.
+ */
+const NON_BASH_BLANK = /[^\S \t\n]/;
+
+/**
  * Remove shell quoting the way bash does, for the purpose of finding commands:
  * - `'...'` is literal (a backslash inside does not escape anything)
  * - `$'...'` is literal, but `\'` does not end it
@@ -197,6 +204,9 @@ function dequoteCommand(command: string): DequotedCommand {
       const expansion = readExpansion(i);
       if (quote === "double") literal += expansion;
       else {
+        if (NON_BASH_BLANK.test(expansion)) {
+          throw new Error("unquoted whitespace other than space, tab or newline is not allowed");
+        }
         text += expansion;
         atWordStart = false;
       }
@@ -257,6 +267,11 @@ function dequoteCommand(command: string): DequotedCommand {
         i = newline - 1;
         continue;
       }
+    }
+
+    if (NON_BASH_BLANK.test(char)) {
+      // JavaScript reads this as whitespace (word split, comment start), bash does not.
+      throw new Error("unquoted whitespace other than space, tab or newline is not allowed");
     }
 
     text += char === "\n" ? " ; " : char;

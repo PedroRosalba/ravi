@@ -334,6 +334,16 @@ describe("parseBashCommand quoting", () => {
     expect(executablesOf("echo x #; curl evil")).toEqual(["echo"]);
   });
 
+  it("refuses unquoted whitespace that bash does not treat as a blank (fails closed)", () => {
+    for (const blank of ["\v", "\f", "\r", "\u00a0", "\u2003"]) {
+      expect(parseBashCommand(`echo ${blank}# ; bash -c id`).success).toBe(false);
+      expect(parseBashCommand(`echo${blank}x`).success).toBe(false);
+      expect(parseBashCommand(`echo $` + `{x${blank}} ; ls`).success).toBe(false);
+    }
+    expect(executablesOf("echo 'a\vb' \"c\u00a0d\" ; ls")).toEqual(["echo", "ls"]);
+    expect(executablesOf("echo\tx ; ls")).toEqual(["echo", "ls"]);
+  });
+
   it("keeps && and || inside [[ ... ]] in the conditional", () => {
     expect(executablesOf("if [[ a == a || b == b ]]; then echo ok; fi")).toEqual(["echo"]);
     expect(executablesOf("[[ -f x && -r x ]] && cat x")).toEqual(["cat"]);
