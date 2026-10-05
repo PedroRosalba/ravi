@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
-import { dbUpsertChat } from "./router-db.js";
+import { dbUpsertChat, getDb } from "./router-db.js";
 import { SESSION_CREATED_TOPIC, setLifecycleEventPublisher } from "../events/lifecycle-events.js";
 import {
   attachChatToSession,
@@ -73,6 +73,29 @@ describe("sessions store", () => {
       getOrCreateSession("agent:dev:whatsapp:group:123", "other", "/tmp/other");
 
       expect(emitted).toHaveLength(1);
+    });
+
+    it("does not emit when another writer inserts the same key first, even in the same millisecond", () => {
+      const sessionKey = "agent:dev:concurrent-insert";
+      // Simulate a concurrent writer: right before this call's INSERT, another
+      // writer creates the row with the same created_at.
+      getDb().exec(`
+        CREATE TEMP TRIGGER concurrent_session_insert BEFORE INSERT ON sessions
+        WHEN NEW.session_key = '${sessionKey}'
+          AND NOT EXISTS (SELECT 1 FROM sessions WHERE session_key = NEW.session_key)
+        BEGIN
+          INSERT INTO sessions (session_key, agent_id, agent_cwd, created_at, updated_at)
+          VALUES (NEW.session_key, 'dev', '/tmp/dev', NEW.created_at, NEW.created_at);
+        END;
+      `);
+      try {
+        const session = getOrCreateSession(sessionKey, "dev", "/tmp/dev", { name: "late-writer" });
+
+        expect(emitted).toHaveLength(0);
+        expect(session.name).toBe("late-writer");
+      } finally {
+        getDb().exec("DROP TRIGGER IF EXISTS concurrent_session_insert");
+      }
     });
 
     it("marks trigger sessions so the trigger runner skips them", () => {
