@@ -78,10 +78,17 @@ export async function transcribeFile(input: TranscribeFileInput): Promise<Transc
         maxBytes,
       });
     }
-    // Read at most maxBytes + 1 so a file that grows after the stat is still caught.
-    const chunk = Buffer.alloc(Math.min(stats.size, maxBytes) + 1);
+    // Read to EOF but at most maxBytes + 1, growing the buffer if the file grew
+    // after the stat, so a growing file is neither truncated nor read unbounded.
+    let chunk = Buffer.alloc(Math.min(stats.size, maxBytes) + 1);
     let total = 0;
-    while (total < chunk.length) {
+    while (true) {
+      if (total === chunk.length) {
+        if (total > maxBytes) break;
+        const grown = Buffer.alloc(Math.min(maxBytes + 1, chunk.length * 2));
+        chunk.copy(grown, 0, 0, total);
+        chunk = grown;
+      }
       const { bytesRead } = await file.read(chunk, total, chunk.length - total, total);
       if (bytesRead === 0) break;
       total += bytesRead;

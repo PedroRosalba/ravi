@@ -41,7 +41,18 @@ mock.module("../context.js", () => ({
   },
 }));
 
+class MockTranscribeFileError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly details: Record<string, unknown> = {},
+  ) {
+    super(message);
+  }
+}
+
 mock.module("../../transcribe/service.js", () => ({
+  TranscribeFileError: MockTranscribeFileError,
   SUPPORTED_AUDIO_EXTENSIONS: [".ogg", ".mp3", ".m4a", ".wav"],
   MAX_TRANSCRIBE_FILE_BYTES: 200 * 1024 * 1024,
   inferAudioMimeType: (filePath: string) => {
@@ -186,6 +197,22 @@ describe("transcribe file contract", () => {
       }
     },
   );
+
+  it("reports a file that grew past the limit during the read as FILE_TOO_LARGE, not a provider failure", async () => {
+    const filePath = seedAudioFile();
+    transcribeFailure = new MockTranscribeFileError("FILE_TOO_LARGE", "too large", { sizeBytes: 9, maxBytes: 8 });
+    try {
+      const error = await expectContractError(
+        () => new TranscribeCommands().file(filePath, "pt", true),
+        "FILE_TOO_LARGE",
+        2,
+      );
+      expect(error.details.sizeBytes).toBe(9);
+      expect(error.details.retryable).toBeUndefined();
+    } finally {
+      rmSync(audioDir, { recursive: true, force: true });
+    }
+  });
 
   it("passes the local CLI ceiling to the service and transcribes the resolved real path", async () => {
     const filePath = seedAudioFile();

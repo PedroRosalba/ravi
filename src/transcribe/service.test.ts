@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -45,6 +45,16 @@ describe("transcribe service", () => {
       expect(error).toBeInstanceOf(TranscribeFileError);
       expect((error as TranscribeFileError).details.maxBytes).toBe(MAX_TRANSCRIBE_FILE_BYTES);
     }));
+
+  // /proc files report size 0 but have content: the same shape as a file that grew after the stat.
+  test.if(existsSync("/proc/self/status"))("keeps reading past the stat size and still enforces maxBytes", async () => {
+    const error = await transcribeFile({ filePath: "/proc/self/status", mimeType: "audio/mpeg", maxBytes: 16 }).catch(
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(TranscribeFileError);
+    expect((error as TranscribeFileError).code).toBe("FILE_TOO_LARGE");
+    expect((error as TranscribeFileError).details).toEqual({ sizeBytes: 17, maxBytes: 16 });
+  });
 
   test("rejects non-regular paths", () =>
     withTempDir(async (dir) => {

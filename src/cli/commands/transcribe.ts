@@ -13,6 +13,7 @@ import { MAX_AUDIO_BYTES } from "../../utils/media.js";
 import {
   MAX_TRANSCRIBE_FILE_BYTES,
   SUPPORTED_AUDIO_EXTENSIONS,
+  TranscribeFileError,
   inferAudioMimeType,
   transcribeFile,
 } from "../../transcribe/service.js";
@@ -128,7 +129,25 @@ export class TranscribeCommands {
         language: _lang ?? "pt",
         maxBytes,
       });
-    } catch {
+    } catch (error) {
+      // The file changed after the checks above (grew, or was swapped): same envelope, not retryable.
+      if (error instanceof TranscribeFileError) {
+        if (error.code === "FILE_TOO_LARGE") {
+          contractFail("transcribe file", "FILE_TOO_LARGE", "Audio file exceeds the transcription size limit.", {
+            asJson,
+            exitCode: 2,
+            details: {
+              ...error.details,
+              suggestedAction: "Trim or compress the audio below the size limit and retry",
+            },
+          });
+        }
+        contractFail("transcribe file", "INVALID_FILE", "Audio path must be a regular file.", {
+          asJson,
+          exitCode: 2,
+          details: { suggestedAction: "Pass a regular audio file, not a directory or device" },
+        });
+      }
       contractFail("transcribe file", "TRANSCRIBE_FAILED", "Audio transcription failed.", {
         asJson,
         details: {
