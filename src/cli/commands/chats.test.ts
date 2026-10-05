@@ -1091,6 +1091,12 @@ describe("chats lists create/set write path", () => {
       ),
     ).toBe("INVALID_JSON");
 
+    expect(
+      errorCode(() =>
+        lists.create("static-sel", "system:ravi", undefined, undefined, undefined, true, JSON.stringify(SAFE_SELECTOR)),
+      ),
+    ).toBe("SELECTOR_REQUIRES_DYNAMIC_MODE");
+
     expect(getDb().prepare("SELECT COUNT(*) AS total FROM chat_reading_lists").get()).toEqual({ total: 0 });
   });
 
@@ -1162,6 +1168,9 @@ describe("chats lists create/set write path", () => {
     expect(
       errorCode(() => lists.set(list.id, none, none, none, none, none, JSON.stringify(UNSAFE_SELECTOR), none, true)),
     ).toBe("INVALID_READING_LIST_SELECTOR");
+    expect(
+      errorCode(() => lists.set(list.id, none, none, none, none, "static", JSON.stringify(SAFE_SELECTOR), none, true)),
+    ).toBe("SELECTOR_REQUIRES_DYNAMIC_MODE");
     expect(errorCode(() => lists.set(list.id, none, none, none, none, "weird", none, none, true))).toBe(
       "INVALID_ARGUMENT",
     );

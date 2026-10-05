@@ -358,6 +358,19 @@ function parseJsonObjectOption(value: string, flag: string, op: string, asJson?:
  * Validate a selector with the same gate preview/recompute use, before it is
  * persisted. Only stable issue codes/paths are reported, never selector values.
  */
+function assertSelectorModeApplies(mode: string | null | undefined, op: string, asJson?: boolean): void {
+  const effective = (mode ?? "").trim().toLowerCase() || "static";
+  if (effective === "dynamic" || effective === "hybrid") return;
+  contractFail(op, "SELECTOR_REQUIRES_DYNAMIC_MODE", "A selector only applies to dynamic or hybrid reading lists", {
+    asJson,
+    exitCode: CONTRACT_EXIT_USAGE,
+    details: {
+      mode: effective,
+      suggestedAction: "Pass --mode dynamic (or hybrid) with --selector, or leave the selector out",
+    },
+  });
+}
+
 function assertWritableSelector(
   selector: Record<string, unknown>,
   op: string,
@@ -1251,6 +1264,7 @@ EXAMPLES
       selectorJson === undefined ? undefined : parseJsonObjectOption(selectorJson, "--selector", op, asJson);
     const metadata =
       metadataJson === undefined ? undefined : parseJsonObjectOption(metadataJson, "--metadata", op, asJson);
+    if (selector) assertSelectorModeApplies(mode, op, asJson);
     const selectorValidation = selector ? assertWritableSelector(selector, op, asJson) : undefined;
     const parsedOwner = parseScopedRef(owner, defaultOwner());
     const list = dbCreateChatReadingList({
@@ -1365,6 +1379,7 @@ FONTES
       });
     }
     const list = resolveReadingListById(listId, owner, { op, asJson });
+    if (patch.selector) assertSelectorModeApplies(patch.mode ?? list.mode, op, asJson);
     let updated: ChatReadingListRecord;
     try {
       updated = dbUpdateChatReadingList(list.id, patch);
