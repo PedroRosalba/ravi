@@ -1171,6 +1171,10 @@ describe("chats lists create/set write path", () => {
     expect(
       errorCode(() => lists.set(list.id, none, none, none, none, "static", JSON.stringify(SAFE_SELECTOR), none, true)),
     ).toBe("SELECTOR_REQUIRES_DYNAMIC_MODE");
+    // Switching to static would strand the stored selector.
+    expect(errorCode(() => lists.set(list.id, none, none, none, none, "static", none, none, true))).toBe(
+      "SELECTOR_REQUIRES_DYNAMIC_MODE",
+    );
     expect(errorCode(() => lists.set(list.id, none, none, none, none, "weird", none, none, true))).toBe(
       "INVALID_ARGUMENT",
     );
@@ -1191,6 +1195,12 @@ describe("chats lists create/set write path", () => {
       mode: "dynamic",
       selector: SAFE_SELECTOR,
     });
+
+    // Clearing the selector in the same patch allows the switch to static.
+    captureJson(() => lists.set(list.id, none, none, none, none, "static", "{}", none, true));
+    const switched = dbGetChatReadingList({ id: list.id });
+    expect(switched?.mode).toBe("static");
+    expect(switched?.selector).toBeUndefined();
   });
 
   it("declares set as a concrete-resource mutation on chats.lists", () => {

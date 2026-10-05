@@ -366,7 +366,7 @@ function assertSelectorModeApplies(mode: string | null | undefined, op: string, 
     exitCode: CONTRACT_EXIT_USAGE,
     details: {
       mode: effective,
-      suggestedAction: "Pass --mode dynamic (or hybrid) with --selector, or leave the selector out",
+      suggestedAction: "Pass --mode dynamic (or hybrid) with --selector, or clear the selector with --selector '{}'",
     },
   });
 }
@@ -1379,7 +1379,14 @@ FONTES
       });
     }
     const list = resolveReadingListById(listId, owner, { op, asJson });
-    if (patch.selector) assertSelectorModeApplies(patch.mode ?? list.mode, op, asJson);
+    // Check the selector that remains after the patch, but only when the patch touches
+    // mode or selector, so renaming a legacy static list with a stored selector still works.
+    if (patch.selector !== undefined || patch.mode !== undefined) {
+      const selectorAfter = patch.selector !== undefined ? patch.selector : list.selector;
+      if (selectorAfter && Object.keys(selectorAfter).length > 0) {
+        assertSelectorModeApplies(patch.mode ?? list.mode, op, asJson);
+      }
+    }
     let updated: ChatReadingListRecord;
     try {
       updated = dbUpdateChatReadingList(list.id, patch);
