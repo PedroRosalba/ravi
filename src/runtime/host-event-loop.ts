@@ -2681,6 +2681,12 @@ export async function runRuntimeEventLoop(options: RunRuntimeEventLoopOptions): 
         armProviderInactivityWatch();
       }
 
+      // Liveness-only signal: it has already reset the watchdogs above and
+      // carries nothing to project, persist, or deliver.
+      if (event.type === "provider.activity") {
+        continue;
+      }
+
       const logLevel = runtimeEventLogLevel(event.type);
       log[logLevel]("Runtime event", {
         runId,
