@@ -18,6 +18,16 @@ describe("triggers native automation support", () => {
     stateDir = null;
   });
 
+  it("catalogs crypto vault events so triggers can react to Pix deposits and trades", () => {
+    for (const topic of ["ravi.crypto.deposit.paid", "ravi.crypto.trade.executed", "ravi.crypto.signal.created"]) {
+      const entry = findTriggerTopicCatalogEntry(topic);
+      expect(entry?.id).toBe("crypto.events");
+      expect(entry?.schema?.fields.map((field) => field.path)).toEqual(
+        expect.arrayContaining(["event", "vaultId", "status", "timestamp"]),
+      );
+    }
+  });
+
   it("catalogs native Slack reaction_added as a producer of ravi.inbound.reaction", () => {
     const entry = findTriggerTopicCatalogEntry("ravi.inbound.reaction");
 

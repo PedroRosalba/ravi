@@ -352,6 +352,31 @@ const TOPICS: readonly TriggerTopicCatalogEntry[] = [
     ],
   },
   {
+    id: "crypto.events",
+    category: "custom",
+    pattern: "ravi.crypto.>",
+    title: "Crypto vault events",
+    description:
+      "Pix deposit lifecycle (ravi.crypto.deposit.created|paid|converted|failed), trade lifecycle (ravi.crypto.trade.proposed|executed|failed|rejected) and engine signals (ravi.crypto.signal.created).",
+    payload: "{ event, vaultId, depositId?, tradeId?, signalId?, amountBrl?, asset?, status, timestamp }",
+    schema: {
+      version: 1,
+      fields: [
+        { path: "event", type: "string", required: true, description: "Event name, e.g. deposit.paid." },
+        { path: "vaultId", type: "string", description: "Vault the event belongs to." },
+        { path: "depositId", type: "string", description: "Deposit id for deposit.* events." },
+        { path: "tradeId", type: "string", description: "Trade id for trade.* events." },
+        { path: "signalId", type: "string", description: "Signal id for signal.* events." },
+        { path: "status", type: "string", description: "Resulting status." },
+        { path: "timestamp", type: "string", required: true, description: "Event timestamp (ISO)." },
+      ],
+    },
+    examples: [
+      'ravi triggers add "Pix recebido" --topic "ravi.crypto.deposit.paid" --message "Um depósito Pix foi creditado. Confira o painel."',
+      'ravi triggers add "Novo sinal" --topic "ravi.crypto.signal.created" --message "Analise o sinal e avise se vale a pena."',
+    ],
+  },
+  {
     id: "audit.denied",
     category: "audit",
     pattern: "ravi.audit.denied",

@@ -190,6 +190,16 @@ const EVENT_TOPIC_REGISTRY: readonly EventTopicRegistryEntry[] = [
     triggerCatalog: true,
   },
   {
+    id: "crypto",
+    pattern: "ravi.crypto.>",
+    classification: "public-trigger",
+    owner: "crypto",
+    description: "Crypto vault events: Pix deposits, conversions, trade proposals and fills, engine signals.",
+    replay: false,
+    triggerCatalog: true,
+    notes: ["Amounts are atomic-unit strings; payloads never include secrets or full Pix codes."],
+  },
+  {
     id: "audit",
     pattern: "ravi.audit.>",
     classification: "public-trigger",
