@@ -109,8 +109,7 @@ function assertAgentMutationRuntime(allowRuntimeMismatch?: boolean): void {
   const summary = inspectCliRuntimeTarget();
   const mismatch = getCliRuntimeMismatchMessage(summary);
   if (mismatch && !allowRuntimeMismatch) {
-    const suggestedAction =
-      "Re-run with the repo CLI/runtime or pass --allow-runtime-mismatch if you really mean it.";
+    const suggestedAction = "Re-run with the repo CLI/runtime or pass --allow-runtime-mismatch if you really mean it.";
     fail(`${mismatch}\n${suggestedAction}`, suggestedAction);
   }
 }

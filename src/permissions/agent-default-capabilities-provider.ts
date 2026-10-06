@@ -19,9 +19,7 @@ export function formatAgentRuntimePermissionProfileChoices(): string {
   return "bootstrap, chat-only, full-access, none";
 }
 
-export function isChatOnlyRuntimePermissions(
-  config: AgentRuntimePermissionsConfig | null | undefined,
-): boolean {
+export function isChatOnlyRuntimePermissions(config: AgentRuntimePermissionsConfig | null | undefined): boolean {
   return config?.profile === "chat-only";
 }
 
@@ -36,8 +34,7 @@ export function isToolOrExecCapability(capability: Pick<ContextCapability, "perm
     return true;
   }
   return (
-    capability.permission === "execute" &&
-    (capability.objectType === "group" || capability.objectType === "executable")
+    capability.permission === "execute" && (capability.objectType === "group" || capability.objectType === "executable")
   );
 }
 
