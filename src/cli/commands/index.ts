@@ -27,6 +27,7 @@ export * from "./costs.js";
 export * from "./credentials.js";
 export * from "./crm.js";
 export * from "./cron.js";
+export * from "./crypto-deposits.js";
 export * from "./crypto.js";
 export * from "./daemon.js";
 export * from "./db.js";
