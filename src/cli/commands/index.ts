@@ -29,6 +29,7 @@ export * from "./crm.js";
 export * from "./cron.js";
 export * from "./crypto-deposits.js";
 export * from "./crypto-signals.js";
+export * from "./crypto-strategies.js";
 export * from "./crypto-trades.js";
 export * from "./crypto.js";
 export * from "./daemon.js";
