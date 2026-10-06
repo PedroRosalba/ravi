@@ -46,6 +46,7 @@ import { startGhFollowMaintenanceRunner, stopGhFollowMaintenanceRunner } from ".
 import { startJobsRunner, stopJobsRunner } from "./jobs/index.js";
 import { startSessionFollowupRunner, stopSessionFollowupRunner } from "./session-followups/index.js";
 import { startTriggerRunner, stopTriggerRunner } from "./triggers/index.js";
+import { startCryptoRunner, stopCryptoRunner } from "./crypto/runner.js";
 import { startEphemeralRunner, stopEphemeralRunner } from "./ephemeral/index.js";
 import { startInboxRunner, stopInboxRunner } from "./inbox/index.js";
 import { startHookRunner, stopHookRunner } from "./hooks-runtime/index.js";
@@ -260,6 +261,7 @@ async function shutdown(signal: string, exitCode = 0) {
     await stopGhFollowMaintenanceRunner();
     await stopJobsRunner();
     await stopTaskCheckpointRunner();
+    await stopCryptoRunner();
     await releaseLeadership("runners");
 
     // Stop gateway
@@ -419,6 +421,8 @@ export async function startDaemon() {
       canPublishSessionPrompt: (sessionName) => bot?.canAcceptRuntimePrompt(sessionName) ?? true,
     });
     log.info("Task checkpoint runner started (leader)");
+    await startCryptoRunner();
+    log.info("Crypto runner started (leader)");
   } else {
     log.info("Not leader — heartbeat, cron, and task checkpoint runners skipped (another daemon is running them)");
     watchForLeadershipVacancy("runners", async () => {
@@ -432,6 +436,7 @@ export async function startDaemon() {
       await startTaskCheckpointRunner({
         canPublishSessionPrompt: (sessionName) => bot?.canAcceptRuntimePrompt(sessionName) ?? true,
       });
+      await startCryptoRunner();
       log.info("Heartbeat, cron, session followup, and task checkpoint runners started (new leader)");
     }).catch((err) => log.error("Leadership watcher failed", err));
   }
