@@ -347,6 +347,30 @@ Um contato foi alterado. Notifica o grupo do Slack e atualiza o CRM.
 
 All CLI commands are available as tools (`triggers_list`, `triggers_add`, etc.), so agents can self-configure triggers via conversation.
 
+## Crypto Vaults (Pix, balances, trading)
+
+Per-person crypto vaults. Skill: `crypto` (`src/plugins/internal/ravi-system/skills/crypto/SKILL.md`). Spec: `ravi specs get cli/crypto`.
+
+```bash
+ravi crypto status                                   # provider, execution mode, guards
+ravi crypto deposit 200 --json                       # Pix charge for the message sender's vault
+ravi crypto balance --json                           # BRL + crypto, valued in R$ and USD
+ravi crypto trades propose buy TSLAx 50 --unit usd   # waits for operator approval
+ravi crypto trades approve <trd_id> --execute        # OPERATOR terminal only
+ravi crypto signals scan && ravi crypto signals list # smart-money + momentum engines
+ravi crypto analyze NVDAx --judge                    # quant summary (+ Jev verdict)
+ravi crypto strategies sync                          # Mira Finance strategies, quant-scored
+ravi crypto settings list                            # limits, providers, approval target
+```
+
+- **Owner = message sender.** Vaults resolve from the turn's actor; agents cannot target another person (`--owner` is refused in agent sessions).
+- **Two keys per trade.** Owner proposes; operator approves via reaction on the approval message (`approval.target`) or the CLI. Operator commands are not agent tools and refuse without an interactive terminal (exit 3).
+- **The public-facing agent must not have Bash/interpreters** — grant only the `crypto-user` capability profile (`.ravi/specs/cli/crypto/RUNBOOK.md`).
+- **Defaults are safe:** `pix.provider=sandbox` (unresolvable Pix key) and `execution.mode=paper` (simulated fills at live quotes). Going live: `.ravi/specs/cli/crypto/RUNBOOK.md`.
+- Webhooks (daemon HTTP server): `POST /webhooks/crypto/pix/<sandbox|ripio>`, `POST /webhooks/crypto/helius`.
+- Events: `ravi.crypto.deposit.*`, `ravi.crypto.trade.*`, `ravi.crypto.signal.created` (usable in `ravi triggers add`).
+- Data: `~/.ravi/crypto.db` (override `RAVI_CRYPTO_DB_PATH`). Secrets only via `ravi credentials add` (providers `ripio`, `typesafe`, `jupiter`, `helius`, `mira`, `solana`).
+
 ## Router (`~/.ravi/ravi.db`)
 
 Configuration is stored in SQLite and managed via CLI:
