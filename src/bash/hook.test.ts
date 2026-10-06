@@ -168,6 +168,30 @@ describe("createBashPermissionHook", () => {
       expect(isDenied(result)).toBe(true);
     });
 
+    it("blocks stripping RAVI identity env before running ravi", () => {
+      const ctx = {
+        agentId: "test",
+        kind: "test-runtime",
+        capabilities: [{ permission: "execute", objectType: "executable", objectId: "*" }],
+      };
+      for (const command of [
+        "env -u RAVI_CONTEXT_KEY -u RAVI_AGENT_ID ravi crypto trades approve trd_x --execute",
+        "env -i PATH=/usr/bin ravi crypto settings set execution.mode live",
+        "env - ravi crypto vault list",
+        "/usr/bin/env --ignore-environment ravi crypto trades approve trd_x --execute",
+        "env --unset=RAVI_SESSION_KEY ravi crypto balance",
+        "unset RAVI_CONTEXT_KEY; ravi crypto trades approve trd_x --execute",
+        "exec -c ravi crypto trades list",
+      ]) {
+        const decision = evaluateBashPermission(command, ctx);
+        expect(decision.allowed, command).toBe(false);
+        expect(decision.denialType, command).toBe("env_spoofing");
+      }
+      // Ordinary env usage stays allowed.
+      expect(evaluateBashPermission("env | grep PATH", ctx).denialType).not.toBe("env_spoofing");
+      expect(evaluateBashPermission("env -i PATH=/usr/bin node script.js", ctx).denialType).not.toBe("env_spoofing");
+    });
+
     it("blocks unconditional shells even with execute:executable:*", () => {
       const decision = evaluateBashPermission("bash -c 'echo hi'", {
         agentId: "test",

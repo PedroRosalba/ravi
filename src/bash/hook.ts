@@ -159,6 +159,23 @@ function checkEnvSpoofing(command: string): { allowed: boolean; reason?: string 
       reason: "Cannot override RAVI environment variables",
     };
   }
+  // Stripping the runtime identity makes a CLI call look like the local operator.
+  if (/\bunset\b[^|;&]*\bRAVI_\w+/.test(command) || /(?:^|\s)(?:-u|--unset(?:=|\s+))\s*RAVI_\w+/.test(command)) {
+    return {
+      allowed: false,
+      reason: "Cannot unset RAVI environment variables",
+    };
+  }
+  const clearsEnvironment =
+    /(?:^|[\s;&|(])(?:\S*\/)?env\s+(?:\S+\s+)*?(?:-i|-u|-S|-|--ignore-environment|--unset(?:=\S+)?|--split-string(?:=\S+)?)(?=\s|$)/.test(
+      command,
+    ) || /(?:^|[\s;&|(])exec\s+(?:-\w*c\w*)(?=\s|$)/.test(command);
+  if (clearsEnvironment && /\bravi\b/.test(command)) {
+    return {
+      allowed: false,
+      reason: "Cannot run ravi with a cleared or modified environment",
+    };
+  }
   return { allowed: true };
 }
 
