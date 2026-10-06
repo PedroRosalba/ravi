@@ -87,6 +87,10 @@ public final class RaviClient {
     CronNamespace(transport: transport)
   }
 
+  public var crypto: CryptoNamespace {
+    CryptoNamespace(transport: transport)
+  }
+
   public var daemon: DaemonNamespace {
     DaemonNamespace(transport: transport)
   }
@@ -2123,6 +2127,240 @@ public struct CronNamespace: Sendable {
     var requestBody: [String: RaviJSON] = [:]
     requestBody["id"] = try RaviJSON.fromEncodable(id)
     return try await transport.call(groupSegments: ["cron"], command: "show", body: requestBody, as: CronShowReturn.self)
+  }
+}
+
+public struct CryptoNamespace: Sendable {
+  private let transport: any RaviTransport
+
+  init(transport: any RaviTransport) {
+    self.transport = transport
+  }
+
+  public var deposits: CryptoDepositsNamespace {
+    CryptoDepositsNamespace(transport: transport)
+  }
+
+  public var settings: CryptoSettingsNamespace {
+    CryptoSettingsNamespace(transport: transport)
+  }
+
+  public var signals: CryptoSignalsNamespace {
+    CryptoSignalsNamespace(transport: transport)
+  }
+
+  public var strategies: CryptoStrategiesNamespace {
+    CryptoStrategiesNamespace(transport: transport)
+  }
+
+  public var trades: CryptoTradesNamespace {
+    CryptoTradesNamespace(transport: transport)
+  }
+
+  public var vault: CryptoVaultNamespace {
+    CryptoVaultNamespace(transport: transport)
+  }
+
+  public var wallets: CryptoWalletsNamespace {
+    CryptoWalletsNamespace(transport: transport)
+  }
+
+  public func analyze(_ asset: String, _ options: CryptoAnalyzeOptions = .init()) async throws -> CryptoAnalyzeReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    requestBody["asset"] = try RaviJSON.fromEncodable(asset)
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto"], command: "analyze", body: requestBody, as: CryptoAnalyzeReturn.self)
+  }
+
+  public func balance(_ options: CryptoBalanceOptions = .init()) async throws -> CryptoBalanceReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto"], command: "balance", body: requestBody, as: CryptoBalanceReturn.self)
+  }
+
+  public func deposit(_ amount: String, _ options: CryptoDepositOptions = .init()) async throws -> CryptoDepositReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    requestBody["amount"] = try RaviJSON.fromEncodable(amount)
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto"], command: "deposit", body: requestBody, as: CryptoDepositReturn.self)
+  }
+
+  public func history(_ options: CryptoHistoryOptions = .init()) async throws -> CryptoHistoryReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto"], command: "history", body: requestBody, as: CryptoHistoryReturn.self)
+  }
+
+  public func quote(_ side: String, _ asset: String, _ amount: String, _ options: CryptoQuoteOptions = .init()) async throws -> CryptoQuoteReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    requestBody["side"] = try RaviJSON.fromEncodable(side)
+    requestBody["asset"] = try RaviJSON.fromEncodable(asset)
+    requestBody["amount"] = try RaviJSON.fromEncodable(amount)
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto"], command: "quote", body: requestBody, as: CryptoQuoteReturn.self)
+  }
+
+  public func status() async throws -> CryptoStatusReturn {
+    let requestBody: [String: RaviJSON] = [:]
+    return try await transport.call(groupSegments: ["crypto"], command: "status", body: requestBody, as: CryptoStatusReturn.self)
+  }
+}
+
+public struct CryptoDepositsNamespace: Sendable {
+  private let transport: any RaviTransport
+
+  init(transport: any RaviTransport) {
+    self.transport = transport
+  }
+
+  public func list(_ options: CryptoDepositsListOptions = .init()) async throws -> CryptoDepositsListReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","deposits"], command: "list", body: requestBody, as: CryptoDepositsListReturn.self)
+  }
+
+  public func show(_ depositId: String, _ options: CryptoDepositsShowOptions = .init()) async throws -> CryptoDepositsShowReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    requestBody["depositId"] = try RaviJSON.fromEncodable(depositId)
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","deposits"], command: "show", body: requestBody, as: CryptoDepositsShowReturn.self)
+  }
+}
+
+public struct CryptoSettingsNamespace: Sendable {
+  private let transport: any RaviTransport
+
+  init(transport: any RaviTransport) {
+    self.transport = transport
+  }
+
+  public func list(_ options: CryptoSettingsListOptions = .init()) async throws -> CryptoSettingsListReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","settings"], command: "list", body: requestBody, as: CryptoSettingsListReturn.self)
+  }
+}
+
+public struct CryptoSignalsNamespace: Sendable {
+  private let transport: any RaviTransport
+
+  init(transport: any RaviTransport) {
+    self.transport = transport
+  }
+
+  public func list(_ options: CryptoSignalsListOptions = .init()) async throws -> CryptoSignalsListReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","signals"], command: "list", body: requestBody, as: CryptoSignalsListReturn.self)
+  }
+
+  public func scan(_ options: CryptoSignalsScanOptions = .init()) async throws -> CryptoSignalsScanReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","signals"], command: "scan", body: requestBody, as: CryptoSignalsScanReturn.self)
+  }
+}
+
+public struct CryptoStrategiesNamespace: Sendable {
+  private let transport: any RaviTransport
+
+  init(transport: any RaviTransport) {
+    self.transport = transport
+  }
+
+  public func list(_ options: CryptoStrategiesListOptions = .init()) async throws -> CryptoStrategiesListReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","strategies"], command: "list", body: requestBody, as: CryptoStrategiesListReturn.self)
+  }
+
+  public func show(_ strategyId: String) async throws -> CryptoStrategiesShowReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    requestBody["strategyId"] = try RaviJSON.fromEncodable(strategyId)
+    return try await transport.call(groupSegments: ["crypto","strategies"], command: "show", body: requestBody, as: CryptoStrategiesShowReturn.self)
+  }
+
+  public func sync() async throws -> CryptoStrategiesSyncReturn {
+    let requestBody: [String: RaviJSON] = [:]
+    return try await transport.call(groupSegments: ["crypto","strategies"], command: "sync", body: requestBody, as: CryptoStrategiesSyncReturn.self)
+  }
+}
+
+public struct CryptoTradesNamespace: Sendable {
+  private let transport: any RaviTransport
+
+  init(transport: any RaviTransport) {
+    self.transport = transport
+  }
+
+  public func cancel(_ tradeId: String, _ options: CryptoTradesCancelOptions = .init()) async throws -> CryptoTradesCancelReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    requestBody["tradeId"] = try RaviJSON.fromEncodable(tradeId)
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","trades"], command: "cancel", body: requestBody, as: CryptoTradesCancelReturn.self)
+  }
+
+  public func list(_ options: CryptoTradesListOptions = .init()) async throws -> CryptoTradesListReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","trades"], command: "list", body: requestBody, as: CryptoTradesListReturn.self)
+  }
+
+  public func propose(_ side: String, _ asset: String, _ amount: String, _ options: CryptoTradesProposeOptions = .init()) async throws -> CryptoTradesProposeReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    requestBody["side"] = try RaviJSON.fromEncodable(side)
+    requestBody["asset"] = try RaviJSON.fromEncodable(asset)
+    requestBody["amount"] = try RaviJSON.fromEncodable(amount)
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","trades"], command: "propose", body: requestBody, as: CryptoTradesProposeReturn.self)
+  }
+
+  public func show(_ tradeId: String, _ options: CryptoTradesShowOptions = .init()) async throws -> CryptoTradesShowReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    requestBody["tradeId"] = try RaviJSON.fromEncodable(tradeId)
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","trades"], command: "show", body: requestBody, as: CryptoTradesShowReturn.self)
+  }
+}
+
+public struct CryptoVaultNamespace: Sendable {
+  private let transport: any RaviTransport
+
+  init(transport: any RaviTransport) {
+    self.transport = transport
+  }
+
+  public func riskProfile(_ profile: String, _ options: CryptoVaultRiskProfileOptions = .init()) async throws -> CryptoVaultRiskProfileReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    requestBody["profile"] = try RaviJSON.fromEncodable(profile)
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","vault"], command: "risk-profile", body: requestBody, as: CryptoVaultRiskProfileReturn.self)
+  }
+
+  public func show(_ options: CryptoVaultShowOptions = .init()) async throws -> CryptoVaultShowReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","vault"], command: "show", body: requestBody, as: CryptoVaultShowReturn.self)
+  }
+}
+
+public struct CryptoWalletsNamespace: Sendable {
+  private let transport: any RaviTransport
+
+  init(transport: any RaviTransport) {
+    self.transport = transport
+  }
+
+  public func events(_ options: CryptoWalletsEventsOptions = .init()) async throws -> CryptoWalletsEventsReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","wallets"], command: "events", body: requestBody, as: CryptoWalletsEventsReturn.self)
+  }
+
+  public func list(_ options: CryptoWalletsListOptions = .init()) async throws -> CryptoWalletsListReturn {
+    var requestBody: [String: RaviJSON] = [:]
+    try options.encodeBody(into: &requestBody)
+    return try await transport.call(groupSegments: ["crypto","wallets"], command: "list", body: requestBody, as: CryptoWalletsListReturn.self)
   }
 }
 

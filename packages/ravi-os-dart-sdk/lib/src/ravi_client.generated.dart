@@ -30,6 +30,7 @@ class RaviClient {
   CredentialsNamespace get credentials => CredentialsNamespace(_transport);
   CrmNamespace get crm => CrmNamespace(_transport);
   CronNamespace get cron => CronNamespace(_transport);
+  CryptoNamespace get crypto => CryptoNamespace(_transport);
   DaemonNamespace get daemon => DaemonNamespace(_transport);
   DevinNamespace get devin => DevinNamespace(_transport);
   EvalNamespace get eval => EvalNamespace(_transport);
@@ -2847,6 +2848,320 @@ class CronNamespace {
       command: "show",
       body: requestBody,
       decode: cronShowReturnFromJson,
+    );
+  }
+}
+
+class CryptoNamespace {
+  const CryptoNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  CryptoDepositsNamespace get deposits => CryptoDepositsNamespace(_transport);
+
+  CryptoSettingsNamespace get settings => CryptoSettingsNamespace(_transport);
+
+  CryptoSignalsNamespace get signals => CryptoSignalsNamespace(_transport);
+
+  CryptoStrategiesNamespace get strategies => CryptoStrategiesNamespace(_transport);
+
+  CryptoTradesNamespace get trades => CryptoTradesNamespace(_transport);
+
+  CryptoVaultNamespace get vault => CryptoVaultNamespace(_transport);
+
+  CryptoWalletsNamespace get wallets => CryptoWalletsNamespace(_transport);
+
+  Future<CryptoAnalyzeReturn> analyze(String asset, [CryptoAnalyzeOptions options = const CryptoAnalyzeOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["asset"] = RaviJson.from(asset);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto"],
+      command: "analyze",
+      body: requestBody,
+      decode: cryptoAnalyzeReturnFromJson,
+    );
+  }
+
+  Future<CryptoBalanceReturn> balance([CryptoBalanceOptions options = const CryptoBalanceOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto"],
+      command: "balance",
+      body: requestBody,
+      decode: cryptoBalanceReturnFromJson,
+    );
+  }
+
+  Future<CryptoDepositReturn> deposit(String amount, [CryptoDepositOptions options = const CryptoDepositOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["amount"] = RaviJson.from(amount);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto"],
+      command: "deposit",
+      body: requestBody,
+      decode: cryptoDepositReturnFromJson,
+    );
+  }
+
+  Future<CryptoHistoryReturn> history([CryptoHistoryOptions options = const CryptoHistoryOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto"],
+      command: "history",
+      body: requestBody,
+      decode: cryptoHistoryReturnFromJson,
+    );
+  }
+
+  Future<CryptoQuoteReturn> quote(String side, String asset, String amount, [CryptoQuoteOptions options = const CryptoQuoteOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["side"] = RaviJson.from(side);
+    requestBody["asset"] = RaviJson.from(asset);
+    requestBody["amount"] = RaviJson.from(amount);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto"],
+      command: "quote",
+      body: requestBody,
+      decode: cryptoQuoteReturnFromJson,
+    );
+  }
+
+  Future<CryptoStatusReturn> status() async {
+    final requestBody = <String, RaviJson>{};
+    return _transport.callJson(
+      groupSegments: const ["crypto"],
+      command: "status",
+      body: requestBody,
+      decode: cryptoStatusReturnFromJson,
+    );
+  }
+}
+
+class CryptoDepositsNamespace {
+  const CryptoDepositsNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  Future<CryptoDepositsListReturn> list([CryptoDepositsListOptions options = const CryptoDepositsListOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "deposits"],
+      command: "list",
+      body: requestBody,
+      decode: cryptoDepositsListReturnFromJson,
+    );
+  }
+
+  Future<CryptoDepositsShowReturn> show(String depositId, [CryptoDepositsShowOptions options = const CryptoDepositsShowOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["depositId"] = RaviJson.from(depositId);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "deposits"],
+      command: "show",
+      body: requestBody,
+      decode: cryptoDepositsShowReturnFromJson,
+    );
+  }
+}
+
+class CryptoSettingsNamespace {
+  const CryptoSettingsNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  Future<CryptoSettingsListReturn> list([CryptoSettingsListOptions options = const CryptoSettingsListOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "settings"],
+      command: "list",
+      body: requestBody,
+      decode: cryptoSettingsListReturnFromJson,
+    );
+  }
+}
+
+class CryptoSignalsNamespace {
+  const CryptoSignalsNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  Future<CryptoSignalsListReturn> list([CryptoSignalsListOptions options = const CryptoSignalsListOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "signals"],
+      command: "list",
+      body: requestBody,
+      decode: cryptoSignalsListReturnFromJson,
+    );
+  }
+
+  Future<CryptoSignalsScanReturn> scan([CryptoSignalsScanOptions options = const CryptoSignalsScanOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "signals"],
+      command: "scan",
+      body: requestBody,
+      decode: cryptoSignalsScanReturnFromJson,
+    );
+  }
+}
+
+class CryptoStrategiesNamespace {
+  const CryptoStrategiesNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  Future<CryptoStrategiesListReturn> list([CryptoStrategiesListOptions options = const CryptoStrategiesListOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "strategies"],
+      command: "list",
+      body: requestBody,
+      decode: cryptoStrategiesListReturnFromJson,
+    );
+  }
+
+  Future<CryptoStrategiesShowReturn> show(String strategyId) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["strategyId"] = RaviJson.from(strategyId);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "strategies"],
+      command: "show",
+      body: requestBody,
+      decode: cryptoStrategiesShowReturnFromJson,
+    );
+  }
+
+  Future<CryptoStrategiesSyncReturn> sync() async {
+    final requestBody = <String, RaviJson>{};
+    return _transport.callJson(
+      groupSegments: const ["crypto", "strategies"],
+      command: "sync",
+      body: requestBody,
+      decode: cryptoStrategiesSyncReturnFromJson,
+    );
+  }
+}
+
+class CryptoTradesNamespace {
+  const CryptoTradesNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  Future<CryptoTradesCancelReturn> cancel(String tradeId, [CryptoTradesCancelOptions options = const CryptoTradesCancelOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["tradeId"] = RaviJson.from(tradeId);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "trades"],
+      command: "cancel",
+      body: requestBody,
+      decode: cryptoTradesCancelReturnFromJson,
+    );
+  }
+
+  Future<CryptoTradesListReturn> list([CryptoTradesListOptions options = const CryptoTradesListOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "trades"],
+      command: "list",
+      body: requestBody,
+      decode: cryptoTradesListReturnFromJson,
+    );
+  }
+
+  Future<CryptoTradesProposeReturn> propose(String side, String asset, String amount, [CryptoTradesProposeOptions options = const CryptoTradesProposeOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["side"] = RaviJson.from(side);
+    requestBody["asset"] = RaviJson.from(asset);
+    requestBody["amount"] = RaviJson.from(amount);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "trades"],
+      command: "propose",
+      body: requestBody,
+      decode: cryptoTradesProposeReturnFromJson,
+    );
+  }
+
+  Future<CryptoTradesShowReturn> show(String tradeId, [CryptoTradesShowOptions options = const CryptoTradesShowOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["tradeId"] = RaviJson.from(tradeId);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "trades"],
+      command: "show",
+      body: requestBody,
+      decode: cryptoTradesShowReturnFromJson,
+    );
+  }
+}
+
+class CryptoVaultNamespace {
+  const CryptoVaultNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  Future<CryptoVaultRiskProfileReturn> riskProfile(String profile, [CryptoVaultRiskProfileOptions options = const CryptoVaultRiskProfileOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    requestBody["profile"] = RaviJson.from(profile);
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "vault"],
+      command: "risk-profile",
+      body: requestBody,
+      decode: cryptoVaultRiskProfileReturnFromJson,
+    );
+  }
+
+  Future<CryptoVaultShowReturn> show([CryptoVaultShowOptions options = const CryptoVaultShowOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "vault"],
+      command: "show",
+      body: requestBody,
+      decode: cryptoVaultShowReturnFromJson,
+    );
+  }
+}
+
+class CryptoWalletsNamespace {
+  const CryptoWalletsNamespace(this._transport);
+
+  final RaviTransport _transport;
+
+  Future<CryptoWalletsEventsReturn> events([CryptoWalletsEventsOptions options = const CryptoWalletsEventsOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "wallets"],
+      command: "events",
+      body: requestBody,
+      decode: cryptoWalletsEventsReturnFromJson,
+    );
+  }
+
+  Future<CryptoWalletsListReturn> list([CryptoWalletsListOptions options = const CryptoWalletsListOptions()]) async {
+    final requestBody = <String, RaviJson>{};
+    options.encodeBody(requestBody);
+    return _transport.callJson(
+      groupSegments: const ["crypto", "wallets"],
+      command: "list",
+      body: requestBody,
+      decode: cryptoWalletsListReturnFromJson,
     );
   }
 }

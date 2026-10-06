@@ -9601,6 +9601,924 @@ public struct CronShowReturn: Codable, Sendable {
   }
 }
 
+public struct CryptoAnalyzeOptions: Codable, Sendable {
+  public var days: String?
+  public var judge: Bool?
+
+  public init(days: String? = nil, judge: Bool? = nil) {
+    self.days = days
+    self.judge = judge
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case days = "days"
+    case judge = "judge"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.days {
+      body["days"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.judge {
+      body["judge"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoAnalyzeReturn: Codable, Sendable {
+  public var asset: RaviJSON
+  public var disclaimer: String
+  public var judge: RaviJSON
+  public var sizing: RaviJSON
+  public var summary: RaviJSON
+
+  public init(asset: RaviJSON, disclaimer: String, judge: RaviJSON, sizing: RaviJSON, summary: RaviJSON) {
+    self.asset = asset
+    self.disclaimer = disclaimer
+    self.judge = judge
+    self.sizing = sizing
+    self.summary = summary
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case asset = "asset"
+    case disclaimer = "disclaimer"
+    case judge = "judge"
+    case sizing = "sizing"
+    case summary = "summary"
+  }
+}
+
+public struct CryptoBalanceOptions: Codable, Sendable {
+  public var owner: String?
+
+  public init(owner: String? = nil) {
+    self.owner = owner
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case owner = "owner"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoBalanceReturn: Codable, Sendable {
+  public var asOf: RaviJSON
+  public var fx: RaviJSON
+  public var hint: RaviJSON
+  public var lines: [RaviJSON]
+  public var owner: String
+  public var pending: RaviJSON
+  public var totals: RaviJSON
+  public var vault: RaviJSON
+
+  public init(asOf: RaviJSON, fx: RaviJSON, hint: RaviJSON, lines: [RaviJSON], owner: String, pending: RaviJSON, totals: RaviJSON, vault: RaviJSON) {
+    self.asOf = asOf
+    self.fx = fx
+    self.hint = hint
+    self.lines = lines
+    self.owner = owner
+    self.pending = pending
+    self.totals = totals
+    self.vault = vault
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case asOf = "asOf"
+    case fx = "fx"
+    case hint = "hint"
+    case lines = "lines"
+    case owner = "owner"
+    case pending = "pending"
+    case totals = "totals"
+    case vault = "vault"
+  }
+}
+
+public struct CryptoDepositOptions: Codable, Sendable {
+  public var owner: String?
+
+  public init(owner: String? = nil) {
+    self.owner = owner
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case owner = "owner"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoDepositReturn: Codable, Sendable {
+  public var deposit: RaviJSON
+  public var instructions: String
+  public var vaultCreated: Bool
+
+  public init(deposit: RaviJSON, instructions: String, vaultCreated: Bool) {
+    self.deposit = deposit
+    self.instructions = instructions
+    self.vaultCreated = vaultCreated
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case deposit = "deposit"
+    case instructions = "instructions"
+    case vaultCreated = "vaultCreated"
+  }
+}
+
+public struct CryptoDepositsListOptions: Codable, Sendable {
+  public var all: Bool?
+  public var limit: String?
+  public var offset: String?
+  public var owner: String?
+  public var status: String?
+
+  public init(all: Bool? = nil, limit: String? = nil, offset: String? = nil, owner: String? = nil, status: String? = nil) {
+    self.all = all
+    self.limit = limit
+    self.offset = offset
+    self.owner = owner
+    self.status = status
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case all = "all"
+    case limit = "limit"
+    case offset = "offset"
+    case owner = "owner"
+    case status = "status"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.all {
+      body["all"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.limit {
+      body["limit"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.offset {
+      body["offset"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.status {
+      body["status"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoDepositsListReturn: Codable, Sendable {
+  public var items: [RaviJSON]
+  public var pagination: RaviJSON
+  public var total: Double
+
+  public init(items: [RaviJSON], pagination: RaviJSON, total: Double) {
+    self.items = items
+    self.pagination = pagination
+    self.total = total
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case items = "items"
+    case pagination = "pagination"
+    case total = "total"
+  }
+}
+
+public struct CryptoDepositsShowOptions: Codable, Sendable {
+  public var owner: String?
+
+  public init(owner: String? = nil) {
+    self.owner = owner
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case owner = "owner"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoDepositsShowReturn: Codable, Sendable {
+  public var deposit: RaviJSON
+
+  public init(deposit: RaviJSON) {
+    self.deposit = deposit
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case deposit = "deposit"
+  }
+}
+
+public struct CryptoHistoryOptions: Codable, Sendable {
+  public var limit: String?
+  public var offset: String?
+  public var owner: String?
+
+  public init(limit: String? = nil, offset: String? = nil, owner: String? = nil) {
+    self.limit = limit
+    self.offset = offset
+    self.owner = owner
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case limit = "limit"
+    case offset = "offset"
+    case owner = "owner"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.limit {
+      body["limit"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.offset {
+      body["offset"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoHistoryReturn: Codable, Sendable {
+  public var items: [RaviJSON]
+  public var pagination: RaviJSON
+  public var total: Double
+  public var vaultId: String
+
+  public init(items: [RaviJSON], pagination: RaviJSON, total: Double, vaultId: String) {
+    self.items = items
+    self.pagination = pagination
+    self.total = total
+    self.vaultId = vaultId
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case items = "items"
+    case pagination = "pagination"
+    case total = "total"
+    case vaultId = "vaultId"
+  }
+}
+
+public struct CryptoQuoteOptions: Codable, Sendable {
+  public var owner: String?
+  public var unit: String?
+
+  public init(owner: String? = nil, unit: String? = nil) {
+    self.owner = owner
+    self.unit = unit
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case owner = "owner"
+    case unit = "unit"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.unit {
+      body["unit"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoQuoteReturn: Codable, Sendable {
+  public var asset: RaviJSON
+  public var expectedOutput: RaviJSON
+  public var input: RaviJSON
+  public var notionalUsd: Double
+  public var priceImpactPct: RaviJSON
+  public var risk: RaviJSON
+  public var router: RaviJSON
+  public var side: String
+  public var vaultEquityUsd: RaviJSON
+
+  public init(asset: RaviJSON, expectedOutput: RaviJSON, input: RaviJSON, notionalUsd: Double, priceImpactPct: RaviJSON, risk: RaviJSON, router: RaviJSON, side: String, vaultEquityUsd: RaviJSON) {
+    self.asset = asset
+    self.expectedOutput = expectedOutput
+    self.input = input
+    self.notionalUsd = notionalUsd
+    self.priceImpactPct = priceImpactPct
+    self.risk = risk
+    self.router = router
+    self.side = side
+    self.vaultEquityUsd = vaultEquityUsd
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case asset = "asset"
+    case expectedOutput = "expectedOutput"
+    case input = "input"
+    case notionalUsd = "notionalUsd"
+    case priceImpactPct = "priceImpactPct"
+    case risk = "risk"
+    case router = "router"
+    case side = "side"
+    case vaultEquityUsd = "vaultEquityUsd"
+  }
+}
+
+public struct CryptoSettingsListOptions: Codable, Sendable {
+  public var limit: String?
+  public var offset: String?
+
+  public init(limit: String? = nil, offset: String? = nil) {
+    self.limit = limit
+    self.offset = offset
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case limit = "limit"
+    case offset = "offset"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.limit {
+      body["limit"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.offset {
+      body["offset"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoSettingsListReturn: Codable, Sendable {
+  public var items: [RaviJSON]
+  public var pagination: RaviJSON
+  public var total: Double
+
+  public init(items: [RaviJSON], pagination: RaviJSON, total: Double) {
+    self.items = items
+    self.pagination = pagination
+    self.total = total
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case items = "items"
+    case pagination = "pagination"
+    case total = "total"
+  }
+}
+
+public struct CryptoSignalsListOptions: Codable, Sendable {
+  public var engine: String?
+  public var limit: String?
+  public var offset: String?
+  public var status: String?
+
+  public init(engine: String? = nil, limit: String? = nil, offset: String? = nil, status: String? = nil) {
+    self.engine = engine
+    self.limit = limit
+    self.offset = offset
+    self.status = status
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case engine = "engine"
+    case limit = "limit"
+    case offset = "offset"
+    case status = "status"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.engine {
+      body["engine"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.limit {
+      body["limit"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.offset {
+      body["offset"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.status {
+      body["status"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoSignalsListReturn: Codable, Sendable {
+  public var items: [RaviJSON]
+  public var pagination: RaviJSON
+  public var total: Double
+
+  public init(items: [RaviJSON], pagination: RaviJSON, total: Double) {
+    self.items = items
+    self.pagination = pagination
+    self.total = total
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case items = "items"
+    case pagination = "pagination"
+    case total = "total"
+  }
+}
+
+public struct CryptoSignalsScanOptions: Codable, Sendable {
+  public var engine: String?
+
+  public init(engine: String? = nil) {
+    self.engine = engine
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case engine = "engine"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.engine {
+      body["engine"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoSignalsScanReturn: Codable, Sendable {
+  public var reports: [RaviJSON]
+
+  public init(reports: [RaviJSON]) {
+    self.reports = reports
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case reports = "reports"
+  }
+}
+
+public struct CryptoStatusReturn: Codable, Sendable {
+  public var approvalTargetConfigured: Bool
+  public var executionMode: String
+  public var jev: RaviJSON
+  public var killSwitch: Bool
+  public var limits: RaviJSON
+  public var pixProvider: String
+  public var sandbox: Bool
+
+  public init(approvalTargetConfigured: Bool, executionMode: String, jev: RaviJSON, killSwitch: Bool, limits: RaviJSON, pixProvider: String, sandbox: Bool) {
+    self.approvalTargetConfigured = approvalTargetConfigured
+    self.executionMode = executionMode
+    self.jev = jev
+    self.killSwitch = killSwitch
+    self.limits = limits
+    self.pixProvider = pixProvider
+    self.sandbox = sandbox
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case approvalTargetConfigured = "approvalTargetConfigured"
+    case executionMode = "executionMode"
+    case jev = "jev"
+    case killSwitch = "killSwitch"
+    case limits = "limits"
+    case pixProvider = "pixProvider"
+    case sandbox = "sandbox"
+  }
+}
+
+public struct CryptoStrategiesListOptions: Codable, Sendable {
+  public var limit: String?
+  public var offset: String?
+  public var source: String?
+
+  public init(limit: String? = nil, offset: String? = nil, source: String? = nil) {
+    self.limit = limit
+    self.offset = offset
+    self.source = source
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case limit = "limit"
+    case offset = "offset"
+    case source = "source"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.limit {
+      body["limit"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.offset {
+      body["offset"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.source {
+      body["source"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoStrategiesListReturn: Codable, Sendable {
+  public var items: [RaviJSON]
+  public var pagination: RaviJSON
+  public var total: Double
+
+  public init(items: [RaviJSON], pagination: RaviJSON, total: Double) {
+    self.items = items
+    self.pagination = pagination
+    self.total = total
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case items = "items"
+    case pagination = "pagination"
+    case total = "total"
+  }
+}
+
+public struct CryptoStrategiesShowReturn: Codable, Sendable {
+  public var strategy: RaviJSON
+
+  public init(strategy: RaviJSON) {
+    self.strategy = strategy
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case strategy = "strategy"
+  }
+}
+
+public struct CryptoStrategiesSyncReturn: Codable, Sendable {
+  public var authenticated: Bool
+  public var fetched: Double
+  public var items: [RaviJSON]
+  public var warnings: [String]
+
+  public init(authenticated: Bool, fetched: Double, items: [RaviJSON], warnings: [String]) {
+    self.authenticated = authenticated
+    self.fetched = fetched
+    self.items = items
+    self.warnings = warnings
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case authenticated = "authenticated"
+    case fetched = "fetched"
+    case items = "items"
+    case warnings = "warnings"
+  }
+}
+
+public struct CryptoTradesCancelOptions: Codable, Sendable {
+  public var owner: String?
+
+  public init(owner: String? = nil) {
+    self.owner = owner
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case owner = "owner"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoTradesCancelReturn: Codable, Sendable {
+  public var trade: RaviJSON
+
+  public init(trade: RaviJSON) {
+    self.trade = trade
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case trade = "trade"
+  }
+}
+
+public struct CryptoTradesListOptions: Codable, Sendable {
+  public var all: Bool?
+  public var limit: String?
+  public var offset: String?
+  public var owner: String?
+  public var status: String?
+
+  public init(all: Bool? = nil, limit: String? = nil, offset: String? = nil, owner: String? = nil, status: String? = nil) {
+    self.all = all
+    self.limit = limit
+    self.offset = offset
+    self.owner = owner
+    self.status = status
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case all = "all"
+    case limit = "limit"
+    case offset = "offset"
+    case owner = "owner"
+    case status = "status"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.all {
+      body["all"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.limit {
+      body["limit"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.offset {
+      body["offset"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.status {
+      body["status"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoTradesListReturn: Codable, Sendable {
+  public var items: [RaviJSON]
+  public var pagination: RaviJSON
+  public var total: Double
+
+  public init(items: [RaviJSON], pagination: RaviJSON, total: Double) {
+    self.items = items
+    self.pagination = pagination
+    self.total = total
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case items = "items"
+    case pagination = "pagination"
+    case total = "total"
+  }
+}
+
+public struct CryptoTradesProposeOptions: Codable, Sendable {
+  public var owner: String?
+  public var rationale: String?
+  public var signal: String?
+  public var slippageBps: String?
+  public var strategy: String?
+  public var unit: String?
+
+  public init(owner: String? = nil, rationale: String? = nil, signal: String? = nil, slippageBps: String? = nil, strategy: String? = nil, unit: String? = nil) {
+    self.owner = owner
+    self.rationale = rationale
+    self.signal = signal
+    self.slippageBps = slippageBps
+    self.strategy = strategy
+    self.unit = unit
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case owner = "owner"
+    case rationale = "rationale"
+    case signal = "signal"
+    case slippageBps = "slippageBps"
+    case strategy = "strategy"
+    case unit = "unit"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.rationale {
+      body["rationale"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.signal {
+      body["signal"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.slippageBps {
+      body["slippageBps"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.strategy {
+      body["strategy"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.unit {
+      body["unit"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoTradesProposeReturn: Codable, Sendable {
+  public var approval: String
+  public var risk: RaviJSON
+  public var trade: RaviJSON
+
+  public init(approval: String, risk: RaviJSON, trade: RaviJSON) {
+    self.approval = approval
+    self.risk = risk
+    self.trade = trade
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case approval = "approval"
+    case risk = "risk"
+    case trade = "trade"
+  }
+}
+
+public struct CryptoTradesShowOptions: Codable, Sendable {
+  public var owner: String?
+
+  public init(owner: String? = nil) {
+    self.owner = owner
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case owner = "owner"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoTradesShowReturn: Codable, Sendable {
+  public var summary: String
+  public var trade: RaviJSON
+
+  public init(summary: String, trade: RaviJSON) {
+    self.summary = summary
+    self.trade = trade
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case summary = "summary"
+    case trade = "trade"
+  }
+}
+
+public struct CryptoVaultRiskProfileOptions: Codable, Sendable {
+  public var owner: String?
+
+  public init(owner: String? = nil) {
+    self.owner = owner
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case owner = "owner"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoVaultRiskProfileReturn: Codable, Sendable {
+  public var vault: RaviJSON
+
+  public init(vault: RaviJSON) {
+    self.vault = vault
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case vault = "vault"
+  }
+}
+
+public struct CryptoVaultShowOptions: Codable, Sendable {
+  public var owner: String?
+
+  public init(owner: String? = nil) {
+    self.owner = owner
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case owner = "owner"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.owner {
+      body["owner"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoVaultShowReturn: Codable, Sendable {
+  public var vault: RaviJSON
+
+  public init(vault: RaviJSON) {
+    self.vault = vault
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case vault = "vault"
+  }
+}
+
+public struct CryptoWalletsEventsOptions: Codable, Sendable {
+  public var limit: String?
+  public var offset: String?
+  public var wallet: String?
+
+  public init(limit: String? = nil, offset: String? = nil, wallet: String? = nil) {
+    self.limit = limit
+    self.offset = offset
+    self.wallet = wallet
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case limit = "limit"
+    case offset = "offset"
+    case wallet = "wallet"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.limit {
+      body["limit"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.offset {
+      body["offset"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.wallet {
+      body["wallet"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoWalletsEventsReturn: Codable, Sendable {
+  public var items: [RaviJSON]
+  public var pagination: RaviJSON
+  public var total: Double
+
+  public init(items: [RaviJSON], pagination: RaviJSON, total: Double) {
+    self.items = items
+    self.pagination = pagination
+    self.total = total
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case items = "items"
+    case pagination = "pagination"
+    case total = "total"
+  }
+}
+
+public struct CryptoWalletsListOptions: Codable, Sendable {
+  public var chain: String?
+  public var limit: String?
+  public var offset: String?
+
+  public init(chain: String? = nil, limit: String? = nil, offset: String? = nil) {
+    self.chain = chain
+    self.limit = limit
+    self.offset = offset
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case chain = "chain"
+    case limit = "limit"
+    case offset = "offset"
+  }
+
+  func encodeBody(into body: inout [String: RaviJSON]) throws {
+    if let value = self.chain {
+      body["chain"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.limit {
+      body["limit"] = try RaviJSON.fromEncodable(value)
+    }
+    if let value = self.offset {
+      body["offset"] = try RaviJSON.fromEncodable(value)
+    }
+  }
+}
+
+public struct CryptoWalletsListReturn: Codable, Sendable {
+  public var items: [RaviJSON]
+  public var pagination: RaviJSON
+  public var total: Double
+
+  public init(items: [RaviJSON], pagination: RaviJSON, total: Double) {
+    self.items = items
+    self.pagination = pagination
+    self.total = total
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case items = "items"
+    case pagination = "pagination"
+    case total = "total"
+  }
+}
+
 public struct DaemonEnvReturn: Codable, Sendable {
   public var action: String
   public var created: Bool

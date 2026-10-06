@@ -33100,6 +33100,4045 @@ class RaviSchemas {
 }
 ''';
 
+  static const cryptoAnalyzeInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "asset": {
+      "description": "Symbol (TSLAx, NVDA, SOL) or verified mint",
+      "type": "string"
+    },
+    "days": {
+      "description": "History window in days (default: 90, max: 365)",
+      "type": "string"
+    },
+    "judge": {
+      "description": "Also ask the Jev judge for a take/reduce/skip verdict",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "asset"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoAnalyzeReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "asset": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "mint": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "usdPrice": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "symbol",
+        "mint",
+        "kind",
+        "usdPrice"
+      ],
+      "type": "object"
+    },
+    "disclaimer": {
+      "type": "string"
+    },
+    "judge": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "confidence": {
+              "type": "number"
+            },
+            "passed": {
+              "type": "boolean"
+            },
+            "reasons": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "rugRisk": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "verdict": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "verdict",
+            "confidence",
+            "rugRisk",
+            "passed",
+            "reasons"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sizing": {
+      "additionalProperties": false,
+      "properties": {
+        "binding": {
+          "type": "string"
+        },
+        "components": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "kelly": {
+              "type": "number"
+            },
+            "scaledKelly": {
+              "type": "number"
+            },
+            "volTarget": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kelly",
+            "scaledKelly",
+            "volTarget",
+            "cap"
+          ],
+          "type": "object"
+        },
+        "fraction": {
+          "type": "number"
+        },
+        "riskProfile": {
+          "type": "string"
+        },
+        "winProbabilityAssumed": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "riskProfile",
+        "winProbabilityAssumed",
+        "fraction",
+        "components",
+        "binding"
+      ],
+      "type": "object"
+    },
+    "summary": {
+      "additionalProperties": false,
+      "properties": {
+        "aboveSma20": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "annualizedVolatility": {
+          "type": "number"
+        },
+        "cvar95": {
+          "type": "number"
+        },
+        "maxDrawdown": {
+          "type": "number"
+        },
+        "momentum30": {
+          "type": "number"
+        },
+        "momentum7": {
+          "type": "number"
+        },
+        "observations": {
+          "type": "number"
+        },
+        "rsi14": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sharpe": {
+          "type": "number"
+        },
+        "sortino": {
+          "type": "number"
+        },
+        "totalReturn": {
+          "type": "number"
+        },
+        "trendSlope": {
+          "type": "number"
+        },
+        "var95": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "observations",
+        "totalReturn",
+        "momentum7",
+        "momentum30",
+        "annualizedVolatility",
+        "sharpe",
+        "sortino",
+        "maxDrawdown",
+        "var95",
+        "cvar95",
+        "rsi14",
+        "trendSlope",
+        "aboveSma20"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "asset",
+    "summary",
+    "sizing",
+    "judge",
+    "disclaimer"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoBalanceInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "owner": {
+      "description": "Operator only: contact:<id> whose vault to show",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const cryptoBalanceReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "asOf": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fx": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "usdBrl": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "usdBrl",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "hint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lines": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "type": "string"
+          },
+          "assetId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "usdPrice": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "valueBrl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "valueUsd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "symbol",
+          "assetId",
+          "kind",
+          "amount",
+          "usdPrice",
+          "valueUsd",
+          "valueBrl"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "pending": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "deposits": {
+              "type": "number"
+            },
+            "trades": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "deposits",
+            "trades"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "totals": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "brl": {
+              "type": "number"
+            },
+            "unpricedAssets": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "usd": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "usd",
+            "brl",
+            "unpricedAssets"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "vault": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "riskProfile": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "riskProfile"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "owner",
+    "vault",
+    "lines",
+    "totals",
+    "fx",
+    "pending",
+    "asOf",
+    "hint"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoDepositInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "amount": {
+      "description": "Amount in BRL, e.g. 200 or 49,90",
+      "type": "string"
+    },
+    "owner": {
+      "description": "Operator only: contact:<id> to deposit for",
+      "type": "string"
+    }
+  },
+  "required": [
+    "amount"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoDepositReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "deposit": {
+      "additionalProperties": false,
+      "properties": {
+        "amountBrl": {
+          "type": "string"
+        },
+        "amountBrlDisplay": {
+          "type": "string"
+        },
+        "conversion": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "amount": {
+                  "type": "string"
+                },
+                "assetId": {
+                  "type": "string"
+                },
+                "feeBrl": {
+                  "type": "string"
+                },
+                "rate": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "symbol": {
+                  "type": "string"
+                },
+                "usdBrl": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "source",
+                "rate",
+                "assetId",
+                "symbol",
+                "amount",
+                "feeBrl"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "paidAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "paymentUrl": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pixCopyPaste": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "sandbox": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string"
+        },
+        "vaultId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "vaultId",
+        "provider",
+        "status",
+        "amountBrl",
+        "amountBrlDisplay",
+        "pixCopyPaste",
+        "paymentUrl",
+        "expiresAt",
+        "paidAt",
+        "sandbox",
+        "conversion",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "instructions": {
+      "type": "string"
+    },
+    "vaultCreated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "deposit",
+    "vaultCreated",
+    "instructions"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoDepositsListInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "all": {
+      "description": "Operator only: all vaults",
+      "type": "boolean"
+    },
+    "limit": {
+      "description": "Page size (default: 50, max: 500)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Items to skip (default: 0)",
+      "type": "string"
+    },
+    "owner": {
+      "description": "Operator only: contact:<id>",
+      "type": "string"
+    },
+    "status": {
+      "description": "Filter: pending|paid|credited|converted|expired|failed|reversed|reversal_blocked",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const cryptoDepositsListReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "amountBrl": {
+            "type": "string"
+          },
+          "amountBrlDisplay": {
+            "type": "string"
+          },
+          "conversion": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "type": "string"
+                  },
+                  "assetId": {
+                    "type": "string"
+                  },
+                  "feeBrl": {
+                    "type": "string"
+                  },
+                  "rate": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "symbol": {
+                    "type": "string"
+                  },
+                  "usdBrl": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "source",
+                  "rate",
+                  "assetId",
+                  "symbol",
+                  "amount",
+                  "feeBrl"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "paidAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "paymentUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pixCopyPaste": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "sandbox": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "vaultId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "vaultId",
+          "provider",
+          "status",
+          "amountBrl",
+          "amountBrlDisplay",
+          "pixCopyPaste",
+          "paymentUrl",
+          "expiresAt",
+          "paidAt",
+          "sandbox",
+          "conversion",
+          "createdAt"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "total",
+    "pagination",
+    "items"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoDepositsShowInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "depositId": {
+      "description": "Deposit id (dep_…)",
+      "type": "string"
+    },
+    "owner": {
+      "description": "Operator only: contact:<id>",
+      "type": "string"
+    }
+  },
+  "required": [
+    "depositId"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoDepositsShowReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "deposit": {
+      "additionalProperties": false,
+      "properties": {
+        "amountBrl": {
+          "type": "string"
+        },
+        "amountBrlDisplay": {
+          "type": "string"
+        },
+        "conversion": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "amount": {
+                  "type": "string"
+                },
+                "assetId": {
+                  "type": "string"
+                },
+                "feeBrl": {
+                  "type": "string"
+                },
+                "rate": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "symbol": {
+                  "type": "string"
+                },
+                "usdBrl": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "source",
+                "rate",
+                "assetId",
+                "symbol",
+                "amount",
+                "feeBrl"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "paidAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "paymentUrl": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pixCopyPaste": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "sandbox": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string"
+        },
+        "vaultId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "vaultId",
+        "provider",
+        "status",
+        "amountBrl",
+        "amountBrlDisplay",
+        "pixCopyPaste",
+        "paymentUrl",
+        "expiresAt",
+        "paidAt",
+        "sandbox",
+        "conversion",
+        "createdAt"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "deposit"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoHistoryInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "description": "Page size (default: 50, max: 500)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Items to skip (default: 0)",
+      "type": "string"
+    },
+    "owner": {
+      "description": "Operator only: contact:<id>",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const cryptoHistoryReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "changes": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "amount": {
+                  "type": "string"
+                },
+                "symbol": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "symbol",
+                "amount"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "memo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "ref",
+          "memo",
+          "at",
+          "changes"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
+    "total": {
+      "type": "number"
+    },
+    "vaultId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "vaultId",
+    "total",
+    "pagination",
+    "items"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoQuoteInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "amount": {
+      "description": "Amount, interpreted by --unit",
+      "type": "string"
+    },
+    "asset": {
+      "description": "Symbol (TSLAx, NVDA, SOL) or verified mint",
+      "type": "string"
+    },
+    "owner": {
+      "description": "Operator only: contact:<id>",
+      "type": "string"
+    },
+    "side": {
+      "description": "buy|sell",
+      "type": "string"
+    },
+    "unit": {
+      "description": "usd|brl|units|percent (default: usd)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "amount",
+    "asset",
+    "side"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoQuoteReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "asset": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "liquidityUsd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mint": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "usdPrice": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "symbol",
+        "mint",
+        "kind",
+        "usdPrice",
+        "liquidityUsd"
+      ],
+      "type": "object"
+    },
+    "expectedOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "amount"
+      ],
+      "type": "object"
+    },
+    "input": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "amount"
+      ],
+      "type": "object"
+    },
+    "notionalUsd": {
+      "type": "number"
+    },
+    "priceImpactPct": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "risk": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        },
+        "violations": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "allowed",
+        "violations"
+      ],
+      "type": "object"
+    },
+    "router": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "side": {
+      "type": "string"
+    },
+    "vaultEquityUsd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "side",
+    "asset",
+    "input",
+    "expectedOutput",
+    "notionalUsd",
+    "priceImpactPct",
+    "router",
+    "vaultEquityUsd",
+    "risk"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoSettingsListInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "description": "Page size (default: 50, max: 500)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Items to skip (default: 0)",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const cryptoSettingsListReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "isDefault": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "value",
+          "isDefault",
+          "description"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "total",
+    "pagination",
+    "items"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoSignalsListInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "engine": {
+      "description": "Filter by engine: smart-money|momentum",
+      "type": "string"
+    },
+    "limit": {
+      "description": "Page size (default: 50, max: 500)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Items to skip (default: 0)",
+      "type": "string"
+    },
+    "status": {
+      "description": "Filter (default: active): active|expired|acted|dismissed",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const cryptoSignalsListReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "assetId": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "engine": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "features": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "judge": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "rugRisk": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "verdict": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "verdict",
+                  "confidence",
+                  "rugRisk"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "strength": {
+            "type": "number"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "engine",
+          "symbol",
+          "assetId",
+          "direction",
+          "strength",
+          "confidence",
+          "rationale",
+          "judge",
+          "features",
+          "status",
+          "createdAt",
+          "expiresAt"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "total",
+    "pagination",
+    "items"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoSignalsScanInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "engine": {
+      "description": "Only this engine: smart-money|momentum",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const cryptoSignalsScanReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "reports": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "candidates": {
+            "type": "number"
+          },
+          "engine": {
+            "type": "string"
+          },
+          "signals": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "assetId": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "number"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "direction": {
+                  "type": "string"
+                },
+                "engine": {
+                  "type": "string"
+                },
+                "expiresAt": {
+                  "type": "string"
+                },
+                "features": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "judge": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "rugRisk": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "verdict": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "verdict",
+                        "confidence",
+                        "rugRisk"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "rationale": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "strength": {
+                  "type": "number"
+                },
+                "symbol": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "engine",
+                "symbol",
+                "assetId",
+                "direction",
+                "strength",
+                "confidence",
+                "rationale",
+                "judge",
+                "features",
+                "status",
+                "createdAt",
+                "expiresAt"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "asset": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "asset",
+                "reason"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "engine",
+          "candidates",
+          "signals",
+          "skipped"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "reports"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoStatusInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+''';
+
+  static const cryptoStatusReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "approvalTargetConfigured": {
+      "type": "boolean"
+    },
+    "executionMode": {
+      "type": "string"
+    },
+    "jev": {
+      "additionalProperties": false,
+      "properties": {
+        "configured": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled",
+        "configured",
+        "model"
+      ],
+      "type": "object"
+    },
+    "killSwitch": {
+      "type": "boolean"
+    },
+    "limits": {
+      "additionalProperties": false,
+      "properties": {
+        "maxDailyUsd": {
+          "type": "string"
+        },
+        "maxPositionFraction": {
+          "type": "string"
+        },
+        "maxTradeUsd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "maxTradeUsd",
+        "maxDailyUsd",
+        "maxPositionFraction"
+      ],
+      "type": "object"
+    },
+    "pixProvider": {
+      "type": "string"
+    },
+    "sandbox": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "pixProvider",
+    "sandbox",
+    "executionMode",
+    "killSwitch",
+    "jev",
+    "approvalTargetConfigured",
+    "limits"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoStrategiesListInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "description": "Page size (default: 50, max: 500)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Items to skip (default: 0)",
+      "type": "string"
+    },
+    "source": {
+      "description": "mira|manual|engine",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const cryptoStrategiesListReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "externalId": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "metrics": {
+            "additionalProperties": false,
+            "properties": {
+              "flags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "latestPnlUsd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "minAllocationUsd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pnlPoints": {
+                "type": "number"
+              },
+              "profitFactor": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "return3mPct": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "scoreComponents": {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "propertyNames": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "trackRecordDays": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "winRatePct": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "worstFallPct": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "profitFactor",
+              "return3mPct",
+              "worstFallPct",
+              "winRatePct",
+              "trackRecordDays",
+              "pnlPoints",
+              "latestPnlUsd",
+              "minAllocationUsd",
+              "scoreComponents",
+              "flags"
+            ],
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "riskLevel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "syncedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "venue": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "externalId",
+          "name",
+          "venue",
+          "riskLevel",
+          "score",
+          "metrics",
+          "syncedAt"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "total",
+    "pagination",
+    "items"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoStrategiesShowInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "strategyId": {
+      "description": "Strategy id (stg_…) or external id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "strategyId"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoStrategiesShowReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "strategy": {
+      "additionalProperties": false,
+      "properties": {
+        "externalId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "metrics": {
+          "additionalProperties": false,
+          "properties": {
+            "flags": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "latestPnlUsd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "minAllocationUsd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pnlPoints": {
+              "type": "number"
+            },
+            "profitFactor": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "return3mPct": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "scoreComponents": {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "propertyNames": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "trackRecordDays": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "winRatePct": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "worstFallPct": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "profitFactor",
+            "return3mPct",
+            "worstFallPct",
+            "winRatePct",
+            "trackRecordDays",
+            "pnlPoints",
+            "latestPnlUsd",
+            "minAllocationUsd",
+            "scoreComponents",
+            "flags"
+          ],
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "riskLevel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "syncedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "venue": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "externalId",
+        "name",
+        "venue",
+        "riskLevel",
+        "score",
+        "metrics",
+        "syncedAt"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "strategy"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoStrategiesSyncInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+''';
+
+  static const cryptoStrategiesSyncReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "authenticated": {
+      "type": "boolean"
+    },
+    "fetched": {
+      "type": "number"
+    },
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "externalId": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "metrics": {
+            "additionalProperties": false,
+            "properties": {
+              "flags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "latestPnlUsd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "minAllocationUsd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pnlPoints": {
+                "type": "number"
+              },
+              "profitFactor": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "return3mPct": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "scoreComponents": {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "propertyNames": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "trackRecordDays": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "winRatePct": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "worstFallPct": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "profitFactor",
+              "return3mPct",
+              "worstFallPct",
+              "winRatePct",
+              "trackRecordDays",
+              "pnlPoints",
+              "latestPnlUsd",
+              "minAllocationUsd",
+              "scoreComponents",
+              "flags"
+            ],
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "riskLevel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "syncedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "venue": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "externalId",
+          "name",
+          "venue",
+          "riskLevel",
+          "score",
+          "metrics",
+          "syncedAt"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "fetched",
+    "authenticated",
+    "warnings",
+    "items"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoTradesCancelInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "owner": {
+      "description": "Operator only: contact:<id>",
+      "type": "string"
+    },
+    "tradeId": {
+      "description": "Trade id (trd_…)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tradeId"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoTradesCancelReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "trade": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "executedOutput": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "executionMode": {
+          "type": "string"
+        },
+        "expectedOutput": {
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "string"
+            },
+            "symbol": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol",
+            "amount"
+          ],
+          "type": "object"
+        },
+        "expiresAt": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "string"
+            },
+            "symbol": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol",
+            "amount"
+          ],
+          "type": "object"
+        },
+        "judge": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "confidence": {
+                  "type": "number"
+                },
+                "passed": {
+                  "type": "boolean"
+                },
+                "reasons": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "verdict": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "verdict",
+                "confidence",
+                "passed",
+                "reasons"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "minOutput": {
+          "type": "string"
+        },
+        "notionalUsd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priceImpactPct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "side": {
+          "type": "string"
+        },
+        "slippageBps": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string"
+        },
+        "txSignature": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "vaultId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "vaultId",
+        "side",
+        "status",
+        "executionMode",
+        "input",
+        "expectedOutput",
+        "minOutput",
+        "executedOutput",
+        "slippageBps",
+        "priceImpactPct",
+        "notionalUsd",
+        "rationale",
+        "judge",
+        "txSignature",
+        "error",
+        "createdAt",
+        "expiresAt"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "trade"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoTradesListInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "all": {
+      "description": "Operator only: all vaults",
+      "type": "boolean"
+    },
+    "limit": {
+      "description": "Page size (default: 50, max: 500)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Items to skip (default: 0)",
+      "type": "string"
+    },
+    "owner": {
+      "description": "Operator only: contact:<id>",
+      "type": "string"
+    },
+    "status": {
+      "description": "Filter: pending_approval|approved|rejected|executing|executed|failed|expired|cancelled",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const cryptoTradesListReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "executedOutput": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "executionMode": {
+            "type": "string"
+          },
+          "expectedOutput": {
+            "additionalProperties": false,
+            "properties": {
+              "amount": {
+                "type": "string"
+              },
+              "symbol": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol",
+              "amount"
+            ],
+            "type": "object"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "input": {
+            "additionalProperties": false,
+            "properties": {
+              "amount": {
+                "type": "string"
+              },
+              "symbol": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol",
+              "amount"
+            ],
+            "type": "object"
+          },
+          "judge": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "passed": {
+                    "type": "boolean"
+                  },
+                  "reasons": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "verdict": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "verdict",
+                  "confidence",
+                  "passed",
+                  "reasons"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "minOutput": {
+            "type": "string"
+          },
+          "notionalUsd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priceImpactPct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "side": {
+            "type": "string"
+          },
+          "slippageBps": {
+            "type": "number"
+          },
+          "status": {
+            "type": "string"
+          },
+          "txSignature": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vaultId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "vaultId",
+          "side",
+          "status",
+          "executionMode",
+          "input",
+          "expectedOutput",
+          "minOutput",
+          "executedOutput",
+          "slippageBps",
+          "priceImpactPct",
+          "notionalUsd",
+          "rationale",
+          "judge",
+          "txSignature",
+          "error",
+          "createdAt",
+          "expiresAt"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "total",
+    "pagination",
+    "items"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoTradesProposeInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "amount": {
+      "description": "Amount, interpreted by --unit",
+      "type": "string"
+    },
+    "asset": {
+      "description": "Symbol (TSLAx, NVDA, SOL) or verified mint",
+      "type": "string"
+    },
+    "owner": {
+      "description": "Operator only: contact:<id>",
+      "type": "string"
+    },
+    "rationale": {
+      "description": "Why — shown to the operator approving",
+      "type": "string"
+    },
+    "side": {
+      "description": "buy|sell",
+      "type": "string"
+    },
+    "signal": {
+      "description": "Engine signal this trade acts on",
+      "type": "string"
+    },
+    "slippageBps": {
+      "description": "Slippage tolerance in bps (default: 50)",
+      "type": "string"
+    },
+    "strategy": {
+      "description": "Strategy this trade follows",
+      "type": "string"
+    },
+    "unit": {
+      "description": "usd|brl|units|percent (default: usd)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "amount",
+    "asset",
+    "side"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoTradesProposeReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "approval": {
+      "type": "string"
+    },
+    "risk": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        },
+        "checks": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "passed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "passed",
+              "detail"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "allowed",
+        "checks"
+      ],
+      "type": "object"
+    },
+    "trade": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "executedOutput": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "executionMode": {
+          "type": "string"
+        },
+        "expectedOutput": {
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "string"
+            },
+            "symbol": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol",
+            "amount"
+          ],
+          "type": "object"
+        },
+        "expiresAt": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "string"
+            },
+            "symbol": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol",
+            "amount"
+          ],
+          "type": "object"
+        },
+        "judge": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "confidence": {
+                  "type": "number"
+                },
+                "passed": {
+                  "type": "boolean"
+                },
+                "reasons": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "verdict": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "verdict",
+                "confidence",
+                "passed",
+                "reasons"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "minOutput": {
+          "type": "string"
+        },
+        "notionalUsd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priceImpactPct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "side": {
+          "type": "string"
+        },
+        "slippageBps": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string"
+        },
+        "txSignature": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "vaultId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "vaultId",
+        "side",
+        "status",
+        "executionMode",
+        "input",
+        "expectedOutput",
+        "minOutput",
+        "executedOutput",
+        "slippageBps",
+        "priceImpactPct",
+        "notionalUsd",
+        "rationale",
+        "judge",
+        "txSignature",
+        "error",
+        "createdAt",
+        "expiresAt"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "trade",
+    "risk",
+    "approval"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoTradesShowInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "owner": {
+      "description": "Operator only: contact:<id>",
+      "type": "string"
+    },
+    "tradeId": {
+      "description": "Trade id (trd_…)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tradeId"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoTradesShowReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string"
+    },
+    "trade": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "executedOutput": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "executionMode": {
+          "type": "string"
+        },
+        "expectedOutput": {
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "string"
+            },
+            "symbol": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol",
+            "amount"
+          ],
+          "type": "object"
+        },
+        "expiresAt": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "string"
+            },
+            "symbol": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol",
+            "amount"
+          ],
+          "type": "object"
+        },
+        "judge": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "confidence": {
+                  "type": "number"
+                },
+                "passed": {
+                  "type": "boolean"
+                },
+                "reasons": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "verdict": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "verdict",
+                "confidence",
+                "passed",
+                "reasons"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "minOutput": {
+          "type": "string"
+        },
+        "notionalUsd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priceImpactPct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "side": {
+          "type": "string"
+        },
+        "slippageBps": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string"
+        },
+        "txSignature": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "vaultId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "vaultId",
+        "side",
+        "status",
+        "executionMode",
+        "input",
+        "expectedOutput",
+        "minOutput",
+        "executedOutput",
+        "slippageBps",
+        "priceImpactPct",
+        "notionalUsd",
+        "rationale",
+        "judge",
+        "txSignature",
+        "error",
+        "createdAt",
+        "expiresAt"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "trade",
+    "summary"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoVaultRiskProfileInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "owner": {
+      "description": "Operator only: contact:<id>",
+      "type": "string"
+    },
+    "profile": {
+      "description": "conservative|moderate|aggressive",
+      "type": "string"
+    }
+  },
+  "required": [
+    "profile"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoVaultRiskProfileReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "vault": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "ripioCustomerLinked": {
+          "type": "boolean"
+        },
+        "riskProfile": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "owner",
+        "status",
+        "riskProfile",
+        "ripioCustomerLinked",
+        "createdAt"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "vault"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoVaultShowInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "owner": {
+      "description": "Operator only: contact:<id>",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const cryptoVaultShowReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "vault": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "ripioCustomerLinked": {
+          "type": "boolean"
+        },
+        "riskProfile": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "owner",
+        "status",
+        "riskProfile",
+        "ripioCustomerLinked",
+        "createdAt"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "vault"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoWalletsEventsInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "description": "Page size (default: 50, max: 500)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Items to skip (default: 0)",
+      "type": "string"
+    },
+    "wallet": {
+      "description": "Only this wallet id (wlt_…)",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const cryptoWalletsEventsReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "bought": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "mint": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "token",
+                  "mint",
+                  "amount"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          },
+          "sold": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "mint": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "token",
+                  "mint",
+                  "amount"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usdValue": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "walletId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "walletId",
+          "kind",
+          "sold",
+          "bought",
+          "usdValue",
+          "signature",
+          "at"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "total",
+    "pagination",
+    "items"
+  ],
+  "type": "object"
+}
+''';
+
+  static const cryptoWalletsListInputSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "chain": {
+      "description": "solana|evm|hyperliquid",
+      "type": "string"
+    },
+    "limit": {
+      "description": "Page size (default: 50, max: 500)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Items to skip (default: 0)",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+''';
+
+  static const cryptoWalletsListReturnSchema = r'''
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "chain": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastActivityAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "chain",
+          "address",
+          "label",
+          "source",
+          "score",
+          "tags",
+          "lastActivityAt"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "total",
+    "pagination",
+    "items"
+  ],
+  "type": "object"
+}
+''';
+
   static const daemonEnvInputSchema = r'''
 {
   "additionalProperties": false,

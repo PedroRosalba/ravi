@@ -8199,6 +8199,838 @@ class CronShowReturn {
 
 CronShowReturn cronShowReturnFromJson(Object? json) => CronShowReturn.fromJsonValue(json);
 
+class CryptoAnalyzeOptions {
+  const CryptoAnalyzeOptions({this.days, this.judge});
+
+  final String? days;
+  final bool? judge;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (days != null) {
+      into["days"] = RaviJson.from(days);
+    }
+    if (judge != null) {
+      into["judge"] = RaviJson.from(judge);
+    }
+  }
+}
+
+class CryptoAnalyzeReturn {
+  const CryptoAnalyzeReturn({required this.asset, required this.disclaimer, required this.judge, required this.sizing, required this.summary});
+
+  final RaviJson asset;
+  final String disclaimer;
+  final RaviJson judge;
+  final RaviJson sizing;
+  final RaviJson summary;
+
+  factory CryptoAnalyzeReturn.fromJson(Map<String, Object?> json) {
+    return CryptoAnalyzeReturn(
+      asset: RaviJson.from(json["asset"]),
+      disclaimer: raviJsonAsString(json["disclaimer"]),
+      judge: RaviJson.from(json["judge"]),
+      sizing: RaviJson.from(json["sizing"]),
+      summary: RaviJson.from(json["summary"]),
+    );
+  }
+
+  static CryptoAnalyzeReturn fromJsonValue(Object? json) {
+    return CryptoAnalyzeReturn.fromJson(raviJsonObject(json, "CryptoAnalyzeReturn"));
+  }
+}
+
+CryptoAnalyzeReturn cryptoAnalyzeReturnFromJson(Object? json) => CryptoAnalyzeReturn.fromJsonValue(json);
+
+class CryptoBalanceOptions {
+  const CryptoBalanceOptions({this.owner});
+
+  final String? owner;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+  }
+}
+
+class CryptoBalanceReturn {
+  const CryptoBalanceReturn({required this.asOf, required this.fx, required this.hint, required this.lines, required this.owner, required this.pending, required this.totals, required this.vault});
+
+  final RaviJson asOf;
+  final RaviJson fx;
+  final RaviJson hint;
+  final List<RaviJson> lines;
+  final String owner;
+  final RaviJson pending;
+  final RaviJson totals;
+  final RaviJson vault;
+
+  factory CryptoBalanceReturn.fromJson(Map<String, Object?> json) {
+    return CryptoBalanceReturn(
+      asOf: RaviJson.from(json["asOf"]),
+      fx: RaviJson.from(json["fx"]),
+      hint: RaviJson.from(json["hint"]),
+      lines: raviJsonAsList(json["lines"], RaviJson.from),
+      owner: raviJsonAsString(json["owner"]),
+      pending: RaviJson.from(json["pending"]),
+      totals: RaviJson.from(json["totals"]),
+      vault: RaviJson.from(json["vault"]),
+    );
+  }
+
+  static CryptoBalanceReturn fromJsonValue(Object? json) {
+    return CryptoBalanceReturn.fromJson(raviJsonObject(json, "CryptoBalanceReturn"));
+  }
+}
+
+CryptoBalanceReturn cryptoBalanceReturnFromJson(Object? json) => CryptoBalanceReturn.fromJsonValue(json);
+
+class CryptoDepositOptions {
+  const CryptoDepositOptions({this.owner});
+
+  final String? owner;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+  }
+}
+
+class CryptoDepositReturn {
+  const CryptoDepositReturn({required this.deposit, required this.instructions, required this.vaultCreated});
+
+  final RaviJson deposit;
+  final String instructions;
+  final bool vaultCreated;
+
+  factory CryptoDepositReturn.fromJson(Map<String, Object?> json) {
+    return CryptoDepositReturn(
+      deposit: RaviJson.from(json["deposit"]),
+      instructions: raviJsonAsString(json["instructions"]),
+      vaultCreated: raviJsonAsBool(json["vaultCreated"]),
+    );
+  }
+
+  static CryptoDepositReturn fromJsonValue(Object? json) {
+    return CryptoDepositReturn.fromJson(raviJsonObject(json, "CryptoDepositReturn"));
+  }
+}
+
+CryptoDepositReturn cryptoDepositReturnFromJson(Object? json) => CryptoDepositReturn.fromJsonValue(json);
+
+class CryptoDepositsListOptions {
+  const CryptoDepositsListOptions({this.all, this.limit, this.offset, this.owner, this.status});
+
+  final bool? all;
+  final String? limit;
+  final String? offset;
+  final String? owner;
+  final String? status;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (all != null) {
+      into["all"] = RaviJson.from(all);
+    }
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+    if (status != null) {
+      into["status"] = RaviJson.from(status);
+    }
+  }
+}
+
+class CryptoDepositsListReturn {
+  const CryptoDepositsListReturn({required this.items, required this.pagination, required this.total});
+
+  final List<RaviJson> items;
+  final RaviJson pagination;
+  final double total;
+
+  factory CryptoDepositsListReturn.fromJson(Map<String, Object?> json) {
+    return CryptoDepositsListReturn(
+      items: raviJsonAsList(json["items"], RaviJson.from),
+      pagination: RaviJson.from(json["pagination"]),
+      total: raviJsonAsDouble(json["total"]),
+    );
+  }
+
+  static CryptoDepositsListReturn fromJsonValue(Object? json) {
+    return CryptoDepositsListReturn.fromJson(raviJsonObject(json, "CryptoDepositsListReturn"));
+  }
+}
+
+CryptoDepositsListReturn cryptoDepositsListReturnFromJson(Object? json) => CryptoDepositsListReturn.fromJsonValue(json);
+
+class CryptoDepositsShowOptions {
+  const CryptoDepositsShowOptions({this.owner});
+
+  final String? owner;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+  }
+}
+
+class CryptoDepositsShowReturn {
+  const CryptoDepositsShowReturn({required this.deposit});
+
+  final RaviJson deposit;
+
+  factory CryptoDepositsShowReturn.fromJson(Map<String, Object?> json) {
+    return CryptoDepositsShowReturn(
+      deposit: RaviJson.from(json["deposit"]),
+    );
+  }
+
+  static CryptoDepositsShowReturn fromJsonValue(Object? json) {
+    return CryptoDepositsShowReturn.fromJson(raviJsonObject(json, "CryptoDepositsShowReturn"));
+  }
+}
+
+CryptoDepositsShowReturn cryptoDepositsShowReturnFromJson(Object? json) => CryptoDepositsShowReturn.fromJsonValue(json);
+
+class CryptoHistoryOptions {
+  const CryptoHistoryOptions({this.limit, this.offset, this.owner});
+
+  final String? limit;
+  final String? offset;
+  final String? owner;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+  }
+}
+
+class CryptoHistoryReturn {
+  const CryptoHistoryReturn({required this.items, required this.pagination, required this.total, required this.vaultId});
+
+  final List<RaviJson> items;
+  final RaviJson pagination;
+  final double total;
+  final String vaultId;
+
+  factory CryptoHistoryReturn.fromJson(Map<String, Object?> json) {
+    return CryptoHistoryReturn(
+      items: raviJsonAsList(json["items"], RaviJson.from),
+      pagination: RaviJson.from(json["pagination"]),
+      total: raviJsonAsDouble(json["total"]),
+      vaultId: raviJsonAsString(json["vaultId"]),
+    );
+  }
+
+  static CryptoHistoryReturn fromJsonValue(Object? json) {
+    return CryptoHistoryReturn.fromJson(raviJsonObject(json, "CryptoHistoryReturn"));
+  }
+}
+
+CryptoHistoryReturn cryptoHistoryReturnFromJson(Object? json) => CryptoHistoryReturn.fromJsonValue(json);
+
+class CryptoQuoteOptions {
+  const CryptoQuoteOptions({this.owner, this.unit});
+
+  final String? owner;
+  final String? unit;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+    if (unit != null) {
+      into["unit"] = RaviJson.from(unit);
+    }
+  }
+}
+
+class CryptoQuoteReturn {
+  const CryptoQuoteReturn({required this.asset, required this.expectedOutput, required this.input, required this.notionalUsd, required this.priceImpactPct, required this.risk, required this.router, required this.side, required this.vaultEquityUsd});
+
+  final RaviJson asset;
+  final RaviJson expectedOutput;
+  final RaviJson input;
+  final double notionalUsd;
+  final RaviJson priceImpactPct;
+  final RaviJson risk;
+  final RaviJson router;
+  final String side;
+  final RaviJson vaultEquityUsd;
+
+  factory CryptoQuoteReturn.fromJson(Map<String, Object?> json) {
+    return CryptoQuoteReturn(
+      asset: RaviJson.from(json["asset"]),
+      expectedOutput: RaviJson.from(json["expectedOutput"]),
+      input: RaviJson.from(json["input"]),
+      notionalUsd: raviJsonAsDouble(json["notionalUsd"]),
+      priceImpactPct: RaviJson.from(json["priceImpactPct"]),
+      risk: RaviJson.from(json["risk"]),
+      router: RaviJson.from(json["router"]),
+      side: raviJsonAsString(json["side"]),
+      vaultEquityUsd: RaviJson.from(json["vaultEquityUsd"]),
+    );
+  }
+
+  static CryptoQuoteReturn fromJsonValue(Object? json) {
+    return CryptoQuoteReturn.fromJson(raviJsonObject(json, "CryptoQuoteReturn"));
+  }
+}
+
+CryptoQuoteReturn cryptoQuoteReturnFromJson(Object? json) => CryptoQuoteReturn.fromJsonValue(json);
+
+class CryptoSettingsListOptions {
+  const CryptoSettingsListOptions({this.limit, this.offset});
+
+  final String? limit;
+  final String? offset;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
+  }
+}
+
+class CryptoSettingsListReturn {
+  const CryptoSettingsListReturn({required this.items, required this.pagination, required this.total});
+
+  final List<RaviJson> items;
+  final RaviJson pagination;
+  final double total;
+
+  factory CryptoSettingsListReturn.fromJson(Map<String, Object?> json) {
+    return CryptoSettingsListReturn(
+      items: raviJsonAsList(json["items"], RaviJson.from),
+      pagination: RaviJson.from(json["pagination"]),
+      total: raviJsonAsDouble(json["total"]),
+    );
+  }
+
+  static CryptoSettingsListReturn fromJsonValue(Object? json) {
+    return CryptoSettingsListReturn.fromJson(raviJsonObject(json, "CryptoSettingsListReturn"));
+  }
+}
+
+CryptoSettingsListReturn cryptoSettingsListReturnFromJson(Object? json) => CryptoSettingsListReturn.fromJsonValue(json);
+
+class CryptoSignalsListOptions {
+  const CryptoSignalsListOptions({this.engine, this.limit, this.offset, this.status});
+
+  final String? engine;
+  final String? limit;
+  final String? offset;
+  final String? status;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (engine != null) {
+      into["engine"] = RaviJson.from(engine);
+    }
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
+    if (status != null) {
+      into["status"] = RaviJson.from(status);
+    }
+  }
+}
+
+class CryptoSignalsListReturn {
+  const CryptoSignalsListReturn({required this.items, required this.pagination, required this.total});
+
+  final List<RaviJson> items;
+  final RaviJson pagination;
+  final double total;
+
+  factory CryptoSignalsListReturn.fromJson(Map<String, Object?> json) {
+    return CryptoSignalsListReturn(
+      items: raviJsonAsList(json["items"], RaviJson.from),
+      pagination: RaviJson.from(json["pagination"]),
+      total: raviJsonAsDouble(json["total"]),
+    );
+  }
+
+  static CryptoSignalsListReturn fromJsonValue(Object? json) {
+    return CryptoSignalsListReturn.fromJson(raviJsonObject(json, "CryptoSignalsListReturn"));
+  }
+}
+
+CryptoSignalsListReturn cryptoSignalsListReturnFromJson(Object? json) => CryptoSignalsListReturn.fromJsonValue(json);
+
+class CryptoSignalsScanOptions {
+  const CryptoSignalsScanOptions({this.engine});
+
+  final String? engine;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (engine != null) {
+      into["engine"] = RaviJson.from(engine);
+    }
+  }
+}
+
+class CryptoSignalsScanReturn {
+  const CryptoSignalsScanReturn({required this.reports});
+
+  final List<RaviJson> reports;
+
+  factory CryptoSignalsScanReturn.fromJson(Map<String, Object?> json) {
+    return CryptoSignalsScanReturn(
+      reports: raviJsonAsList(json["reports"], RaviJson.from),
+    );
+  }
+
+  static CryptoSignalsScanReturn fromJsonValue(Object? json) {
+    return CryptoSignalsScanReturn.fromJson(raviJsonObject(json, "CryptoSignalsScanReturn"));
+  }
+}
+
+CryptoSignalsScanReturn cryptoSignalsScanReturnFromJson(Object? json) => CryptoSignalsScanReturn.fromJsonValue(json);
+
+class CryptoStatusReturn {
+  const CryptoStatusReturn({required this.approvalTargetConfigured, required this.executionMode, required this.jev, required this.killSwitch, required this.limits, required this.pixProvider, required this.sandbox});
+
+  final bool approvalTargetConfigured;
+  final String executionMode;
+  final RaviJson jev;
+  final bool killSwitch;
+  final RaviJson limits;
+  final String pixProvider;
+  final bool sandbox;
+
+  factory CryptoStatusReturn.fromJson(Map<String, Object?> json) {
+    return CryptoStatusReturn(
+      approvalTargetConfigured: raviJsonAsBool(json["approvalTargetConfigured"]),
+      executionMode: raviJsonAsString(json["executionMode"]),
+      jev: RaviJson.from(json["jev"]),
+      killSwitch: raviJsonAsBool(json["killSwitch"]),
+      limits: RaviJson.from(json["limits"]),
+      pixProvider: raviJsonAsString(json["pixProvider"]),
+      sandbox: raviJsonAsBool(json["sandbox"]),
+    );
+  }
+
+  static CryptoStatusReturn fromJsonValue(Object? json) {
+    return CryptoStatusReturn.fromJson(raviJsonObject(json, "CryptoStatusReturn"));
+  }
+}
+
+CryptoStatusReturn cryptoStatusReturnFromJson(Object? json) => CryptoStatusReturn.fromJsonValue(json);
+
+class CryptoStrategiesListOptions {
+  const CryptoStrategiesListOptions({this.limit, this.offset, this.source});
+
+  final String? limit;
+  final String? offset;
+  final String? source;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
+    if (source != null) {
+      into["source"] = RaviJson.from(source);
+    }
+  }
+}
+
+class CryptoStrategiesListReturn {
+  const CryptoStrategiesListReturn({required this.items, required this.pagination, required this.total});
+
+  final List<RaviJson> items;
+  final RaviJson pagination;
+  final double total;
+
+  factory CryptoStrategiesListReturn.fromJson(Map<String, Object?> json) {
+    return CryptoStrategiesListReturn(
+      items: raviJsonAsList(json["items"], RaviJson.from),
+      pagination: RaviJson.from(json["pagination"]),
+      total: raviJsonAsDouble(json["total"]),
+    );
+  }
+
+  static CryptoStrategiesListReturn fromJsonValue(Object? json) {
+    return CryptoStrategiesListReturn.fromJson(raviJsonObject(json, "CryptoStrategiesListReturn"));
+  }
+}
+
+CryptoStrategiesListReturn cryptoStrategiesListReturnFromJson(Object? json) => CryptoStrategiesListReturn.fromJsonValue(json);
+
+class CryptoStrategiesShowReturn {
+  const CryptoStrategiesShowReturn({required this.strategy});
+
+  final RaviJson strategy;
+
+  factory CryptoStrategiesShowReturn.fromJson(Map<String, Object?> json) {
+    return CryptoStrategiesShowReturn(
+      strategy: RaviJson.from(json["strategy"]),
+    );
+  }
+
+  static CryptoStrategiesShowReturn fromJsonValue(Object? json) {
+    return CryptoStrategiesShowReturn.fromJson(raviJsonObject(json, "CryptoStrategiesShowReturn"));
+  }
+}
+
+CryptoStrategiesShowReturn cryptoStrategiesShowReturnFromJson(Object? json) => CryptoStrategiesShowReturn.fromJsonValue(json);
+
+class CryptoStrategiesSyncReturn {
+  const CryptoStrategiesSyncReturn({required this.authenticated, required this.fetched, required this.items, required this.warnings});
+
+  final bool authenticated;
+  final double fetched;
+  final List<RaviJson> items;
+  final List<String> warnings;
+
+  factory CryptoStrategiesSyncReturn.fromJson(Map<String, Object?> json) {
+    return CryptoStrategiesSyncReturn(
+      authenticated: raviJsonAsBool(json["authenticated"]),
+      fetched: raviJsonAsDouble(json["fetched"]),
+      items: raviJsonAsList(json["items"], RaviJson.from),
+      warnings: raviJsonAsList(json["warnings"], raviJsonAsString),
+    );
+  }
+
+  static CryptoStrategiesSyncReturn fromJsonValue(Object? json) {
+    return CryptoStrategiesSyncReturn.fromJson(raviJsonObject(json, "CryptoStrategiesSyncReturn"));
+  }
+}
+
+CryptoStrategiesSyncReturn cryptoStrategiesSyncReturnFromJson(Object? json) => CryptoStrategiesSyncReturn.fromJsonValue(json);
+
+class CryptoTradesCancelOptions {
+  const CryptoTradesCancelOptions({this.owner});
+
+  final String? owner;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+  }
+}
+
+class CryptoTradesCancelReturn {
+  const CryptoTradesCancelReturn({required this.trade});
+
+  final RaviJson trade;
+
+  factory CryptoTradesCancelReturn.fromJson(Map<String, Object?> json) {
+    return CryptoTradesCancelReturn(
+      trade: RaviJson.from(json["trade"]),
+    );
+  }
+
+  static CryptoTradesCancelReturn fromJsonValue(Object? json) {
+    return CryptoTradesCancelReturn.fromJson(raviJsonObject(json, "CryptoTradesCancelReturn"));
+  }
+}
+
+CryptoTradesCancelReturn cryptoTradesCancelReturnFromJson(Object? json) => CryptoTradesCancelReturn.fromJsonValue(json);
+
+class CryptoTradesListOptions {
+  const CryptoTradesListOptions({this.all, this.limit, this.offset, this.owner, this.status});
+
+  final bool? all;
+  final String? limit;
+  final String? offset;
+  final String? owner;
+  final String? status;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (all != null) {
+      into["all"] = RaviJson.from(all);
+    }
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+    if (status != null) {
+      into["status"] = RaviJson.from(status);
+    }
+  }
+}
+
+class CryptoTradesListReturn {
+  const CryptoTradesListReturn({required this.items, required this.pagination, required this.total});
+
+  final List<RaviJson> items;
+  final RaviJson pagination;
+  final double total;
+
+  factory CryptoTradesListReturn.fromJson(Map<String, Object?> json) {
+    return CryptoTradesListReturn(
+      items: raviJsonAsList(json["items"], RaviJson.from),
+      pagination: RaviJson.from(json["pagination"]),
+      total: raviJsonAsDouble(json["total"]),
+    );
+  }
+
+  static CryptoTradesListReturn fromJsonValue(Object? json) {
+    return CryptoTradesListReturn.fromJson(raviJsonObject(json, "CryptoTradesListReturn"));
+  }
+}
+
+CryptoTradesListReturn cryptoTradesListReturnFromJson(Object? json) => CryptoTradesListReturn.fromJsonValue(json);
+
+class CryptoTradesProposeOptions {
+  const CryptoTradesProposeOptions({this.owner, this.rationale, this.signal, this.slippageBps, this.strategy, this.unit});
+
+  final String? owner;
+  final String? rationale;
+  final String? signal;
+  final String? slippageBps;
+  final String? strategy;
+  final String? unit;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+    if (rationale != null) {
+      into["rationale"] = RaviJson.from(rationale);
+    }
+    if (signal != null) {
+      into["signal"] = RaviJson.from(signal);
+    }
+    if (slippageBps != null) {
+      into["slippageBps"] = RaviJson.from(slippageBps);
+    }
+    if (strategy != null) {
+      into["strategy"] = RaviJson.from(strategy);
+    }
+    if (unit != null) {
+      into["unit"] = RaviJson.from(unit);
+    }
+  }
+}
+
+class CryptoTradesProposeReturn {
+  const CryptoTradesProposeReturn({required this.approval, required this.risk, required this.trade});
+
+  final String approval;
+  final RaviJson risk;
+  final RaviJson trade;
+
+  factory CryptoTradesProposeReturn.fromJson(Map<String, Object?> json) {
+    return CryptoTradesProposeReturn(
+      approval: raviJsonAsString(json["approval"]),
+      risk: RaviJson.from(json["risk"]),
+      trade: RaviJson.from(json["trade"]),
+    );
+  }
+
+  static CryptoTradesProposeReturn fromJsonValue(Object? json) {
+    return CryptoTradesProposeReturn.fromJson(raviJsonObject(json, "CryptoTradesProposeReturn"));
+  }
+}
+
+CryptoTradesProposeReturn cryptoTradesProposeReturnFromJson(Object? json) => CryptoTradesProposeReturn.fromJsonValue(json);
+
+class CryptoTradesShowOptions {
+  const CryptoTradesShowOptions({this.owner});
+
+  final String? owner;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+  }
+}
+
+class CryptoTradesShowReturn {
+  const CryptoTradesShowReturn({required this.summary, required this.trade});
+
+  final String summary;
+  final RaviJson trade;
+
+  factory CryptoTradesShowReturn.fromJson(Map<String, Object?> json) {
+    return CryptoTradesShowReturn(
+      summary: raviJsonAsString(json["summary"]),
+      trade: RaviJson.from(json["trade"]),
+    );
+  }
+
+  static CryptoTradesShowReturn fromJsonValue(Object? json) {
+    return CryptoTradesShowReturn.fromJson(raviJsonObject(json, "CryptoTradesShowReturn"));
+  }
+}
+
+CryptoTradesShowReturn cryptoTradesShowReturnFromJson(Object? json) => CryptoTradesShowReturn.fromJsonValue(json);
+
+class CryptoVaultRiskProfileOptions {
+  const CryptoVaultRiskProfileOptions({this.owner});
+
+  final String? owner;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+  }
+}
+
+class CryptoVaultRiskProfileReturn {
+  const CryptoVaultRiskProfileReturn({required this.vault});
+
+  final RaviJson vault;
+
+  factory CryptoVaultRiskProfileReturn.fromJson(Map<String, Object?> json) {
+    return CryptoVaultRiskProfileReturn(
+      vault: RaviJson.from(json["vault"]),
+    );
+  }
+
+  static CryptoVaultRiskProfileReturn fromJsonValue(Object? json) {
+    return CryptoVaultRiskProfileReturn.fromJson(raviJsonObject(json, "CryptoVaultRiskProfileReturn"));
+  }
+}
+
+CryptoVaultRiskProfileReturn cryptoVaultRiskProfileReturnFromJson(Object? json) => CryptoVaultRiskProfileReturn.fromJsonValue(json);
+
+class CryptoVaultShowOptions {
+  const CryptoVaultShowOptions({this.owner});
+
+  final String? owner;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (owner != null) {
+      into["owner"] = RaviJson.from(owner);
+    }
+  }
+}
+
+class CryptoVaultShowReturn {
+  const CryptoVaultShowReturn({required this.vault});
+
+  final RaviJson vault;
+
+  factory CryptoVaultShowReturn.fromJson(Map<String, Object?> json) {
+    return CryptoVaultShowReturn(
+      vault: RaviJson.from(json["vault"]),
+    );
+  }
+
+  static CryptoVaultShowReturn fromJsonValue(Object? json) {
+    return CryptoVaultShowReturn.fromJson(raviJsonObject(json, "CryptoVaultShowReturn"));
+  }
+}
+
+CryptoVaultShowReturn cryptoVaultShowReturnFromJson(Object? json) => CryptoVaultShowReturn.fromJsonValue(json);
+
+class CryptoWalletsEventsOptions {
+  const CryptoWalletsEventsOptions({this.limit, this.offset, this.wallet});
+
+  final String? limit;
+  final String? offset;
+  final String? wallet;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
+    if (wallet != null) {
+      into["wallet"] = RaviJson.from(wallet);
+    }
+  }
+}
+
+class CryptoWalletsEventsReturn {
+  const CryptoWalletsEventsReturn({required this.items, required this.pagination, required this.total});
+
+  final List<RaviJson> items;
+  final RaviJson pagination;
+  final double total;
+
+  factory CryptoWalletsEventsReturn.fromJson(Map<String, Object?> json) {
+    return CryptoWalletsEventsReturn(
+      items: raviJsonAsList(json["items"], RaviJson.from),
+      pagination: RaviJson.from(json["pagination"]),
+      total: raviJsonAsDouble(json["total"]),
+    );
+  }
+
+  static CryptoWalletsEventsReturn fromJsonValue(Object? json) {
+    return CryptoWalletsEventsReturn.fromJson(raviJsonObject(json, "CryptoWalletsEventsReturn"));
+  }
+}
+
+CryptoWalletsEventsReturn cryptoWalletsEventsReturnFromJson(Object? json) => CryptoWalletsEventsReturn.fromJsonValue(json);
+
+class CryptoWalletsListOptions {
+  const CryptoWalletsListOptions({this.chain, this.limit, this.offset});
+
+  final String? chain;
+  final String? limit;
+  final String? offset;
+
+  void encodeBody(Map<String, RaviJson> into) {
+    if (chain != null) {
+      into["chain"] = RaviJson.from(chain);
+    }
+    if (limit != null) {
+      into["limit"] = RaviJson.from(limit);
+    }
+    if (offset != null) {
+      into["offset"] = RaviJson.from(offset);
+    }
+  }
+}
+
+class CryptoWalletsListReturn {
+  const CryptoWalletsListReturn({required this.items, required this.pagination, required this.total});
+
+  final List<RaviJson> items;
+  final RaviJson pagination;
+  final double total;
+
+  factory CryptoWalletsListReturn.fromJson(Map<String, Object?> json) {
+    return CryptoWalletsListReturn(
+      items: raviJsonAsList(json["items"], RaviJson.from),
+      pagination: RaviJson.from(json["pagination"]),
+      total: raviJsonAsDouble(json["total"]),
+    );
+  }
+
+  static CryptoWalletsListReturn fromJsonValue(Object? json) {
+    return CryptoWalletsListReturn.fromJson(raviJsonObject(json, "CryptoWalletsListReturn"));
+  }
+}
+
+CryptoWalletsListReturn cryptoWalletsListReturnFromJson(Object? json) => CryptoWalletsListReturn.fromJsonValue(json);
+
 class DaemonEnvReturn {
   const DaemonEnvReturn({required this.action, required this.created, required this.existedBefore, required this.openedEditor, required this.path});
 

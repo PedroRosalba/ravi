@@ -6485,6 +6485,809 @@ export type CronShowReturn = {
   [k: string]: unknown;
 };
 
+/** Input shape for `crypto.analyze`. */
+export type CryptoAnalyzeInput = {
+  asset: string;
+  days?: string;
+  judge?: boolean;
+};
+
+/** Return shape for `crypto.analyze`. */
+export type CryptoAnalyzeReturn = {
+  asset: {
+    kind: string;
+    mint: string;
+    symbol: string;
+    usdPrice: number | null;
+  };
+  disclaimer: string;
+  judge: ({
+    confidence: number;
+    passed: boolean;
+    reasons: string[];
+    rugRisk: number | null;
+    verdict: string;
+  }) | null;
+  sizing: {
+    binding: string;
+    components: {
+      cap: number;
+      kelly: number;
+      scaledKelly: number;
+      volTarget: number;
+    };
+    fraction: number;
+    riskProfile: string;
+    winProbabilityAssumed: number;
+  };
+  summary: {
+    aboveSma20: boolean | null;
+    annualizedVolatility: number;
+    cvar95: number;
+    maxDrawdown: number;
+    momentum30: number;
+    momentum7: number;
+    observations: number;
+    rsi14: number | null;
+    sharpe: number;
+    sortino: number;
+    totalReturn: number;
+    trendSlope: number;
+    var95: number;
+  };
+};
+
+/** Input shape for `crypto.balance`. */
+export type CryptoBalanceInput = {
+  owner?: string;
+};
+
+/** Return shape for `crypto.balance`. */
+export type CryptoBalanceReturn = {
+  asOf: string | null;
+  fx: ({
+    source: string;
+    usdBrl: number;
+  }) | null;
+  hint: string | null;
+  lines: Array<{
+    amount: string;
+    assetId: string;
+    kind: string;
+    symbol: string;
+    usdPrice: number | null;
+    valueBrl: number | null;
+    valueUsd: number | null;
+  }>;
+  owner: string;
+  pending: ({
+    deposits: number;
+    trades: number;
+  }) | null;
+  totals: ({
+    brl: number;
+    unpricedAssets: string[];
+    usd: number;
+  }) | null;
+  vault: ({
+    id: string;
+    riskProfile: string;
+    status: string;
+  }) | null;
+};
+
+/** Input shape for `crypto.deposit`. */
+export type CryptoDepositInput = {
+  amount: string;
+  owner?: string;
+};
+
+/** Return shape for `crypto.deposit`. */
+export type CryptoDepositReturn = {
+  deposit: {
+    amountBrl: string;
+    amountBrlDisplay: string;
+    conversion: ({
+      amount: string;
+      assetId: string;
+      feeBrl: string;
+      rate: string;
+      source: string;
+      symbol: string;
+      usdBrl?: number;
+    }) | null;
+    createdAt: string;
+    expiresAt: string | null;
+    id: string;
+    paidAt: string | null;
+    paymentUrl: string | null;
+    pixCopyPaste: string | null;
+    provider: string;
+    sandbox: boolean;
+    status: string;
+    vaultId: string;
+  };
+  instructions: string;
+  vaultCreated: boolean;
+};
+
+/** Input shape for `crypto.deposits.list`. */
+export type CryptoDepositsListInput = {
+  all?: boolean;
+  limit?: string;
+  offset?: string;
+  owner?: string;
+  status?: string;
+};
+
+/** Return shape for `crypto.deposits.list`. */
+export type CryptoDepositsListReturn = {
+  items: Array<{
+    amountBrl: string;
+    amountBrlDisplay: string;
+    conversion: ({
+      amount: string;
+      assetId: string;
+      feeBrl: string;
+      rate: string;
+      source: string;
+      symbol: string;
+      usdBrl?: number;
+    }) | null;
+    createdAt: string;
+    expiresAt: string | null;
+    id: string;
+    paidAt: string | null;
+    paymentUrl: string | null;
+    pixCopyPaste: string | null;
+    provider: string;
+    sandbox: boolean;
+    status: string;
+    vaultId: string;
+  }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  total: number;
+};
+
+/** Input shape for `crypto.deposits.show`. */
+export type CryptoDepositsShowInput = {
+  depositId: string;
+  owner?: string;
+};
+
+/** Return shape for `crypto.deposits.show`. */
+export type CryptoDepositsShowReturn = {
+  deposit: {
+    amountBrl: string;
+    amountBrlDisplay: string;
+    conversion: ({
+      amount: string;
+      assetId: string;
+      feeBrl: string;
+      rate: string;
+      source: string;
+      symbol: string;
+      usdBrl?: number;
+    }) | null;
+    createdAt: string;
+    expiresAt: string | null;
+    id: string;
+    paidAt: string | null;
+    paymentUrl: string | null;
+    pixCopyPaste: string | null;
+    provider: string;
+    sandbox: boolean;
+    status: string;
+    vaultId: string;
+  };
+};
+
+/** Input shape for `crypto.history`. */
+export type CryptoHistoryInput = {
+  limit?: string;
+  offset?: string;
+  owner?: string;
+};
+
+/** Return shape for `crypto.history`. */
+export type CryptoHistoryReturn = {
+  items: Array<{
+    at: string;
+    changes: Array<{
+      amount: string;
+      symbol: string;
+    }>;
+    kind: string;
+    memo: string | null;
+    ref: string;
+  }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  total: number;
+  vaultId: string;
+};
+
+/** Input shape for `crypto.quote`. */
+export type CryptoQuoteInput = {
+  amount: string;
+  asset: string;
+  owner?: string;
+  side: string;
+  unit?: string;
+};
+
+/** Return shape for `crypto.quote`. */
+export type CryptoQuoteReturn = {
+  asset: {
+    kind: string;
+    liquidityUsd: number | null;
+    mint: string;
+    symbol: string;
+    usdPrice: number | null;
+  };
+  expectedOutput: {
+    amount: string;
+    symbol: string;
+  };
+  input: {
+    amount: string;
+    symbol: string;
+  };
+  notionalUsd: number;
+  priceImpactPct: number | null;
+  risk: {
+    allowed: boolean;
+    violations: string[];
+  };
+  router: string | null;
+  side: string;
+  vaultEquityUsd: number | null;
+};
+
+/** Input shape for `crypto.settings.list`. */
+export type CryptoSettingsListInput = {
+  limit?: string;
+  offset?: string;
+};
+
+/** Return shape for `crypto.settings.list`. */
+export type CryptoSettingsListReturn = {
+  items: Array<{
+    description: string;
+    isDefault: boolean;
+    key: string;
+    value: string;
+  }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  total: number;
+};
+
+/** Input shape for `crypto.signals.list`. */
+export type CryptoSignalsListInput = {
+  engine?: string;
+  limit?: string;
+  offset?: string;
+  status?: string;
+};
+
+/** Return shape for `crypto.signals.list`. */
+export type CryptoSignalsListReturn = {
+  items: Array<{
+    assetId: string;
+    confidence: number;
+    createdAt: string;
+    direction: string;
+    engine: string;
+    expiresAt: string;
+    features: Record<string, number | string | boolean | null>;
+    id: string;
+    judge: ({
+      confidence: number;
+      rugRisk: number | null;
+      verdict: string;
+    }) | null;
+    rationale: string;
+    status: string;
+    strength: number;
+    symbol: string | null;
+  }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  total: number;
+};
+
+/** Input shape for `crypto.signals.scan`. */
+export type CryptoSignalsScanInput = {
+  engine?: string;
+};
+
+/** Return shape for `crypto.signals.scan`. */
+export type CryptoSignalsScanReturn = {
+  reports: Array<{
+    candidates: number;
+    engine: string;
+    signals: Array<{
+      assetId: string;
+      confidence: number;
+      createdAt: string;
+      direction: string;
+      engine: string;
+      expiresAt: string;
+      features: Record<string, number | string | boolean | null>;
+      id: string;
+      judge: ({
+        confidence: number;
+        rugRisk: number | null;
+        verdict: string;
+      }) | null;
+      rationale: string;
+      status: string;
+      strength: number;
+      symbol: string | null;
+    }>;
+    skipped: Array<{
+      asset: string;
+      reason: string;
+    }>;
+  }>;
+};
+
+/** Input shape for `crypto.status`. */
+export type CryptoStatusInput = Record<string, never>;
+
+/** Return shape for `crypto.status`. */
+export type CryptoStatusReturn = {
+  approvalTargetConfigured: boolean;
+  executionMode: string;
+  jev: {
+    configured: boolean;
+    enabled: boolean;
+    model: string;
+  };
+  killSwitch: boolean;
+  limits: {
+    maxDailyUsd: string;
+    maxPositionFraction: string;
+    maxTradeUsd: string;
+  };
+  pixProvider: string;
+  sandbox: boolean;
+};
+
+/** Input shape for `crypto.strategies.list`. */
+export type CryptoStrategiesListInput = {
+  limit?: string;
+  offset?: string;
+  source?: string;
+};
+
+/** Return shape for `crypto.strategies.list`. */
+export type CryptoStrategiesListReturn = {
+  items: Array<{
+    externalId: string;
+    id: string;
+    metrics: {
+      flags: string[];
+      latestPnlUsd: number | null;
+      minAllocationUsd: number | null;
+      pnlPoints: number;
+      profitFactor: number | null;
+      return3mPct: number | null;
+      scoreComponents: Record<string, number>;
+      trackRecordDays: number | null;
+      winRatePct: number | null;
+      worstFallPct: number | null;
+    };
+    name: string;
+    riskLevel: string | null;
+    score: number | null;
+    source: string;
+    syncedAt: string | null;
+    venue: string;
+  }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  total: number;
+};
+
+/** Input shape for `crypto.strategies.show`. */
+export type CryptoStrategiesShowInput = {
+  strategyId: string;
+};
+
+/** Return shape for `crypto.strategies.show`. */
+export type CryptoStrategiesShowReturn = {
+  strategy: {
+    externalId: string;
+    id: string;
+    metrics: {
+      flags: string[];
+      latestPnlUsd: number | null;
+      minAllocationUsd: number | null;
+      pnlPoints: number;
+      profitFactor: number | null;
+      return3mPct: number | null;
+      scoreComponents: Record<string, number>;
+      trackRecordDays: number | null;
+      winRatePct: number | null;
+      worstFallPct: number | null;
+    };
+    name: string;
+    riskLevel: string | null;
+    score: number | null;
+    source: string;
+    syncedAt: string | null;
+    venue: string;
+  };
+};
+
+/** Input shape for `crypto.strategies.sync`. */
+export type CryptoStrategiesSyncInput = Record<string, never>;
+
+/** Return shape for `crypto.strategies.sync`. */
+export type CryptoStrategiesSyncReturn = {
+  authenticated: boolean;
+  fetched: number;
+  items: Array<{
+    externalId: string;
+    id: string;
+    metrics: {
+      flags: string[];
+      latestPnlUsd: number | null;
+      minAllocationUsd: number | null;
+      pnlPoints: number;
+      profitFactor: number | null;
+      return3mPct: number | null;
+      scoreComponents: Record<string, number>;
+      trackRecordDays: number | null;
+      winRatePct: number | null;
+      worstFallPct: number | null;
+    };
+    name: string;
+    riskLevel: string | null;
+    score: number | null;
+    source: string;
+    syncedAt: string | null;
+    venue: string;
+  }>;
+  warnings: string[];
+};
+
+/** Input shape for `crypto.trades.cancel`. */
+export type CryptoTradesCancelInput = {
+  owner?: string;
+  tradeId: string;
+};
+
+/** Return shape for `crypto.trades.cancel`. */
+export type CryptoTradesCancelReturn = {
+  trade: {
+    createdAt: string;
+    error: string | null;
+    executedOutput: string | null;
+    executionMode: string;
+    expectedOutput: {
+      amount: string;
+      symbol: string;
+    };
+    expiresAt: string;
+    id: string;
+    input: {
+      amount: string;
+      symbol: string;
+    };
+    judge: ({
+      confidence: number;
+      passed: boolean;
+      reasons: string[];
+      verdict: string;
+    }) | null;
+    minOutput: string;
+    notionalUsd: number | null;
+    priceImpactPct: number | null;
+    rationale: string | null;
+    side: string;
+    slippageBps: number;
+    status: string;
+    txSignature: string | null;
+    vaultId: string;
+  };
+};
+
+/** Input shape for `crypto.trades.list`. */
+export type CryptoTradesListInput = {
+  all?: boolean;
+  limit?: string;
+  offset?: string;
+  owner?: string;
+  status?: string;
+};
+
+/** Return shape for `crypto.trades.list`. */
+export type CryptoTradesListReturn = {
+  items: Array<{
+    createdAt: string;
+    error: string | null;
+    executedOutput: string | null;
+    executionMode: string;
+    expectedOutput: {
+      amount: string;
+      symbol: string;
+    };
+    expiresAt: string;
+    id: string;
+    input: {
+      amount: string;
+      symbol: string;
+    };
+    judge: ({
+      confidence: number;
+      passed: boolean;
+      reasons: string[];
+      verdict: string;
+    }) | null;
+    minOutput: string;
+    notionalUsd: number | null;
+    priceImpactPct: number | null;
+    rationale: string | null;
+    side: string;
+    slippageBps: number;
+    status: string;
+    txSignature: string | null;
+    vaultId: string;
+  }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  total: number;
+};
+
+/** Input shape for `crypto.trades.propose`. */
+export type CryptoTradesProposeInput = {
+  amount: string;
+  asset: string;
+  owner?: string;
+  rationale?: string;
+  side: string;
+  signal?: string;
+  slippageBps?: string;
+  strategy?: string;
+  unit?: string;
+};
+
+/** Return shape for `crypto.trades.propose`. */
+export type CryptoTradesProposeReturn = {
+  approval: string;
+  risk: {
+    allowed: boolean;
+    checks: Array<{
+      detail: string;
+      id: string;
+      passed: boolean;
+    }>;
+  };
+  trade: {
+    createdAt: string;
+    error: string | null;
+    executedOutput: string | null;
+    executionMode: string;
+    expectedOutput: {
+      amount: string;
+      symbol: string;
+    };
+    expiresAt: string;
+    id: string;
+    input: {
+      amount: string;
+      symbol: string;
+    };
+    judge: ({
+      confidence: number;
+      passed: boolean;
+      reasons: string[];
+      verdict: string;
+    }) | null;
+    minOutput: string;
+    notionalUsd: number | null;
+    priceImpactPct: number | null;
+    rationale: string | null;
+    side: string;
+    slippageBps: number;
+    status: string;
+    txSignature: string | null;
+    vaultId: string;
+  };
+};
+
+/** Input shape for `crypto.trades.show`. */
+export type CryptoTradesShowInput = {
+  owner?: string;
+  tradeId: string;
+};
+
+/** Return shape for `crypto.trades.show`. */
+export type CryptoTradesShowReturn = {
+  summary: string;
+  trade: {
+    createdAt: string;
+    error: string | null;
+    executedOutput: string | null;
+    executionMode: string;
+    expectedOutput: {
+      amount: string;
+      symbol: string;
+    };
+    expiresAt: string;
+    id: string;
+    input: {
+      amount: string;
+      symbol: string;
+    };
+    judge: ({
+      confidence: number;
+      passed: boolean;
+      reasons: string[];
+      verdict: string;
+    }) | null;
+    minOutput: string;
+    notionalUsd: number | null;
+    priceImpactPct: number | null;
+    rationale: string | null;
+    side: string;
+    slippageBps: number;
+    status: string;
+    txSignature: string | null;
+    vaultId: string;
+  };
+};
+
+/** Input shape for `crypto.vault.risk-profile`. */
+export type CryptoVaultRiskProfileInput = {
+  owner?: string;
+  profile: string;
+};
+
+/** Return shape for `crypto.vault.risk-profile`. */
+export type CryptoVaultRiskProfileReturn = {
+  vault: {
+    createdAt: string;
+    id: string;
+    owner: string;
+    ripioCustomerLinked: boolean;
+    riskProfile: string;
+    status: string;
+  };
+};
+
+/** Input shape for `crypto.vault.show`. */
+export type CryptoVaultShowInput = {
+  owner?: string;
+};
+
+/** Return shape for `crypto.vault.show`. */
+export type CryptoVaultShowReturn = {
+  vault: {
+    createdAt: string;
+    id: string;
+    owner: string;
+    ripioCustomerLinked: boolean;
+    riskProfile: string;
+    status: string;
+  };
+};
+
+/** Input shape for `crypto.wallets.events`. */
+export type CryptoWalletsEventsInput = {
+  limit?: string;
+  offset?: string;
+  wallet?: string;
+};
+
+/** Return shape for `crypto.wallets.events`. */
+export type CryptoWalletsEventsReturn = {
+  items: Array<{
+    at: string;
+    bought: ({
+      amount: number | null;
+      mint: string;
+      token: string | null;
+    }) | null;
+    kind: string;
+    signature: string;
+    sold: ({
+      amount: number | null;
+      mint: string;
+      token: string | null;
+    }) | null;
+    usdValue: number | null;
+    walletId: string;
+  }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  total: number;
+};
+
+/** Input shape for `crypto.wallets.list`. */
+export type CryptoWalletsListInput = {
+  chain?: string;
+  limit?: string;
+  offset?: string;
+};
+
+/** Return shape for `crypto.wallets.list`. */
+export type CryptoWalletsListReturn = {
+  items: Array<{
+    address: string;
+    chain: string;
+    id: string;
+    label: string | null;
+    lastActivityAt: string | null;
+    score: number | null;
+    source: string;
+    tags: string[];
+  }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  total: number;
+};
+
 /** Input shape for `daemon.env`. */
 export type DaemonEnvInput = Record<string, never>;
 
