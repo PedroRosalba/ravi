@@ -321,6 +321,33 @@ async function handleToolBridge(
   }
 }
 
+/** Pix provider callbacks and Helius wallet activity; see src/crypto/webhook.ts. */
+export const CRYPTO_WEBHOOK_PATH_PREFIX = "/webhooks/crypto/";
+
+async function handleCryptoWebhookRequest(
+  request: Request,
+  pathname: string,
+  config: WebhookHttpServerConfig,
+): Promise<Response> {
+  if (request.method !== "POST") return jsonResponse(405, { ok: false, error: "method_not_allowed" });
+  const raw = await readBoundedBody(request, config.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES, "crypto");
+  if (raw instanceof Response) return raw;
+  try {
+    // Lazy import keeps the crypto domain (and its DB) out of daemons that never receive these calls.
+    const { handleCryptoWebhook } = await import("../crypto/webhook.js");
+    const result = await handleCryptoWebhook({
+      method: request.method,
+      pathname,
+      headers: request.headers,
+      rawBody: raw,
+    });
+    return jsonResponse(result.status, result.body);
+  } catch (error) {
+    log.error("Crypto webhook failed", { pathname, error });
+    return jsonResponse(500, { ok: false, error: "internal_error" });
+  }
+}
+
 async function handleRequest(
   request: Request,
   config: WebhookHttpServerConfig,
@@ -347,6 +374,10 @@ async function handleRequest(
 
   if (ALL_TOOL_BRIDGE_PATHS.has(url.pathname)) {
     return handleToolBridge(request, config, url.searchParams.get("request_id"));
+  }
+
+  if (url.pathname.startsWith(CRYPTO_WEBHOOK_PATH_PREFIX)) {
+    return handleCryptoWebhookRequest(request, url.pathname, config);
   }
 
   return jsonResponse(404, { ok: false, error: "not_found" });
