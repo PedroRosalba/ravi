@@ -182,8 +182,11 @@ function checkEnvSpoofing(rawCommand: string): { allowed: boolean; reason?: stri
   }
   // Also catch what the patterns above miss: a full path to env (/usr/bin/env -i),
   // env -S/--split-string, and exec -c, all of which hand ravi a cleared environment.
+  // The flag must belong to the same env invocation (no pipe or separator in between),
+  // and unsetting non-RAVI variables (`env -u LANG`) is left alone: the check above
+  // already refuses `-u RAVI_*`.
   const clearsEnvironment =
-    /(?:^|[\s;&|(])(?:\S*\/)?env\s+(?:\S+\s+)*?(?:-i|-u|-S|-|--ignore-environment|--unset(?:=\S+)?|--split-string(?:=\S+)?)(?=\s|$)/.test(
+    /(?:^|[\s;&|(])(?:\S*\/)?env\s+(?:[^\s;&|]+\s+)*?(?:-i|-S|-|--ignore-environment|--split-string(?:=\S+)?)(?=\s|$)/.test(
       command,
     ) || /(?:^|[\s;&|(])exec\s+(?:-\w*c\w*)(?=\s|$)/.test(command);
   if (clearsEnvironment && /\bravi\b/.test(command)) {
