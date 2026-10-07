@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseBashCommand, checkDangerousPatterns, UNCONDITIONAL_BLOCKS } from "./parser.js";
+import { parseBashCommand, checkDangerousPatterns, stripShellQuoting, UNCONDITIONAL_BLOCKS } from "./parser.js";
 
 // ============================================================================
 // checkDangerousPatterns
@@ -180,5 +180,18 @@ describe("UNCONDITIONAL_BLOCKS", () => {
     expect(UNCONDITIONAL_BLOCKS.has("ls")).toBe(false);
     expect(UNCONDITIONAL_BLOCKS.has("git")).toBe(false);
     expect(UNCONDITIONAL_BLOCKS.has("ravi")).toBe(false);
+  });
+});
+
+describe("stripShellQuoting", () => {
+  it("joins quoted and escaped fragments the way the shell does", () => {
+    expect(stripShellQuoting("env -i ./bin/r'a'vi crypto balance")).toBe("env -i ./bin/ravi crypto balance");
+    expect(stripShellQuoting('env -i r"av"i x')).toBe("env -i ravi x");
+    expect(stripShellQuoting("env -i r\\avi x")).toBe("env -i ravi x");
+    expect(stripShellQuoting("R'A'VI_AGENT_ID=x ravi")).toBe("RAVI_AGENT_ID=x ravi");
+  });
+
+  it("leaves unquoted commands unchanged", () => {
+    expect(stripShellQuoting("ravi crypto status --json")).toBe("ravi crypto status --json");
   });
 });
