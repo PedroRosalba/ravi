@@ -245,6 +245,11 @@ describe("createBashPermissionHook", () => {
         "env - ravi crypto vault list",
         "/usr/bin/env --ignore-environment ravi crypto trades approve trd_x --execute",
         "env --unset=RAVI_SESSION_KEY ravi crypto balance",
+        // A full path to env must not slip past the unset rule.
+        "/usr/bin/env -uRAVI_CONTEXT_KEY ravi crypto balance",
+        "/usr/bin/env -u RAVI_CONTEXT_KEY ravi crypto balance",
+        "/usr/bin/env --unset=RAVI_CONTEXT_KEY ravi crypto balance",
+        "'/usr/bin/env' -u RAVI_CONTEXT_KEY ravi crypto balance",
         "unset RAVI_CONTEXT_KEY; ravi crypto trades approve trd_x --execute",
         "exec -c ravi crypto trades list",
         // Quoting hides the name from text matching but not from the shell.
@@ -261,6 +266,10 @@ describe("createBashPermissionHook", () => {
       expect(evaluateBashPermission("env | grep PATH", ctx).denialType).not.toBe("env_spoofing");
       expect(evaluateBashPermission("env | grep -i ravi", ctx).denialType).not.toBe("env_spoofing");
       expect(evaluateBashPermission("env -u LANG ravi crypto status", ctx).denialType).not.toBe("env_spoofing");
+      expect(evaluateBashPermission("/usr/bin/env -u LANG ravi crypto status", ctx).denialType).not.toBe(
+        "env_spoofing",
+      );
+      expect(evaluateBashPermission("/usr/bin/env -uLANG ravi crypto status", ctx).denialType).not.toBe("env_spoofing");
       expect(evaluateBashPermission("env -i PATH=/usr/bin node script.js", ctx).denialType).not.toBe("env_spoofing");
     });
 
