@@ -195,6 +195,9 @@ function checkEnvSpoofing(rawCommand: string): { allowed: boolean; reason?: stri
   return { allowed: true };
 }
 
+/** Redirect targets that discard output or send it back to the terminal instead of writing a file. */
+const HARMLESS_REDIRECT_TARGETS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"]);
+
 /** Commands that require session scope check on the target argument */
 const SESSION_TARGET_COMMANDS = new Set([
   "sessions_send",
@@ -363,7 +366,7 @@ function checkExecutablePermissionsForContext(
 
   // An allowed executable plus `> file` is a file write: `ravi crypto status > ~/.ravi/crypto.db`
   // would wipe the ledger. Restricted agents may only discard output unless they can write files anyway.
-  const fileWrites = findOutputRedirectTargets(command).filter((target) => target !== "/dev/null");
+  const fileWrites = findOutputRedirectTargets(command).filter((target) => !HARMLESS_REDIRECT_TARGETS.has(target));
   if (fileWrites.length > 0 && !canWithBashContext(ctx, "use", "tool", "Write")) {
     return {
       allowed: false,
