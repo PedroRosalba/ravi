@@ -110,9 +110,17 @@ describe("tightenStateDirPermissions", () => {
     expect(tightenStateDirPermissions(home, { homedir: () => home }).action).toBe("home_dir");
     expect(modeOf(home)).toBe(0o755);
 
-    const shared = makeStateDir(0o2770);
-    expect(tightenStateDirPermissions(shared).action).toBe("shared_group");
-    expect(statSync(shared).mode & 0o7777).toBe(0o2770);
+    // A real chmod 0o2770 may silently drop setgid (group membership, runtime),
+    // so the setgid dir is described through fake stats instead.
+    const shared = makeStateDir(0o770);
+    const sharedStats = Object.assign(Object.create(statSync(shared)), { mode: 0o42770 });
+    let sharedChmods = 0;
+    const sharedResult = tightenStateDirPermissions(shared, {
+      lstat: () => sharedStats,
+      chmod: () => sharedChmods++,
+    });
+    expect(sharedResult.action).toBe("shared_group");
+    expect(sharedChmods).toBe(0);
 
     const optedOut = makeStateDir(0o755);
     const result = tightenStateDirPermissions(optedOut, { env: { RAVI_STATE_DIR_KEEP_PERMISSIONS: "1" } });
