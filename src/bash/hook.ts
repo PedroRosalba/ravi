@@ -13,7 +13,13 @@
  * enforceScopeCheck() in the CLI process, not here.
  */
 
-import { checkDangerousPatterns, parseBashCommand, stripShellQuoting, UNCONDITIONAL_BLOCKS } from "./parser.js";
+import {
+  checkDangerousPatterns,
+  findOutputRedirectTargets,
+  parseBashCommand,
+  stripShellQuoting,
+  UNCONDITIONAL_BLOCKS,
+} from "./parser.js";
 import { logger } from "../utils/logger.js";
 import { getScopeContext } from "../permissions/scope.js";
 import {
@@ -353,6 +359,17 @@ function checkExecutablePermissionsForContext(
 
   if (canWithBashContext(ctx, "execute", "executable", "*")) {
     return { allowed: true };
+  }
+
+  // An allowed executable plus `> file` is a file write: `ravi crypto status > ~/.ravi/crypto.db`
+  // would wipe the ledger. Restricted agents may only discard output unless they can write files anyway.
+  const fileWrites = findOutputRedirectTargets(command).filter((target) => target !== "/dev/null");
+  if (fileWrites.length > 0 && !canWithBashContext(ctx, "use", "tool", "Write")) {
+    return {
+      allowed: false,
+      reason: `Permission denied: agent:${ctx.agentId ?? "unknown"} cannot redirect output to files (${fileWrites.join(", ")})`,
+      deniedCapabilities: [{ relation: "use", objectType: "tool", objectId: "Write" }],
+    };
   }
 
   for (const exec of parsed.executables) {
