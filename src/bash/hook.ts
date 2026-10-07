@@ -13,7 +13,7 @@
  * enforceScopeCheck() in the CLI process, not here.
  */
 
-import { checkDangerousPatterns, parseBashCommand, UNCONDITIONAL_BLOCKS } from "./parser.js";
+import { checkDangerousPatterns, parseBashCommand, stripShellQuoting, UNCONDITIONAL_BLOCKS } from "./parser.js";
 import { logger } from "../utils/logger.js";
 import { getScopeContext } from "../permissions/scope.js";
 import {
@@ -152,7 +152,9 @@ function extractRaviTarget(command: string): string | null {
  * Check if a command attempts to override RAVI_* env vars (identity/config spoofing).
  * Blocks ALL RAVI_* env var overrides for non-superadmin agents.
  */
-function checkEnvSpoofing(command: string): { allowed: boolean; reason?: string } {
+function checkEnvSpoofing(rawCommand: string): { allowed: boolean; reason?: string } {
+  // Match on what the shell will actually run: `r'a'vi` and `R"A"VI_X=` are `ravi` and `RAVI_X=`.
+  const command = stripShellQuoting(rawCommand);
   if (/\bRAVI_\w+\s*=/.test(command)) {
     return {
       allowed: false,
