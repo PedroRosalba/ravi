@@ -29,6 +29,25 @@ export function isChatOnlyAgent(agentId: string | null | undefined): boolean {
   return isChatOnlyRuntimePermissions(readAgentRuntimePermissionsConfig(id));
 }
 
+/**
+ * explicit-only: the agent holds exactly its explicit capabilities. Unlike
+ * chat-only it keeps them; unlike bootstrap it gets no birth floor (no tool:*,
+ * no default executables such as bun/cat/xargs). For agents serving people the
+ * operator does not fully trust: a public chat agent granted only
+ * `use:tool:Bash` plus the CLI groups it needs cannot read files or run code.
+ */
+export function isExplicitOnlyRuntimePermissions(config: AgentRuntimePermissionsConfig | null | undefined): boolean {
+  return config?.profile === "explicit-only";
+}
+
+/** True when the runtime-bootstrap birth floor must not be added for this agent. */
+export function suppressesRuntimeBootstrap(agentId: string | null | undefined): boolean {
+  const id = agentId?.trim();
+  if (!id) return false;
+  const config = readAgentRuntimePermissionsConfig(id);
+  return isChatOnlyRuntimePermissions(config) || isExplicitOnlyRuntimePermissions(config);
+}
+
 export function isToolOrExecCapability(capability: Pick<ContextCapability, "permission" | "objectType">): boolean {
   if (capability.permission === "use" && (capability.objectType === "tool" || capability.objectType === "toolgroup")) {
     return true;
