@@ -195,6 +195,42 @@ describe("createBashPermissionHook", () => {
       expect(isDenied(result)).toBe(true);
     });
 
+    it("blocks output redirection to files for agents that cannot write files", () => {
+      const ravisOnly = {
+        agentId: "crypto-reception",
+        kind: "test-runtime",
+        capabilities: [{ permission: "use", objectType: "tool", objectId: "Bash" }],
+      };
+      for (const command of [
+        "ravi crypto status > ~/.ravi/crypto-production.db",
+        "ravi crypto balance --json >> /tmp/x",
+        "ravi crypto status &> out.txt",
+        "ravi crypto status >| ~/.ravi/ravi.db",
+        "ravi crypto status 1>'/tmp/a b'",
+      ]) {
+        const decision = evaluateBashPermission(command, ravisOnly);
+        expect(decision.allowed, command).toBe(false);
+        expect(decision.reason ?? "", command).toContain("cannot redirect output to files");
+      }
+      for (const command of [
+        "ravi crypto status --json 2>/dev/null",
+        "ravi crypto status 2>&1",
+        'ravi crypto trades propose buy TSLAx 5 --rationale "price > 100"',
+      ]) {
+        expect(evaluateBashPermission(command, ravisOnly).allowed, command).toBe(true);
+      }
+      const canWrite = {
+        ...ravisOnly,
+        capabilities: [...ravisOnly.capabilities, { permission: "use", objectType: "tool", objectId: "Write" }],
+      };
+      expect(evaluateBashPermission("ravi crypto status > /tmp/status.txt", canWrite).allowed).toBe(true);
+      const fullAccess = {
+        ...ravisOnly,
+        capabilities: [{ permission: "execute", objectType: "executable", objectId: "*" }],
+      };
+      expect(evaluateBashPermission("ravi crypto status > /tmp/status.txt", fullAccess).allowed).toBe(true);
+    });
+
     it("blocks stripping RAVI identity env before running ravi", () => {
       const ctx = {
         agentId: "test",
