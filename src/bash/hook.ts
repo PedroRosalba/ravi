@@ -169,10 +169,11 @@ function checkEnvSpoofing(rawCommand: string): { allowed: boolean; reason?: stri
   }
   // Dropping the runtime context key would turn the agent into the local
   // operator (`env -u RAVI_CONTEXT_KEY ravi ...`, `unset RAVI_CONTEXT_KEY`).
+  // `env` may be named by a full path (`/usr/bin/env -uRAVI_CONTEXT_KEY ravi ...`).
   if (
     /(?:^|[\s;&|(])unset\s+(?:-[a-z]+\s+)*[^;&|\n]*\bRAVI_\w+/.test(command) ||
     /(?:^|[\s;&|(])export\s+-n\s+[^;&|\n]*\bRAVI_\w+/.test(command) ||
-    /(?:^|[\s;&|(])env\s+[^;&|\n]*(?:-u\s*|--unset[=\s]+)RAVI_\w+/.test(command) ||
+    /(?:^|[\s;&|(])(?:\S*\/)?env\s+[^;&|\n]*(?:-u\s*|--unset[=\s]+)RAVI_\w+/.test(command) ||
     /(?:^|[\s;&|(])env\s+(?:-\S*\s+)*(?:-i|--ignore-environment|-)(?:\s|$)[^;&|\n]*\bravi\b/.test(command)
   ) {
     return {
