@@ -400,6 +400,10 @@ function expandsRuntimePermissionAuthority(
   if (before?.profile === "chat-only") {
     return true;
   }
+  // Leaving explicit-only restores the bootstrap floor (tool:*, default executables).
+  if (before?.profile === "explicit-only" && after?.profile !== "explicit-only") {
+    return true;
+  }
 
   // full-access already materializes admin system:*; any later profile or
   // explicit-capability edit can only preserve or reduce effective authority.
