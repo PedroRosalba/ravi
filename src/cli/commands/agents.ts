@@ -876,6 +876,9 @@ export class AgentsCommands {
           `  Configure least privilege: ravi agents permissions ${id} bootstrap --capabilities <permission>:<objectType>:<objectId> --execute`,
         );
         console.log(`  Reception only:    ravi agents permissions ${id} chat-only`);
+        console.log(
+          `  Public, scoped:    ravi agents permissions ${id} explicit-only --capabilities use:tool:Bash,<permission>:<objectType>:<objectId> --execute`,
+        );
         console.log(`  Reset to bootstrap: ravi agents permissions ${id} none`);
         console.log(`  Break-glass only: ravi agents permissions ${id} full-access --execute`);
       }
@@ -1364,7 +1367,7 @@ SOURCES
     @Arg("profile", {
       required: false,
       description:
-        "Profile: bootstrap, chat-only (conversation only), full-access (Bash execute ceiling + admin), none (reset to bootstrap minimum)",
+        "Profile: bootstrap, chat-only (conversation only), explicit-only (only the listed capabilities, no bootstrap floor), full-access (Bash execute ceiling + admin), none (reset to bootstrap minimum)",
     })
     profile?: string,
     @Option({
@@ -1423,6 +1426,9 @@ SOURCES
           `  Defaults-only:       ravi agents permissions ${id} bootstrap --capabilities <permission>:<objectType>:<objectId> --execute`,
         );
         console.log(`  Reception only:    ravi agents permissions ${id} chat-only`);
+        console.log(
+          `  Public, scoped:    ravi agents permissions ${id} explicit-only --capabilities use:tool:Bash,<permission>:<objectType>:<objectId> --execute`,
+        );
         console.log(`  Reset to bootstrap: ravi agents permissions ${id} none`);
         console.log(`  Break-glass only:  ravi agents permissions ${id} full-access --execute`);
       }
@@ -1514,6 +1520,10 @@ SOURCES
       } else if (after?.profile === "chat-only") {
         console.log(
           "  Reception: conversation only. Host denies tools/shell/CLI groups on every runtime. none/clear/off resets to the bootstrap minimum, not zero-authority.",
+        );
+      } else if (after?.profile === "explicit-only") {
+        console.log(
+          "  Explicit-only: no bootstrap floor (no tool:*, no default executables). The agent holds exactly the capabilities listed; `ravi` stays runnable through Bash only if use:tool:Bash is granted.",
         );
       }
     }
