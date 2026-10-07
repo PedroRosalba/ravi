@@ -215,6 +215,8 @@ describe("createBashPermissionHook", () => {
       for (const command of [
         "ravi crypto status --json 2>/dev/null",
         "ravi crypto status 2>&1",
+        "ravi crypto status >/dev/stderr",
+        "ravi crypto status 1>/dev/stdout",
         'ravi crypto trades propose buy TSLAx 5 --rationale "price > 100"',
       ]) {
         expect(evaluateBashPermission(command, ravisOnly).allowed, command).toBe(true);
@@ -257,6 +259,8 @@ describe("createBashPermissionHook", () => {
       }
       // Ordinary env usage stays allowed.
       expect(evaluateBashPermission("env | grep PATH", ctx).denialType).not.toBe("env_spoofing");
+      expect(evaluateBashPermission("env | grep -i ravi", ctx).denialType).not.toBe("env_spoofing");
+      expect(evaluateBashPermission("env -u LANG ravi crypto status", ctx).denialType).not.toBe("env_spoofing");
       expect(evaluateBashPermission("env -i PATH=/usr/bin node script.js", ctx).denialType).not.toBe("env_spoofing");
     });
 
