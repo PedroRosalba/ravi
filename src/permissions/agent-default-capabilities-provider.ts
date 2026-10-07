@@ -5,7 +5,7 @@ import { canWithCapabilities } from "./capability-snapshot.js";
 import type { PermissionProvider, PermissionProviderDecision, PermissionProviderRequest } from "./provider-types.js";
 
 export const AGENT_RUNTIME_PERMISSIONS_DEFAULTS_KEY = "runtimePermissions";
-export const AGENT_RUNTIME_PERMISSION_PROFILES = ["bootstrap", "chat-only", "full-access"] as const;
+export const AGENT_RUNTIME_PERMISSION_PROFILES = ["bootstrap", "chat-only", "explicit-only", "full-access"] as const;
 export const AGENT_RUNTIME_PERMISSION_CLEAR_ALIASES = ["none", "clear", "off"] as const;
 
 export type AgentRuntimePermissionProfile = (typeof AGENT_RUNTIME_PERMISSION_PROFILES)[number];
@@ -16,7 +16,7 @@ export interface AgentRuntimePermissionsConfig {
 }
 
 export function formatAgentRuntimePermissionProfileChoices(): string {
-  return "bootstrap, chat-only, full-access, none";
+  return "bootstrap, chat-only, explicit-only, full-access, none";
 }
 
 export function isChatOnlyRuntimePermissions(config: AgentRuntimePermissionsConfig | null | undefined): boolean {

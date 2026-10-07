@@ -1085,7 +1085,7 @@ describe("AgentsCommands permissions", () => {
     const commands = new AgentsCommands();
 
     expect(() => commands.permissions("dev", "superuser", undefined, true)).toThrow(
-      "Invalid runtime permission profile: superuser. Valid profiles: bootstrap, chat-only, full-access, none",
+      "Invalid runtime permission profile: superuser. Valid profiles: bootstrap, chat-only, explicit-only, full-access, none",
     );
     expect(updateAgentCalls).toEqual([]);
   });
