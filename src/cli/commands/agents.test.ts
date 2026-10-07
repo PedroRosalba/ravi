@@ -1133,6 +1133,54 @@ describe("AgentsCommands permissions", () => {
     expect(logCalls.join("\n")).not.toContain("Clear:");
   });
 
+  it("requires --execute to leave explicit-only because that restores bootstrap authority", () => {
+    currentAgent = {
+      id: "cofre",
+      cwd: "/tmp/cofre",
+      defaults: { runtimePermissions: { profile: "explicit-only", capabilities: ["use:tool:Bash"] } },
+    };
+    const commands = new AgentsCommands();
+    const originalLog = console.log;
+    console.log = () => {};
+    let thrown: unknown;
+    try {
+      commands.permissions("cofre", "bootstrap", undefined, true);
+    } catch (error) {
+      thrown = error;
+    } finally {
+      console.log = originalLog;
+    }
+    expect(thrown).toBeInstanceOf(ContractError);
+    expect((thrown as InstanceType<typeof ContractError>).exitCode).toBe(3);
+    expect(updateAgentCalls).toEqual([]);
+  });
+
+  it("narrows to explicit-only without --execute when no new capability is added", () => {
+    currentAgent = {
+      id: "cofre",
+      cwd: "/tmp/cofre",
+      defaults: { runtimePermissions: { capabilities: ["use:tool:Bash", "read:crypto:*"] } },
+    };
+    const commands = new AgentsCommands();
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      const payload = commands.permissions("cofre", "explicit-only", undefined, true);
+      expect(payload).toMatchObject({
+        after: {
+          profile: "explicit-only",
+          capabilities: [
+            { permission: "use", objectType: "tool", objectId: "Bash" },
+            { permission: "read", objectType: "crypto", objectId: "*" },
+          ],
+        },
+      });
+    } finally {
+      console.log = originalLog;
+    }
+    expect(updateAgentCalls).toHaveLength(1);
+  });
+
   it("requires --execute to leave chat-only because that restores bootstrap authority", () => {
     currentAgent = {
       id: "dev",
