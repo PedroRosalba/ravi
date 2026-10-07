@@ -333,3 +333,8 @@ export function parseBashCommand(command: string): ParsedCommand {
     };
   }
 }
+
+/** Remove shell quoting (`r'a'vi` → `ravi`) so text checks see what the shell will run. */
+export function stripShellQuoting(command: string): string {
+  return command.replace(/\\(.)/g, "$1").replace(/["']/g, "");
+}
