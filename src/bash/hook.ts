@@ -163,7 +163,7 @@ const LITERAL_ENV_NAME = /^[A-Za-z_]\w*$/;
  */
 function findEnvInvocations(command: string): string[][] {
   const invocations: string[][] = [];
-  for (const segment of command.split(/[;&|\n(){}]/)) {
+  for (const segment of command.split(/[;&|\n()]/)) {
     const tokens = segment.trim().split(/\s+/);
     tokens.forEach((token, index) => {
       if (/(?:^|\/)env$/i.test(token)) invocations.push(tokens.slice(index + 1));

@@ -288,12 +288,15 @@ describe("createBashPermissionHook", () => {
         "env --uns=RAVI_CONTEXT_KEY ravi crypto balance",
         // The name arrives through an expansion.
         "env -u{R,X}AVI_CONTEXT_KEY ravi crypto balance",
+        "env -u {RAVI_CONTEXT_KEY,} ravi crypto balance",
+        "env -u R{A,}VI_CONTEXT_KEY ravi crypto balance",
         "X=RAVI_CONTEXT_KEY; env -u $X ravi crypto balance",
         "X=RAVI_CONTEXT_KEY; env -u ${X} ravi crypto balance",
         // Shell tricks around the env name.
         "/usr/bin/ENV -u RAVI_CONTEXT_KEY ravi crypto balance",
         "env \\\n-u RAVI_CONTEXT_KEY ravi crypto balance",
         "(env -u RAVI_CONTEXT_KEY ravi crypto balance)",
+        "{ env -i ravi crypto balance; }",
         "env -i ./bin/RAVI crypto balance",
         // Blanking the key with a builtin instead of unsetting it.
         "printf -v RAVI_CONTEXT_KEY ''; ravi crypto balance",
