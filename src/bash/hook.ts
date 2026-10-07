@@ -154,46 +154,92 @@ function extractRaviTarget(command: string): string | null {
   return match?.[1] ?? null;
 }
 
+/** A literal variable name, as opposed to `$X`, `${X}` or a brace expansion. */
+const LITERAL_ENV_NAME = /^[A-Za-z_]\w*$/;
+
+/**
+ * The argument lists that follow each `env` in a command. `env` may be named by
+ * any path or letter case (`/usr/bin/env`, and `ENV` on a case-insensitive filesystem).
+ */
+function findEnvInvocations(command: string): string[][] {
+  const invocations: string[][] = [];
+  for (const segment of command.split(/[;&|\n(){}]/)) {
+    const tokens = segment.trim().split(/\s+/);
+    tokens.forEach((token, index) => {
+      if (/(?:^|\/)env$/i.test(token)) invocations.push(tokens.slice(index + 1));
+    });
+  }
+  return invocations;
+}
+
+/**
+ * Classify what one `env` invocation does to the environment of the command it runs.
+ * Fail closed: the only options left alone are `-u NAME`, `-uNAME`, `--unset NAME` and
+ * `--unset=NAME` with a literal, non-RAVI name. Anything else counts as a modified environment.
+ */
+function inspectEnvInvocation(args: string[]): "unchanged" | "modified" | "drops-ravi" {
+  let modified = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (!arg.startsWith("-")) {
+      if (/^[A-Za-z_]\w*=/.test(arg)) continue;
+      break; // the command env runs
+    }
+    let name: string | undefined;
+    if (arg === "-u" || arg === "--unset") name = args[++i];
+    else if (arg.startsWith("--unset=")) name = arg.slice("--unset=".length);
+    else if (/^-u./.test(arg)) name = arg.slice(2);
+    else {
+      modified = true;
+      continue;
+    }
+    if (name === undefined || !LITERAL_ENV_NAME.test(name) || name.startsWith("RAVI_")) return "drops-ravi";
+  }
+  return modified ? "modified" : "unchanged";
+}
+
 /**
  * Check if a command attempts to override RAVI_* env vars (identity/config spoofing).
  * Blocks ALL RAVI_* env var overrides for non-superadmin agents.
  */
 function checkEnvSpoofing(rawCommand: string): { allowed: boolean; reason?: string } {
-  // Match on what the shell will actually run: `r'a'vi` and `R"A"VI_X=` are `ravi` and `RAVI_X=`.
-  const command = stripShellQuoting(rawCommand);
+  // Match on what the shell will actually run: `r'a'vi` and `R"A"VI_X=` are `ravi` and `RAVI_X=`,
+  // and a backslash-newline joins two lines into one command.
+  const command = stripShellQuoting(rawCommand.replace(/\\\r?\n/g, ""));
   if (/\bRAVI_\w+\s*=/.test(command)) {
     return {
       allowed: false,
       reason: "Cannot override RAVI environment variables",
     };
   }
-  // Dropping the runtime context key would turn the agent into the local
-  // operator (`env -u RAVI_CONTEXT_KEY ravi ...`, `unset RAVI_CONTEXT_KEY`).
-  // `env` may be named by a full path (`/usr/bin/env -uRAVI_CONTEXT_KEY ravi ...`).
+  const envInvocations = findEnvInvocations(command).map(inspectEnvInvocation);
+  // Dropping or blanking the runtime context key would turn the agent into the
+  // local operator (`env -u RAVI_CONTEXT_KEY ravi ...`, `unset RAVI_CONTEXT_KEY`,
+  // `printf -v RAVI_CONTEXT_KEY ''`).
   if (
+    envInvocations.includes("drops-ravi") ||
     /(?:^|[\s;&|(])unset\s+(?:-[a-z]+\s+)*[^;&|\n]*\bRAVI_\w+/.test(command) ||
     /(?:^|[\s;&|(])export\s+-n\s+[^;&|\n]*\bRAVI_\w+/.test(command) ||
-    /(?:^|[\s;&|(])(?:\S*\/)?env\s+[^;&|\n]*(?:-u\s*|--unset[=\s]+)RAVI_\w+/.test(command) ||
-    /(?:^|[\s;&|(])env\s+(?:-\S*\s+)*(?:-i|--ignore-environment|-)(?:\s|$)[^;&|\n]*\bravi\b/.test(command)
+    /(?:^|[\s;&|(])printf\s+[^;&|\n]*-v\s*RAVI_\w+/.test(command) ||
+    /(?:^|[\s;&|(])(?:declare|typeset|local|readonly|read|mapfile|readarray)\s+[^;&|\n]*\bRAVI_\w+/.test(command) ||
+    /(?:^|[\s;&|(])for\s+RAVI_\w+\s/.test(command)
   ) {
     return {
       allowed: false,
       reason: "Cannot drop RAVI environment variables",
     };
   }
-  // Also catch what the patterns above miss: a full path to env (/usr/bin/env -i),
-  // env -S/--split-string, and exec -c, all of which hand ravi a cleared environment.
-  // The flag must belong to the same env invocation (no pipe or separator in between),
-  // and unsetting non-RAVI variables (`env -u LANG`) is left alone: the check above
-  // already refuses `-u RAVI_*`.
+  // Any other env option (`-i`, `-`, `-S`, bundles such as `-iu`, GNU abbreviations
+  // such as `--uns`) and `exec -c` can hand ravi a cleared or rewritten environment.
+  // Only refuse when ravi is involved, so `env -i PATH=/usr/bin node x.js` keeps working.
   const clearsEnvironment =
-    /(?:^|[\s;&|(])(?:\S*\/)?env\s+(?:[^\s;&|]+\s+)*?(?:-i|-S|-|--ignore-environment|--split-string(?:=\S+)?)(?=\s|$)/.test(
-      command,
-    ) || /(?:^|[\s;&|(])exec\s+(?:-\w*c\w*)(?=\s|$)/.test(command);
-  if (clearsEnvironment && /\bravi\b/.test(command)) {
+    envInvocations.includes("modified") || /(?:^|[\s;&|(])exec\s+(?:-\w*c\w*)(?=\s|$)/.test(command);
+  // Case-insensitive: on a default macOS filesystem `./bin/RAVI` runs ravi.
+  if (clearsEnvironment && /\bravi\b/i.test(command)) {
     return {
       allowed: false,
-      reason: "Cannot run ravi with a cleared or modified environment",
+      reason: "Cannot run ravi with a cleared or modified RAVI environment",
     };
   }
   return { allowed: true };
