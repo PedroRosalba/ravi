@@ -174,6 +174,18 @@ function checkEnvSpoofing(rawCommand: string): { allowed: boolean; reason?: stri
       reason: "Cannot drop RAVI environment variables",
     };
   }
+  // Also catch what the patterns above miss: a full path to env (/usr/bin/env -i),
+  // env -S/--split-string, and exec -c, all of which hand ravi a cleared environment.
+  const clearsEnvironment =
+    /(?:^|[\s;&|(])(?:\S*\/)?env\s+(?:\S+\s+)*?(?:-i|-u|-S|-|--ignore-environment|--unset(?:=\S+)?|--split-string(?:=\S+)?)(?=\s|$)/.test(
+      command,
+    ) || /(?:^|[\s;&|(])exec\s+(?:-\w*c\w*)(?=\s|$)/.test(command);
+  if (clearsEnvironment && /\bravi\b/.test(command)) {
+    return {
+      allowed: false,
+      reason: "Cannot run ravi with a cleared or modified environment",
+    };
+  }
   return { allowed: true };
 }
 
