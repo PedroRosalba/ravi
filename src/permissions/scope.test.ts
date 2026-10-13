@@ -945,9 +945,23 @@ describe("Scope Isolation", () => {
 
     it("refuses open-scope command groups without a grant on the record", () => {
       runWithContext(agentlessCtx([]) as ToolContext, () => {
-        expect(enforceScopeCheck("open", "sessions", "list").allowed).toBe(false);
-        expect(enforceScopeCheck("superadmin", "permissions", "grant").allowed).toBe(false);
+        const open = enforceScopeCheck("open", "sessions", "list");
+        expect(open.allowed).toBe(false);
+        expect(open.errorMessage).toContain("agent:unknown requires execute on group:sessions_list");
+        expect(open.errorMessage).not.toContain("undefined");
+        const superadmin = enforceScopeCheck("superadmin", "permissions", "grant");
+        expect(superadmin.allowed).toBe(false);
+        expect(superadmin.errorMessage).toContain("agent:unknown requires admin on system:*");
       });
+      const denial = recordResourceAccessDenial({
+        ctx: agentlessCtx([]),
+        resourceAgentId: "main",
+        mode: "read",
+        resourceLabel: "cron job abc12345",
+        command: "cron show",
+      });
+      expect(denial.message).toContain("agent:unknown cannot read cron job abc12345");
+      expect(denial.message).not.toContain("local operator");
       runWithContext(agentlessCtx([cap("execute", "group", "sessions")]) as ToolContext, () => {
         expect(enforceScopeCheck("open", "sessions", "list").allowed).toBe(true);
       });

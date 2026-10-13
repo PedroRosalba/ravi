@@ -321,6 +321,11 @@ export function getScopeContext(): ScopeContext {
 // Core Checks
 // ============================================================================
 
+/** Principal label for denial messages; an agentless caller is `agent:unknown`, never `agent:undefined`. */
+function scopePrincipalLabel(ctx: { agentId?: string }): string {
+  return `agent:${ctx.agentId ?? "unknown"}`;
+}
+
 /**
  * Whether a caller may take the local-operator fallback.
  *
@@ -558,7 +563,7 @@ export function recordResourceAccessDenial(input: {
   const { ctx, resourceAgentId, mode, resourceLabel, command } = input;
   const relation = resourceAccessRelation(mode);
   const verb = mode === "mutate" ? "modify" : "read";
-  const principal = ctx.agentId ? `agent:${ctx.agentId}` : "local operator";
+  const principal = isLocalOperatorScope(ctx) ? "local operator" : scopePrincipalLabel(ctx);
   const grantAgentId = authorizationAgentId(ctx.agentId);
   const ownerDisclosable = canAccessResource(ctx, resourceAgentId, "read");
   const capability = { permission: relation, objectType: "agent", objectId: resourceAgentId };
@@ -647,7 +652,7 @@ export function enforceScopeCheck(
 
     const target = commandName && groupName ? `group:${groupName}_${commandName}` : `group:${groupName ?? "*"}`;
     const objectId = commandName && groupName ? `${groupName}_${commandName}` : (groupName ?? "*");
-    const reason = `Permission denied: agent:${ctx.agentId} requires execute on ${target}`;
+    const reason = `Permission denied: ${scopePrincipalLabel(ctx)} requires execute on ${target}`;
     const denial = recordScopeDenial({
       ctx,
       relation: "execute",
@@ -671,7 +676,7 @@ export function enforceScopeCheck(
     case "superadmin": {
       const allowed = scopeCan(ctx, "admin", "system", "*");
       if (!allowed) {
-        const reason = `Permission denied: agent:${ctx.agentId} requires admin on system:*`;
+        const reason = `Permission denied: ${scopePrincipalLabel(ctx)} requires admin on system:*`;
         const denial = recordScopeDenial({
           ctx,
           relation: "admin",
@@ -691,7 +696,7 @@ export function enforceScopeCheck(
       }
       return {
         allowed,
-        errorMessage: allowed ? "" : `Permission denied: agent:${ctx.agentId} requires admin on system:*`,
+        errorMessage: allowed ? "" : `Permission denied: ${scopePrincipalLabel(ctx)} requires admin on system:*`,
       };
     }
     case "admin": {
@@ -707,7 +712,7 @@ export function enforceScopeCheck(
 
       const target = commandName && groupName ? `group:${groupName}_${commandName}` : `group:${groupName ?? "*"}`;
       const objectId = commandName && groupName ? `${groupName}_${commandName}` : (groupName ?? "*");
-      const reason = `Permission denied: agent:${ctx.agentId} requires execute on ${target}`;
+      const reason = `Permission denied: ${scopePrincipalLabel(ctx)} requires execute on ${target}`;
       const denial = recordScopeDenial({
         ctx,
         relation: "execute",
@@ -726,13 +731,13 @@ export function enforceScopeCheck(
       });
       return {
         allowed: false,
-        errorMessage: `Permission denied: agent:${ctx.agentId} requires execute on ${target}`,
+        errorMessage: `Permission denied: ${scopePrincipalLabel(ctx)} requires execute on ${target}`,
       };
     }
     case "writeContacts": {
       const wcAllowed = canWriteContacts(ctx);
       if (!wcAllowed) {
-        const reason = `Permission denied: agent:${ctx.agentId} requires write_contacts`;
+        const reason = `Permission denied: ${scopePrincipalLabel(ctx)} requires write_contacts`;
         const denial = recordScopeDenial({
           ctx,
           relation: "write_contacts",
@@ -752,14 +757,14 @@ export function enforceScopeCheck(
       }
       return {
         allowed: wcAllowed,
-        errorMessage: wcAllowed ? "" : `Permission denied: agent:${ctx.agentId} requires write_contacts`,
+        errorMessage: wcAllowed ? "" : `Permission denied: ${scopePrincipalLabel(ctx)} requires write_contacts`,
       };
     }
     default:
       // Fail-secure: unknown scope = deny
       return {
         allowed: false,
-        errorMessage: `Permission denied: agent:${ctx.agentId} — unknown scope "${scope}"`,
+        errorMessage: `Permission denied: ${scopePrincipalLabel(ctx)} — unknown scope "${scope}"`,
       };
   }
 }
