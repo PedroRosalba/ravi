@@ -35,6 +35,9 @@
   (`bun test src/cli/remote-gateway.test.ts`). `createInheritedClient` MUST
   refuse the same URLs with `REMOTE_GATEWAY_INSECURE` and make no request
   (`bun test packages/ravi-os-sdk/src/__tests__/inherit.test.ts`).
+- `ravi home tasks report …` with `RAVI_CONTEXT_KEY` and `RAVI_GATEWAY_URL`
+  set sends one request to `RAVI_HOME_GATEWAY_URL` with no `authorization`
+  header and none of their values (`bun test src/cli/registry.test.ts`).
 - With a live listener on `cli-gateway.sock`, a second
   `startHostCliGateway()` MUST return null while the first keeps serving;
   parallel starts on a free or stale path MUST start exactly one gateway and

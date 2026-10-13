@@ -108,6 +108,10 @@ Runtime context keys are opaque credentials that connect provider turns, Ravi to
   resolves (`RAVI_BASE_URL`, `RAVI_HTTP_BASE_URL`, `RAVI_GATEWAY_URL`,
   `RAVI_HTTP_HOST`/`RAVI_HTTP_PORT` or an explicit `baseUrl`) and throws with
   `code: "REMOTE_GATEWAY_INSECURE"` before sending any request.
+- `ravi home <group> <command>` MUST NOT send a context key, whatever
+  `RAVI_CONTEXT_KEY`, the credentials file or `RAVI_GATEWAY_URL` hold: it goes
+  only to `RAVI_HOME_GATEWAY_URL`, authenticated by the sandbox grant
+  (`sandbox/home-passthrough`).
 - A starting daemon MUST NOT unlink the host CLI gateway socket while another
   process accepts connections on it, nor a path that is not a socket owned by
   the current user; it starts without the gateway instead. The public socket
