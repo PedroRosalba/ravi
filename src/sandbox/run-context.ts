@@ -90,10 +90,15 @@ export interface CreateSandboxRunAuthorityInput {
   now?: number;
 }
 
+/** A context record without its secret key: run authority is loaded by context id, never presented by key. */
+export type SandboxRunContextRecord = Omit<ContextRecord, "contextKey">;
+
 export interface SandboxRunAuthority {
   run: SandboxRunRecord;
-  root: ContextRecord;
-  child: ContextRecord;
+  /** The root context, without `contextKey`. */
+  root: SandboxRunContextRecord;
+  /** The child context, without `contextKey`. */
+  child: SandboxRunContextRecord;
   /** Grant caps the agent does not hold locally (or outside the milestone-1 grammar), not granted to the child. */
   droppedCaps: string[];
 }
@@ -202,7 +207,14 @@ export function createSandboxRunAuthority(input: CreateSandboxRunAuthorityInput)
     revokeRuntimeContext(root.contextId, { cascade: true, reason: "sandbox_run_insert_failed" });
     throw error;
   }
-  return { run, root, child, droppedCaps };
+  // No caller presents these contexts by key (the listener loads the child by
+  // id), so the keys never leave this function.
+  return { run, root: withoutContextKey(root), child: withoutContextKey(child), droppedCaps };
+}
+
+function withoutContextKey(record: ContextRecord): SandboxRunContextRecord {
+  const { contextKey: _contextKey, ...rest } = record;
+  return rest;
 }
 
 function isAdminSystemCapability(capability: ContextCapability): boolean {
@@ -250,7 +262,7 @@ export function getLiveSandboxRunContext(run: SandboxRunRecord, now = Date.now()
 }
 
 /**
- * Daemon start: revoke and delete every expired or revoked run and drop
+ * Every daemon start, listener configured or not: revoke and delete every expired or revoked run and drop
  * acknowledged served jtis past retention. Unacknowledged served jtis are
  * never touched (they still have to reach Console).
  */

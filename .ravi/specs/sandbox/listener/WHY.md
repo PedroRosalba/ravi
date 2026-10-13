@@ -85,6 +85,85 @@ created by `runs-db.ts` with `CREATE TABLE IF NOT EXISTS`, the pattern of
 `src/calendar/db.ts`. Keeping them out of `router-db.ts` keeps the schema
 next to the code that owns it and outside the router coverage gate.
 
+### The replay preload keeps each jti for its real `exp`
+
+The verifier accepts an assertion until `exp` + 60 s, and the Gate's `iat`
+may run up to 60 s ahead of our clock, so `exp` can reach `servedAt` + 120 s
+and acceptance `servedAt` + 180 s. Preloading every served jti until
+`servedAt` + 120 s left a hole: an assertion dated 55 s ahead, served, then
+replayed at +130 s after a restart at +30 s (`iat` still after the restart,
+so `issued_before_start` does not fire) was served twice. The served-jti row
+now records the verified `exp`, and the preload keeps it until `exp` + 60 s;
+a row without it (written before the column existed, or for a request whose
+assertion never verified) is kept for the widest window, `servedAt` + 180 s.
+
+### Host and routing refusals are marked but not queued
+
+Steps 1 and 2 run before any token is read, so anyone who can reach the
+loopback port, a local process or a DNS-rebinding page, can send them with
+any `X-Ravi-Request-Id`. Queueing them let 2048 such requests push the
+Gate-admitted jtis out of the queue and set `jtiOverflow`. They still carry
+the marker (the Gate learns the listener answered) but are not queued; the
+Gate never admits a request to a foreign `Host` or an unrouted path, so
+Console has nothing to reconcile them with. Console spec follow-up: queue and
+mark only after the Access JWT verifies.
+
+### Concurrency slots belong to the dispatch, not to the 504
+
+A 504 answers the Gate at 25 s, but the command keeps running: the dispatch
+cannot be cancelled once the task write started. Releasing the slot when the
+timeout race settled let a second command run alongside the first under
+`perRunConcurrency: 1`. The slot is now released in the dispatch promise's
+own `finally`, and a request arriving meanwhile is 429. Console spec
+follow-up: a listener 504 for a non-idempotent command (`tasks.report`,
+`done`, `block`, `fail`) must not be retried as `daemon_offline`; the command
+may well have run.
+
+### Repeated headers collapse to the last value
+
+Bun's node:http keeps one value per header name, the last one sent: no
+comma join, no array. `singleHeader` therefore cannot see a duplicate, and a
+`Host` sent twice is judged by its last line. That is harmless because every
+decision that grants anything rests on a signed token bound to the request;
+the wire-variant test pins the behaviour so a runtime change is noticed. The
+forwarded-grant check looks at the raw header lines instead, so an empty
+`X-Ravi-Sandbox-Grant:` is refused like a non-empty one.
+
+### Grants are zeroed on disk and pruned on every start
+
+The stored grant is a bearer credential until it expires. The runs
+connection sets `secure_delete = ON` (Bun's bundled SQLite defaults to
+`FAST`, which zeroes freed content only when that costs no extra I/O, so not
+freed overflow or freelist pages), so the revoke
+UPDATE and the prunes overwrite what they free. WAL frames that held the
+page before the revoke stay in the `-wal` file until a checkpoint reuses
+them. `pruneSandboxRunsAtStart` runs at every daemon start, not only when the
+listener is configured, so a run revoked before the listener was turned off
+does not keep its contexts or grant; a running listener prunes acknowledged
+served jtis every 10 minutes, bounded by the same 10-minute retention, which
+covers the 180 s replay window.
+
+### No context key leaves `createSandboxRunAuthority`
+
+The listener loads the child by context id; nothing needs the keys, and a
+returned key is one more place a bearer could leak (a log line, an error
+report). Root and child come back without `contextKey`.
+
+### Console follow-up: terminal task commands publish sandbox text
+
+`tasks.done`, `tasks.block` and `tasks.fail` publish the sandbox's summary or
+reason text into the task's report-to session, where an agent reads it as a
+message. That is the same exposure that excluded `tasks.comment` from the
+allowlist. Console should consider the same restriction (or a quoting
+contract) for these three before they are granted to untrusted sandboxes.
+
+### Boot-only configuration is temporary
+
+04b reads the drift latch and whether to start the listener once, at daemon
+boot. That is acceptable only while no cloudflared runs: 05b must add the
+`ravi.config.changed` hook and a cross-process latch before cloudflared is
+ever started.
+
 ### Plan items the spec superseded
 
 - No `GET /healthz`: Console listener SPEC step 2 says there is no health

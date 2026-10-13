@@ -59,6 +59,7 @@ import { ensureSessionPromptsStream, publishSessionPrompt } from "./omni/session
 import { ensureRaviEventsStream } from "./events/audit-stream.js";
 import { startWebhookHttpServerFromEnv, type WebhookHttpServerHandle } from "./webhooks/http-server.js";
 import { readSandboxListenerConfig } from "./sandbox-listener/config.js";
+import { pruneSandboxRunsAtStart } from "./sandbox/run-context.js";
 import { type SandboxListenerHandle, startSandboxListener } from "./sandbox-listener/server.js";
 import { startHostCliGateway, type HostCliGatewayHandle } from "./cli/host-cli-gateway.js";
 import type { MessageTarget } from "./runtime/message-types.js";
@@ -554,6 +555,15 @@ export async function startDaemon() {
     log.info("Webhook HTTP server ready", { url: webhookHttpServer.url });
   } else {
     log.info("Webhook HTTP server disabled (set RAVI_HTTP_PORT to enable)");
+  }
+
+  // Sandbox run records are pruned at every start, listener or not: an
+  // expired or revoked run's contexts are revoked and its stored grant goes.
+  try {
+    const pruned = pruneSandboxRunsAtStart();
+    if (pruned.runsDeleted > 0 || pruned.jtisPruned > 0) log.info("Sandbox runs pruned at start", pruned);
+  } catch (error) {
+    log.error("Sandbox run prune at start failed", error);
   }
 
   // Loopback-only origin for Gate-forwarded sandbox task commands; in process,

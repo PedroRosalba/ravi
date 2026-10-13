@@ -31,9 +31,10 @@ Assertion and §Upstream Classification, `tunnels/SPEC.md` §Host Report.
   `gateway.*` settings are present; `ravi gateway expose` (05b) writes them.
   A log line `Sandbox listener not started: invalid gateway settings` names
   the malformed keys; fix the setting and restart the daemon.
-- `Sandbox listener ready` logs the port, the tunnel hostname, how many stale
-  runs were pruned and how many served jtis were preloaded into the replay
-  cache.
+- `Sandbox runs pruned at start` (every daemon start, listener or not) logs
+  how many stale runs and acknowledged jtis went. `Sandbox listener ready`
+  logs the port, the tunnel hostname and how many served jtis were preloaded
+  into the replay cache.
 - The listener never binds anything but `127.0.0.1`. Reachability comes from
   cloudflared's ingress to `http://127.0.0.1:<port>` (05a).
 
@@ -72,7 +73,10 @@ has `Served-jti append failed; closing without a response`.
   until Console acknowledges a report that carried it, then clears the key.
 - Never delete unacknowledged rows by hand: Console will treat the served
   requests they name as unreported and mark the gateway `unexpected`.
-- Acknowledged rows older than 10 minutes are pruned at every daemon start.
+- Acknowledged rows older than 10 minutes are pruned at every daemon start
+  and every 10 minutes while the listener runs.
+- A 421 `host_mismatch` or a 404 `not_found` is answered with the marker but
+  never queued: those refusals come before any token is verified.
 
 ## Run Records
 

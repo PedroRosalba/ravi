@@ -1,8 +1,9 @@
 // Sandbox run authority and the served-jti queue (OSS `.ravi/specs/sandbox/listener`).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { dbCreateAgent, dbGetContext, dbUpdateAgent } from "../router/router-db.js";
-import { createRuntimeContext, resolveRuntimeContext } from "../runtime/context-registry.js";
+import { readFileSync } from "node:fs";
+import { dbCreateAgent, dbGetContext, dbUpdateAgent, getDb } from "../router/router-db.js";
+import { createRuntimeContext } from "../runtime/context-registry.js";
 import { sha256Base64url } from "../sandbox-listener/gate-assertion.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
 import { TEST_GRANT_JTI, TEST_INSTALLATION_A, TEST_RUN_ID } from "../test/sandbox-grant-tokens.js";
@@ -26,6 +27,8 @@ import {
   dbListRecentServedJtis,
   dbListUnacknowledgedServedJtis,
   dbPruneAcknowledgedServedJtis,
+  dbRevokeSandboxRun,
+  ensureSandboxSchema,
   SANDBOX_SERVED_JTI_QUEUE_MAX,
 } from "./runs-db.js";
 
@@ -97,8 +100,15 @@ describe("createSandboxRunAuthority", () => {
     });
     expect(getLiveSandboxRun(TEST_RUN_ID)?.runId).toBe(TEST_RUN_ID);
     expect(getLiveSandboxRunContext(run)?.contextId).toBe(child.contextId);
-    // The child key resolves like any runtime context (the listener loads it by id, never by key).
-    expect(resolveRuntimeContext(child.contextKey, { touch: false })?.contextId).toBe(child.contextId);
+  });
+
+  test("never returns a context key: root and child come back without `contextKey`", () => {
+    const authority = createSandboxRunAuthority(authorityInput());
+    expect("contextKey" in authority.root).toBe(false);
+    expect("contextKey" in authority.child).toBe(false);
+    expect(JSON.stringify(authority)).not.toContain("rctx_");
+    // The listener still loads the child, by id.
+    expect(getLiveSandboxRunContext(authority.run)?.contextId).toBe(authority.child.contextId);
   });
 
   test("drops and records grant caps the agent lacks locally or outside the milestone-1 grammar", () => {
@@ -187,6 +197,24 @@ describe("createSandboxRunAuthority", () => {
     expect(dbGetSandboxRun(live.run.runId)).not.toBeNull();
     expect(dbCountUnacknowledgedServedJtis()).toBe(1);
   });
+
+  test("revoking zeroes the blanked grant on disk: the runs connection runs with secure_delete", () => {
+    // A grant-sized secret; any long run of its filler is a leftover of it.
+    const filler = "S".repeat(600);
+    const secret = `eyJhbGciOiJFUzI1NiJ9.${filler}.c2ln`;
+    const leftover = filler.slice(0, 64);
+    createSandboxRunAuthority(authorityInput({ grant: secret }));
+    const db = ensureSandboxSchema();
+    expect((db.prepare("PRAGMA secure_delete").get() as { secure_delete: number }).secure_delete).toBe(1);
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    expect(readFileSync(db.filename).includes(leftover)).toBe(true);
+
+    dbRevokeSandboxRun(TEST_RUN_ID, "test_revoke");
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    expect(dbGetSandboxRun(TEST_RUN_ID)?.grantJws).toBeNull();
+    // Without secure_delete the freed cell keeps most of the grant bytes in the page's free space.
+    expect(readFileSync(db.filename).includes(leftover)).toBe(false);
+  });
 });
 
 describe("served-jti queue", () => {
@@ -219,6 +247,34 @@ describe("served-jti queue", () => {
     expect(dbPruneAcknowledgedServedJtis(5001)).toBe(1);
     expect(dbPruneAcknowledgedServedJtis(5001)).toBe(0);
     expect(dbListUnacknowledgedServedJtis().map((row) => row.jti)).toEqual([jti(2)]);
+  });
+
+  test("records the verified assertion exp, null when no assertion verified", () => {
+    dbAppendServedJti({ jti: jti(1), runId: TEST_RUN_ID, status: 200, servedAt: 1000, assertionExp: 61 });
+    dbAppendServedJti({ jti: jti(2), runId: null, status: 401, servedAt: 2000 });
+    expect(dbListUnacknowledgedServedJtis().map((row) => [row.jti, row.assertionExp])).toEqual([
+      [jti(1), 61],
+      [jti(2), null],
+    ]);
+  });
+
+  test("an older ravi.db without assertion_exp is migrated and its rows read back as null", async () => {
+    await cleanupIsolatedRaviState(stateDir);
+    stateDir = await createIsolatedRaviState("ravi-sandbox-served-jtis-legacy-");
+    // The first 04b shape, written before the sandbox module ever opened this database.
+    getDb().exec(`
+      CREATE TABLE sandbox_served_jtis (
+        jti TEXT PRIMARY KEY, run_id TEXT, status INTEGER NOT NULL, served_at INTEGER NOT NULL, acknowledged_at INTEGER
+      );
+      INSERT INTO sandbox_served_jtis (jti, run_id, status, served_at) VALUES ('${jti(9)}', NULL, 200, 5000);
+    `);
+    expect(dbListUnacknowledgedServedJtis().map((row) => [row.jti, row.assertionExp])).toEqual([[jti(9), null]]);
+    const columns = (getDb().prepare("PRAGMA table_info(sandbox_served_jtis)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    );
+    expect(columns).toContain("assertion_exp");
+    dbAppendServedJti({ jti: jti(10), runId: null, status: 200, servedAt: 6000, assertionExp: 66 });
+    expect(dbListUnacknowledgedServedJtis().map((row) => row.assertionExp)).toEqual([null, 66]);
   });
 
   test("drops the oldest beyond the cap and records the overflow", () => {

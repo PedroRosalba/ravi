@@ -11,9 +11,15 @@
 // reports to Console: one row per request the listener answered with
 // `x-ravi-listener: 1`, appended BEFORE the response is written and removed
 // only after Console acknowledged the report that carried it. It also backs
-// the Gate-assertion replay cache across a restart.
+// the Gate-assertion replay cache across a restart, with the verified
+// assertion `exp` when there was one.
+//
+// The connection runs with `secure_delete = ON`: the stored grant is a bearer
+// credential, and blanking it on revoke or deleting the row must zero the
+// freed bytes instead of leaving them in the file's free space.
 
 import type { Database } from "bun:sqlite";
+import { reconcileColumns } from "../db/reconcile-columns.js";
 import { executeWrite } from "../db/write-retry.js";
 import { getDb } from "../router/router-db.js";
 
@@ -24,10 +30,10 @@ export const SANDBOX_SERVED_JTI_REPORT_BATCH = 128;
 
 const schemaReady = new WeakSet<Database>();
 
-export function ensureSandboxSchema(): Database {
-  const db = getDb();
-  if (schemaReady.has(db)) return db;
-  db.exec(`
+// The source of truth for the module's tables: `reconcileColumns` adds any
+// column declared here that an older ravi.db lacks (`assertion_exp` arrived
+// after the first 04b schema), so existing databases evolve in place.
+const SANDBOX_SCHEMA_SQL = `
     CREATE TABLE IF NOT EXISTS sandbox_runs (
       run_id TEXT PRIMARY KEY,
       jti TEXT NOT NULL,
@@ -56,7 +62,8 @@ export function ensureSandboxSchema(): Database {
       run_id TEXT,
       status INTEGER NOT NULL,
       served_at INTEGER NOT NULL,
-      acknowledged_at INTEGER
+      acknowledged_at INTEGER,
+      assertion_exp INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_sandbox_served_jtis_pending
       ON sandbox_served_jtis(acknowledged_at, served_at);
@@ -66,7 +73,16 @@ export function ensureSandboxSchema(): Database {
       value TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     );
-  `);
+`;
+
+export function ensureSandboxSchema(): Database {
+  const db = getDb();
+  if (schemaReady.has(db)) return db;
+  // Per connection, set once before any sandbox write: the revoke UPDATE
+  // that blanks `grant_jws` and every prune DELETE zero what they free.
+  db.exec("PRAGMA secure_delete = ON");
+  db.exec(SANDBOX_SCHEMA_SQL);
+  reconcileColumns(db, SANDBOX_SCHEMA_SQL, { label: "sandbox-runs-db" });
   schemaReady.add(db);
   return db;
 }
@@ -267,6 +283,8 @@ export interface ServedJtiRecord {
   status: number;
   servedAt: number;
   acknowledgedAt: number | null;
+  /** The verified Gate assertion's `exp` (Unix seconds); null when no assertion verified or for rows written before the column existed. */
+  assertionExp: number | null;
 }
 
 interface ServedJtiRow {
@@ -275,6 +293,7 @@ interface ServedJtiRow {
   status: number;
   served_at: number;
   acknowledged_at: number | null;
+  assertion_exp: number | null;
 }
 
 const rowToServed = (row: ServedJtiRow): ServedJtiRecord => ({
@@ -283,6 +302,7 @@ const rowToServed = (row: ServedJtiRow): ServedJtiRecord => ({
   status: row.status,
   servedAt: row.served_at,
   acknowledgedAt: row.acknowledged_at,
+  assertionExp: row.assertion_exp ?? null,
 });
 
 /**
@@ -291,7 +311,14 @@ const rowToServed = (row: ServedJtiRow): ServedJtiRecord => ({
  * A second request with an already-served jti (a refused replay) keeps the
  * first row. Returns whether the queue overflowed and dropped its oldest.
  */
-export function dbAppendServedJti(input: { jti: string; runId: string | null; status: number; servedAt: number }): {
+export function dbAppendServedJti(input: {
+  jti: string;
+  runId: string | null;
+  status: number;
+  servedAt: number;
+  /** The verified assertion's `exp` in Unix seconds, when the Gate assertion verified. */
+  assertionExp?: number | null;
+}): {
   overflow: boolean;
 } {
   const db = ensureSandboxSchema();
@@ -299,8 +326,10 @@ export function dbAppendServedJti(input: { jti: string; runId: string | null; st
     db,
     (handle) => {
       handle
-        .prepare("INSERT OR IGNORE INTO sandbox_served_jtis (jti, run_id, status, served_at) VALUES (?, ?, ?, ?)")
-        .run(input.jti, input.runId, input.status, input.servedAt);
+        .prepare(
+          "INSERT OR IGNORE INTO sandbox_served_jtis (jti, run_id, status, served_at, assertion_exp) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(input.jti, input.runId, input.status, input.servedAt, input.assertionExp ?? null);
       const pending = (
         handle.prepare("SELECT COUNT(*) AS n FROM sandbox_served_jtis WHERE acknowledged_at IS NULL").get() as {
           n: number;

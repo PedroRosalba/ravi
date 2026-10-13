@@ -74,12 +74,21 @@ what they read and write here.
   `gateway.installationId`, `gateway.consoleUrl`, `gateway.tunnel.hostname`.
   `readSandboxListenerConfig` names every malformed key; the daemon logs them
   and runs without the listener. No port configured means disabled.
-- At start it deletes every expired or revoked run record (revoking any
-  context still live) and acknowledged served jtis older than 10 minutes.
-  Unacknowledged served jtis are never deleted at start.
+- Every daemon start, listener configured or not, runs
+  `pruneSandboxRunsAtStart`: it deletes every expired or revoked run record
+  (revoking any context still live) and acknowledged served jtis older than
+  10 minutes. Unacknowledged served jtis are never deleted at start. While
+  the listener runs it also deletes acknowledged served jtis older than 10
+  minutes every 10 minutes.
 - Served jtis younger than 180 s are preloaded into the single-use assertion
-  cache, so a restart inside an assertion's `exp + 60 s` never reopens the
-  window.
+  cache, each kept exactly as long as the verifier could still accept it: its
+  recorded assertion `exp` + 60 s, or, for a row without `assertion_exp`,
+  `servedAt` + 180 s (60 s assertion lifetime + 60 s skew + 60 s post-`exp`
+  grace). A restart therefore never reopens the window, even for an
+  assertion the Gate dated up to 60 s ahead of our clock.
+- Temporary (04b): the drift latch and the listener's start/stop are read at
+  boot only. 05b must add the `ravi.config.changed` hook (ADR 0002 #8) and a
+  cross-process latch before cloudflared is ever started.
 - It owns exactly one `GateAssertionReplayCache` and one `JwksCache` per key
   set (Access certs, gate JWKS, grant JWKS), persisted 0600 under
   `<RAVI_STATE_DIR>/sandbox-listener/`.
@@ -91,7 +100,8 @@ what they read and write here.
 In order; the first failure ends the request. Every response carries
 `x-ravi-listener: 1` and `content-type: application/json`; refusals are
 `{ "error": { "code", "requestId", "source": "ravi-listener" } }` with no
-other field, no token and no claim value.
+other field, no token and no claim value. Under Bun's node:http a header sent
+more than once collapses to its last value; the checks below see that value.
 
 0. Drift latched → 503 `tunnel_drift`.
 1. `Host` equals `gateway.tunnel.hostname` (lowercased, no port) → else
@@ -116,7 +126,8 @@ other field, no token and no claim value.
    resolved only inside `resolveRun`, after the signature. No record → 401
    `grant_revoked`; any other failure → 401 `gate_assertion_invalid`; key set
    unavailable → 503.
-6. A request carrying `X-Ravi-Sandbox-Grant` → 400 `body_invalid`. The run
+6. A request carrying `X-Ravi-Sandbox-Grant`, even with an empty value → 400
+   `body_invalid`. The run
    record is live (not revoked, not expired, grant present) → else 401
    `grant_revoked`. The stored grant re-verifies (`verifySandboxGrant`, own
    installation) → else 401 `grant_invalid` (503 when the key set is
@@ -134,13 +145,16 @@ other field, no token and no claim value.
 10. Limits: per-run token bucket 30/min, global 120/min, at most 2 in-flight
     requests per run and 8 overall → else 429 `rate_limited` with
     `Retry-After: 1`. Settings may lower these defaults, never raise them.
+    An in-flight slot is held by the dispatch itself and released only when
+    the dispatch settles, not when its 504 is answered.
 11. The run's child context is live, of kind `sandbox-run`, bound to the
     record's agent and root → else 401 `grant_revoked`.
 12. Dispatch through the SDK gateway `dispatch` with `source: "gateway"`, the
     child as `contextRecord`, `cwd` undefined, `allowSuperadmin` never set and
     the command's access forced to `requireConcreteResource: true`: group,
     wildcard and semantic capabilities never satisfy the check. A dispatch
-    longer than 25 s is 504 `timeout`. A dispatcher usage error (400) is
+    longer than 25 s is answered 504 `timeout` at 25 s; the dispatch keeps
+    running and keeps its slots until it settles. A dispatcher usage error (400) is
     answered 400 `argument_invalid`; a dispatcher denial (403) is 403
     `resource_forbidden`; any other dispatcher response (the daemon's own
     contract envelope or the command's result) passes through with its
@@ -149,13 +163,17 @@ other field, no token and no claim value.
 
 `Authorization` is never read. Logs and audits carry request id, run id,
 command and outcome only; the audit event of a dispatched command carries the
-child's `contextId`, its `parentContextId` (the root) and the agent id.
+child's `contextId`, its `parentContextId` (the root), the agent id, the
+`runId` and the `requestId`, on the production audit path as well as in tests.
 
 ### Served-jti queue
 
 - Before writing any response that carries a well-formed
-  `X-Ravi-Request-Id`, the listener appends `{jti, runId, status, servedAt}`
-  to `sandbox_served_jtis` through `executeWrite`. If the append throws, the
+  `X-Ravi-Request-Id`, the listener appends `{jti, runId, status, servedAt,
+  assertionExp}` to `sandbox_served_jtis` through `executeWrite`
+  (`assertionExp`: the verified Gate assertion's `exp`, null when none
+  verified). Exception: a refusal at step 1 (`Host`) or step 2 (routing),
+  which comes before any token is verified, is marked but never queued. If the append throws, the
   socket is destroyed with no response: never `res.destroy()`, which under
   Bun still flushes an empty 200.
 - A request whose jti was already served keeps the first row (the refused
@@ -164,6 +182,8 @@ child's `contextId`, its `parentContextId` (the root) and the agent id.
   are deleted and `jti_overflow_at` is recorded in `sandbox_listener_state`
   until 05b clears it after an acknowledged report that carried
   `jtiOverflow`.
+- `assertion_exp` is a nullable column added by `reconcileColumns` to an
+  existing `sandbox_served_jtis` table; older rows read back null.
 - `dbListUnacknowledgedServedJtis(128)` returns oldest first;
   `acknowledgeServedJtis(jtis)` marks rows acknowledged and never deletes
   them; `dbPruneAcknowledgedServedJtis(before)` deletes only acknowledged
@@ -188,6 +208,11 @@ child's `contextId`, its `parentContextId` (the root) and the agent id.
   goes with it), sets `revoked_at`/`revoke_reason` and blanks `grant_jws`
   (the hash stays so a late assertion still resolves to `grant_revoked`).
   Idempotent; unknown run → null.
+- `createSandboxRunAuthority` returns `root` and `child` without
+  `contextKey`; no key leaves the function.
+- The runs connection runs with `PRAGMA secure_delete = ON`, set once when
+  the module's schema is ensured, so blanking `grant_jws` on revoke and every
+  prune zero the bytes they free.
 - Only the host CLI creates run authority. The listener reads it by context
   id, never by key, and never mints.
 

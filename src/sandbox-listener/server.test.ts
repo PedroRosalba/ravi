@@ -16,16 +16,30 @@ import type { SandboxListenerConfig } from "./config.js";
 import type { SandboxListenerDeps, SandboxListenerHandle, SandboxListenerOutcome } from "./server.js";
 
 // No NATS server in tests: `tasks report` emits task events after the write.
+// Emitted events are captured so the production audit path can be asserted.
+const natsEmits: Array<{ subject: string; payload: Record<string, unknown> }> = [];
 const actualNatsModule = { ...(await import("../nats.js")) };
 mock.module("../nats.js", () => ({
   ...actualNatsModule,
   publish: async () => {},
-  nats: { ...actualNatsModule.nats, emit: async () => {} },
+  nats: {
+    ...actualNatsModule.nats,
+    emit: async (subject: string, payload: Record<string, unknown>) => {
+      natsEmits.push({ subject, payload });
+    },
+  },
 }));
 
 const { dbCreateTask } = await import("../tasks/task-db.js");
 const { createSandboxRunAuthority, revokeSandboxRun } = await import("../sandbox/run-context.js");
-const { dbAppendServedJti, dbGetSandboxRun, dbListUnacknowledgedServedJtis } = await import("../sandbox/runs-db.js");
+const {
+  acknowledgeServedJtis,
+  dbAppendServedJti,
+  dbGetSandboxRun,
+  dbGetServedJtiOverflowAt,
+  dbListUnacknowledgedServedJtis,
+  ensureSandboxSchema,
+} = await import("../sandbox/runs-db.js");
 const {
   createSigner,
   fakeJwksOrigin,
@@ -54,6 +68,7 @@ const TUNNEL_HOSTNAME = `${TEST_INSTALLATION_A}.tun.ravi.bot`;
 const OTHER_RUN_ID = "sbr_zzzzzzzzzzzzzzzzzzzzzzzzzz";
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 const encoder = new TextEncoder();
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let access: TestSigner;
 let otherAccess: TestSigner;
@@ -294,6 +309,7 @@ beforeEach(async () => {
   stateDir = await createIsolatedRaviState("ravi-sandbox-listener-");
   outcomes = [];
   audits = [];
+  natsEmits.length = 0;
   taskId = dbCreateTask({ title: "Sandbox task", instructions: "Do the thing", createdBy: "test" }).task.id;
   otherTaskId = dbCreateTask({ title: "Another task", instructions: "Not yours", createdBy: "test" }).task.id;
   dbCreateAgent({ id: AGENT, cwd: `/tmp/${AGENT}` });
@@ -763,5 +779,225 @@ describe("sandbox listener", () => {
     failAppend = true;
     await expect(send()).rejects.toThrow();
     expect(dbListUnacknowledgedServedJtis()).toHaveLength(2);
+  });
+});
+
+/** Raw bytes on the wire, for header shapes node:http clients would not send. */
+function rawWire(lines: string): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(listener!.port, "127.0.0.1", () => socket.write(lines));
+    let data = "";
+    socket.on("data", (chunk) => {
+      data += chunk.toString("utf8");
+    });
+    socket.on("error", reject);
+    socket.on("close", () => {
+      const status = Number(/^HTTP\/1\.[01] (\d{3})/.exec(data)?.[1] ?? 0);
+      resolve({ status, text: data });
+    });
+  });
+}
+
+// Each of these failed on 71f26661 (the 04b review probes) and passes after the fix round.
+describe("sandbox listener: 04b review regressions", () => {
+  test("a restart never reopens the replay window of an assertion the Gate dated ahead of our clock", async () => {
+    // Gate clock 55 s ahead; listener restarted 30 s later; replay at +130 s,
+    // inside the assertion's exp + 60 s grace but past servedAt + 120 s.
+    let offsetMs = 0;
+    const now = () => Date.now() + offsetMs;
+    const first = await start({}, { now });
+    const requestId = newRequestId();
+    const body = encoder.encode(JSON.stringify({ taskId, message: "progress from the sandbox" }));
+    const t = nowSeconds();
+    const assertion = await signAssertion(
+      { requestId, cmd: "tasks.report", body, grantJws: grant },
+      { iat: t + 55, exp: t + 115 },
+    );
+    const ok = await send({ requestId, bodyBytes: body, assertion });
+    expect(ok.status).toBe(200);
+    expect(dbListUnacknowledgedServedJtis().map((row) => [row.jti, row.assertionExp])).toEqual([[requestId, t + 115]]);
+    await first.stop();
+    listener = null;
+
+    offsetMs = 30_000;
+    await start({}, { now });
+    offsetMs = 130_000;
+    const replay = await send({
+      requestId,
+      bodyBytes: body,
+      assertion,
+      access: await signAccess({ iat: t + 120, exp: t + 400 }),
+    });
+    expect(replay.status).toBe(401);
+    expect(errorCode(replay)).toBe("gate_assertion_invalid");
+    expect(lastOutcome().reason).toBe("jti_replayed");
+    // The command ran once.
+    expect(dbGetSandboxRun(TEST_RUN_ID)!.requestCount).toBe(1);
+    expect(audits).toHaveLength(1);
+  });
+
+  test("a served jti without a recorded exp is preloaded for servedAt + lifetime + skew + grace", async () => {
+    // A row from before `assertion_exp` existed, served 170 s ago: still inside the 180 s bound.
+    const requestId = newRequestId();
+    ensureSandboxSchema();
+    dbAppendServedJti({ jti: requestId, runId: TEST_RUN_ID, status: 200, servedAt: Date.now() - 170_000 });
+    await start({}, { listenerStartedAt: nowSeconds() - 1 });
+    const replay = await send({ requestId });
+    expect(replay.status).toBe(401);
+    expect(lastOutcome().reason).toBe("jti_replayed");
+  });
+
+  test("2048 wrong-Host requests are marked but never queued: no overflow, the admitted jti survives", async () => {
+    await start();
+    const ok = await send();
+    expect(ok.status).toBe(200);
+    for (let i = 0; i < 2048; i += 1) {
+      const refused = await raw({ path: "/", headers: { host: "evil.example", "x-ravi-request-id": newRequestId() } });
+      if (refused.status !== 421 || refused.headers["x-ravi-listener"] !== "1") {
+        throw new Error(`unexpected ${refused.status}`);
+      }
+    }
+    // Routing refusals before any token is read are not queued either.
+    const unrouted = await send({ path: "/api/v1/tasks/comment", cmd: "tasks.comment" });
+    expect(unrouted.status).toBe(404);
+    expect(unrouted.headers["x-ravi-listener"]).toBe("1");
+    const unmarked = await send({ headers: { "x-ravi-gate": undefined } });
+    expect(unmarked.status).toBe(404);
+
+    expect(dbListUnacknowledgedServedJtis(4096).map((row) => row.jti)).toEqual([ok.requestId!]);
+    expect(dbGetServedJtiOverflowAt()).toBeNull();
+    // A refusal after the Host and routing checks is still queued.
+    const refused = await send({ access: null });
+    expect(refused.status).toBe(401);
+    expect(dbListUnacknowledgedServedJtis(4096).map((row) => row.jti)).toEqual([ok.requestId!, refused.requestId!]);
+  }, 120_000);
+
+  test("a timed-out dispatch keeps its concurrency slot until it actually settles", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstSettled = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let auditCalls = 0;
+    await start(
+      {},
+      {
+        limits: { dispatchTimeoutMs: 50, perRunConcurrency: 1 },
+        emitAudit: async () => {
+          auditCalls += 1;
+          // The first dispatch hangs until released; later ones finish at once.
+          if (auditCalls === 1) await firstSettled;
+        },
+      },
+    );
+    const first = await send();
+    expect(first.status).toBe(504);
+    expect(errorCode(first)).toBe("timeout");
+
+    const second = await send();
+    expect(second.status).toBe(429);
+    expect(errorCode(second)).toBe("rate_limited");
+    expect(lastOutcome().reason).toBe("concurrency");
+
+    releaseFirst();
+    await sleep(20);
+    const third = await send();
+    expect(third.status).toBe(200);
+  });
+
+  test("wire variants: a repeated header is its last value; Host and routing refusals are not queued", async () => {
+    await start();
+    const tail = (id: string) =>
+      `X-Ravi-Request-Id: ${id}\r\nX-Ravi-Gate: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`;
+    const line = (target: string) => `POST ${target} HTTP/1.1\r\n`;
+    const cases: Array<[string, (id: string) => string, number]> = [
+      // Bun collapses a repeated Host to its last line.
+      [
+        "dupHostEvilFirst",
+        (id) => `${line("/api/v1/tasks/report")}Host: evil.example\r\nHost: ${TUNNEL_HOSTNAME}\r\n${tail(id)}`,
+        401,
+      ],
+      [
+        "dupHostGoodFirst",
+        (id) => `${line("/api/v1/tasks/report")}Host: ${TUNNEL_HOSTNAME}\r\nHost: evil.example\r\n${tail(id)}`,
+        421,
+      ],
+      ["hostWithPort", (id) => `${line("/api/v1/tasks/report")}Host: ${TUNNEL_HOSTNAME}:443\r\n${tail(id)}`, 421],
+      ["noHost10", (id) => `POST /api/v1/tasks/report HTTP/1.0\r\n${tail(id)}`, 421],
+      [
+        "absoluteForm",
+        (id) => `${line(`http://${TUNNEL_HOSTNAME}/api/v1/tasks/report`)}Host: ${TUNNEL_HOSTNAME}\r\n${tail(id)}`,
+        404,
+      ],
+      ["semicolon", (id) => `${line("/api/v1/tasks/report;x")}Host: ${TUNNEL_HOSTNAME}\r\n${tail(id)}`, 404],
+      ["backslash", (id) => `${line("/api/v1/tasks\\report")}Host: ${TUNNEL_HOSTNAME}\r\n${tail(id)}`, 404],
+      // A repeated routing marker collapses to "1" and passes routing.
+      [
+        "dupMarker",
+        (id) => `${line("/api/v1/tasks/report")}Host: ${TUNNEL_HOSTNAME}\r\nX-Ravi-Gate: 1\r\n${tail(id)}`,
+        401,
+      ],
+    ];
+    const queuedExpected: string[] = [];
+    for (const [name, wire, status] of cases) {
+      const id = newRequestId();
+      const response = await rawWire(wire(id));
+      expect(response.status, name).toBe(status);
+      expect(response.text.toLowerCase(), name).toContain("x-ravi-listener: 1");
+      if (status === 401) queuedExpected.push(id);
+    }
+    // Only the requests that got past Host and routing reached the queue.
+    expect(dbListUnacknowledgedServedJtis().map((row) => row.jti)).toEqual(queuedExpected);
+  });
+
+  test("an empty X-Ravi-Sandbox-Grant header is refused like a present one", async () => {
+    await start();
+    const empty = await send({ headers: { "x-ravi-sandbox-grant": "" } });
+    expect(empty.status).toBe(400);
+    expect(errorCode(empty)).toBe("body_invalid");
+    expect(lastOutcome().reason).toBe("grant_header_present");
+    const present = await send({ headers: { "x-ravi-sandbox-grant": grant } });
+    expect(present.status).toBe(400);
+    expect(errorCode(present)).toBe("body_invalid");
+    expect(audits).toHaveLength(0);
+  });
+
+  test("the production audit path carries runId and requestId", async () => {
+    const suppression = process.env.RAVI_SUPPRESS_AUDIT_EVENTS;
+    delete process.env.RAVI_SUPPRESS_AUDIT_EVENTS;
+    try {
+      await start({}, { emitAudit: undefined });
+      const response = await send();
+      expect(response.status).toBe(200);
+      const audit = natsEmits.find((emitted) => emitted.subject === "ravi._cli.cli.tasks.report");
+      expect(audit?.payload).toMatchObject({
+        runId: TEST_RUN_ID,
+        requestId: response.requestId!,
+        contextId: dbGetSandboxRun(TEST_RUN_ID)!.contextId,
+        outcome: "succeeded",
+      });
+    } finally {
+      if (suppression === undefined) delete process.env.RAVI_SUPPRESS_AUDIT_EVENTS;
+      else process.env.RAVI_SUPPRESS_AUDIT_EVENTS = suppression;
+    }
+  });
+
+  test("acknowledged served jtis past retention are pruned on a timer while the listener runs", async () => {
+    await start({}, { servedJtiPruneIntervalMs: 20 });
+    // Written after start, so only the running timer (not a start-time prune) can remove them.
+    const old = newRequestId();
+    const recent = newRequestId();
+    const pending = newRequestId();
+    dbAppendServedJti({ jti: old, runId: null, status: 200, servedAt: Date.now() - 30 * 60_000 });
+    dbAppendServedJti({ jti: recent, runId: null, status: 200, servedAt: Date.now() - 60_000 });
+    dbAppendServedJti({ jti: pending, runId: null, status: 200, servedAt: Date.now() - 30 * 60_000 });
+    acknowledgeServedJtis([old], Date.now() - 11 * 60_000);
+    acknowledgeServedJtis([recent], Date.now() - 60_000);
+    await sleep(100);
+    const rows = ensureSandboxSchema()
+      .prepare("SELECT jti FROM sandbox_served_jtis ORDER BY served_at")
+      .all() as Array<{
+      jti: string;
+    }>;
+    expect(rows.map((row) => row.jti).sort()).toEqual([pending, recent].sort());
   });
 });

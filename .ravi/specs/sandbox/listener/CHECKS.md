@@ -76,6 +76,29 @@ and the listener binds an ephemeral loopback port.
   before the response is written; a request without a request id appends
   nothing; a failing append MUST close the connection with no response and
   leave the queue unchanged ("persists every served jti").
+- 04b review regressions (`server.test.ts`, "04b review regressions"; each
+  failed on 71f26661):
+  - an assertion dated 55 s ahead, served, the listener restarted 30 s later
+    and the assertion replayed at +130 s MUST be 401 `jti_replayed`, with the
+    command run once; a served row without `assertion_exp` served 170 s ago
+    MUST still be preloaded;
+  - 2048 requests with a foreign `Host` and a request id MUST be 421 with the
+    marker and leave the queue and `jti_overflow_at` untouched; the admitted
+    jti survives; routing 404s are not queued, a later 401 is;
+  - under `perRunConcurrency: 1` a dispatch that outlives the timeout MUST
+    answer 504 and a second request MUST be 429 until the first settles;
+  - on the raw wire a repeated `Host` or `X-Ravi-Gate` MUST be judged by its
+    last value, and the 421/404 wire variants MUST NOT be queued;
+  - an empty `X-Ravi-Sandbox-Grant` MUST be 400 `body_invalid`;
+  - the production audit path (no test sink) MUST emit `runId` and
+    `requestId`;
+  - a running listener MUST prune acknowledged served jtis past retention on
+    its timer and keep pending and recent ones.
+- `createSandboxRunAuthority` MUST return `root` and `child` without
+  `contextKey` and nothing containing `rctx_`; the runs connection MUST run
+  with `secure_delete = 1`, and a revoked grant MUST NOT survive in the
+  checkpointed database file; the served-jti row MUST record `assertionExp`,
+  and an older table MUST gain `assertion_exp` in place (`run-context.test.ts`).
 - `createSandboxRunAuthority` MUST issue a `sandbox-run-root` and a
   `sandbox-run` child whose caps are exactly the authorized grant caps, whose
   `expiresAt` is at most the grant's and whose `agentId` is never empty
@@ -97,4 +120,6 @@ and the listener binds an ephemeral loopback port.
 - `bun run test` MUST include `bun test src/sandbox-listener/` and
   `bun test src/sandbox/` (`package.json`).
 - `src/daemon.ts` MUST start the listener only when
-  `readSandboxListenerConfig()` is enabled and stop it at shutdown.
+  `readSandboxListenerConfig()` is enabled and stop it at shutdown, and MUST
+  call `pruneSandboxRunsAtStart()` at every start, before and independent of
+  the listener.

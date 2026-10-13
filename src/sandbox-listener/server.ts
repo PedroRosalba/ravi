@@ -21,12 +21,17 @@ import { join } from "node:path";
 import { emitCliAuditEvent } from "../cli/audit.js";
 import { getRegistry, type CommandRegistryEntry, type RegistrySnapshot } from "../cli/registry-snapshot.js";
 import type { ContextRecord } from "../router/router-db.js";
-import { getLiveSandboxRun, getLiveSandboxRunContext, pruneSandboxRunsAtStart } from "../sandbox/run-context.js";
+import {
+  getLiveSandboxRun,
+  getLiveSandboxRunContext,
+  SANDBOX_ACKNOWLEDGED_JTI_RETENTION_MS,
+} from "../sandbox/run-context.js";
 import {
   dbAppendServedJti,
   dbBumpSandboxRunRequest,
   dbGetSandboxRun,
   dbListRecentServedJtis,
+  dbPruneAcknowledgedServedJtis,
 } from "../sandbox/runs-db.js";
 import { type AuditEvent, dispatch } from "../sdk/gateway/dispatcher.js";
 import { buildRouteTable, type RouteTable } from "../sdk/gateway/route-table.js";
@@ -69,9 +74,19 @@ export const SANDBOX_LISTENER_DEFAULT_LIMITS = Object.freeze({
 });
 export type SandboxListenerLimits = { -readonly [K in keyof typeof SANDBOX_LISTENER_DEFAULT_LIMITS]: number };
 
-/** Served jtis younger than this are preloaded into the replay cache on start (assertion lifetime plus skew, twice). */
-const REPLAY_PRELOAD_WINDOW_MS =
-  (SANDBOX_GATE_ASSERTION_MAX_LIFETIME_SECONDS + 2 * SANDBOX_GRANT_CLOCK_SKEW_SECONDS) * 1000;
+/**
+ * How long after `servedAt` the verifier could still accept an assertion whose
+ * `exp` was not recorded: the Gate's `iat` may run up to the skew ahead of
+ * our clock, the assertion lives at most its max lifetime past that, and the
+ * verifier accepts it until `exp` + the skew. Rows carrying `assertion_exp`
+ * use the exact `exp` instead; this bound also sizes the preload query.
+ */
+const REPLAY_UNKNOWN_EXP_KEEP_SECONDS =
+  SANDBOX_GATE_ASSERTION_MAX_LIFETIME_SECONDS + 2 * SANDBOX_GRANT_CLOCK_SKEW_SECONDS;
+const REPLAY_PRELOAD_WINDOW_MS = REPLAY_UNKNOWN_EXP_KEEP_SECONDS * 1000;
+
+/** How often a running listener drops acknowledged served jtis past retention. */
+export const SANDBOX_SERVED_JTI_PRUNE_INTERVAL_MS = 10 * 60 * 1000;
 
 export type SandboxListenerErrorCode =
   | "body_invalid"
@@ -116,6 +131,8 @@ export interface SandboxListenerDeps {
   limits?: Partial<SandboxListenerLimits>;
   /** Served-jti append override (tests make it fail). */
   appendServedJti?: typeof dbAppendServedJti;
+  /** Acknowledged served-jti prune period; defaults to `SANDBOX_SERVED_JTI_PRUNE_INTERVAL_MS` (tests shorten it). */
+  servedJtiPruneIntervalMs?: number;
   onOutcome?: (outcome: SandboxListenerOutcome) => void;
 }
 
@@ -185,34 +202,52 @@ export async function startSandboxListener(options: StartSandboxListenerOptions)
     onOutcome: deps.onOutcome,
   };
 
-  // Expired and revoked runs go; unacknowledged served jtis stay and, when
-  // recent, close the replay window a restart would otherwise reopen.
-  const pruned = pruneSandboxRunsAtStart(now());
+  // The daemon prunes expired and revoked runs at every start
+  // (`pruneSandboxRunsAtStart`), listener or not. Recent served jtis close the
+  // replay window a restart would otherwise reopen: each is kept exactly as
+  // long as the verifier could still accept its assertion (`exp` + skew,
+  // which `remember` adds), or, without a recorded `exp`, for the widest
+  // window `servedAt` allows.
   const nowSeconds = Math.floor(now() / 1000);
   for (const served of dbListRecentServedJtis(now(), REPLAY_PRELOAD_WINDOW_MS)) {
-    state.replayCache.remember(
-      served.jti,
-      Math.floor(served.servedAt / 1000) + SANDBOX_GATE_ASSERTION_MAX_LIFETIME_SECONDS,
-      nowSeconds,
-    );
+    const expSeconds =
+      served.assertionExp ??
+      Math.floor(served.servedAt / 1000) + REPLAY_UNKNOWN_EXP_KEEP_SECONDS - SANDBOX_GRANT_CLOCK_SKEW_SECONDS;
+    state.replayCache.remember(served.jti, expSeconds, nowSeconds);
   }
+
+  // Acknowledged jtis have reached Console; keep them only for the retention
+  // window (which covers the replay window) while the listener runs.
+  const pruneTimer = setInterval(() => {
+    try {
+      const pruned = dbPruneAcknowledgedServedJtis(now() - SANDBOX_ACKNOWLEDGED_JTI_RETENTION_MS);
+      if (pruned > 0) log.info("Pruned acknowledged served jtis", { pruned });
+    } catch (error) {
+      log.warn("Acknowledged served-jti prune failed", { error });
+    }
+  }, deps.servedJtiPruneIntervalMs ?? SANDBOX_SERVED_JTI_PRUNE_INTERVAL_MS);
+  pruneTimer.unref?.();
 
   const server = createServer((req, res) => {
     void handleRequest(state, req, res);
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(options.port, host, () => {
-      server.off("error", reject);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options.port, host, () => {
+        server.off("error", reject);
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    clearInterval(pruneTimer);
+    throw error;
+  }
   const port = (server.address() as AddressInfo).port;
   log.info("Sandbox listener ready", {
     host,
     port,
     tunnelHostname: config.tunnelHostname,
-    runsPruned: pruned.runsDeleted,
     replayPreloaded: state.replayCache.size,
     driftLatched: state.driftLatched,
   });
@@ -228,6 +263,7 @@ export async function startSandboxListener(options: StartSandboxListenerOptions)
       log.warn("Sandbox listener drift latch changed", { driftLatched: latched });
     },
     async stop() {
+      clearInterval(pruneTimer);
       await closeServer(server);
       log.info("Sandbox listener stopped", { port });
     },
@@ -254,19 +290,38 @@ interface ListenerState {
   onOutcome: SandboxListenerDeps["onOutcome"];
 }
 
-type Refusal = { status: number; code: SandboxListenerErrorCode; reason?: string };
+type Refusal = {
+  status: number;
+  code: SandboxListenerErrorCode;
+  reason?: string;
+  /** Refused before any token was verified (Host or routing): marked, never queued as served. */
+  unqueued?: boolean;
+};
 type Passthrough = { status: number; body: string; code: null };
 type Decision = Refusal | Passthrough;
 /** `null`: the socket was destroyed mid-request; nothing is answered or queued. */
 type DecisionOrClosed = Decision | null;
 
 const refuse = (status: number, code: SandboxListenerErrorCode, reason?: string): Refusal => ({ status, code, reason });
+const refuseUnqueued = (status: number, code: SandboxListenerErrorCode, reason?: string): Refusal => ({
+  status,
+  code,
+  reason,
+  unqueued: true,
+});
+
+interface RequestTrack {
+  runId: string | null;
+  cmd: string | null;
+  /** The verified Gate assertion's `exp`, recorded with the served jti so a restart preloads it exactly. */
+  assertionExp: number | null;
+}
 
 async function handleRequest(state: ListenerState, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const requestId = singleHeader(req, SANDBOX_REQUEST_ID_HEADER);
   const validRequestId = requestId !== null && SANDBOX_GRANT_JTI_RE.test(requestId) ? requestId : null;
   const cmd = commandIdFromPath(req.url ?? "");
-  const track: { runId: string | null; cmd: string | null } = { runId: null, cmd };
+  const track: RequestTrack = { runId: null, cmd, assertionExp: null };
 
   let decision: DecisionOrClosed;
   try {
@@ -280,15 +335,20 @@ async function handleRequest(state: ListenerState, req: IncomingMessage, res: Se
     return;
   }
 
-  // Every marked response is "served": the jti is queued for Console BEFORE
-  // the response is written. A failed append closes the connection instead.
-  if (validRequestId) {
+  // A marked response is "served": the jti is queued for Console BEFORE the
+  // response is written, and a failed append closes the connection instead.
+  // Refusals at the `Host` check or at routing come before any token is read
+  // and are marked but never queued: a local process or a DNS-rebinding page
+  // could otherwise flood the queue into `jtiOverflow` and push out the jtis
+  // the Gate really admitted.
+  if (validRequestId && !(decision.code !== null && decision.unqueued)) {
     try {
       state.appendServedJti({
         jti: validRequestId,
         runId: track.runId,
         status: decision.status,
         servedAt: state.now(),
+        assertionExp: track.assertionExp,
       });
     } catch (error) {
       log.error("Served-jti append failed; closing without a response", { requestId: validRequestId, error });
@@ -326,24 +386,23 @@ async function handleRequest(state: ListenerState, req: IncomingMessage, res: Se
   state.onOutcome?.(outcome);
 }
 
-async function decide(
-  state: ListenerState,
-  req: IncomingMessage,
-  track: { runId: string | null; cmd: string | null },
-): Promise<DecisionOrClosed> {
+async function decide(state: ListenerState, req: IncomingMessage, track: RequestTrack): Promise<DecisionOrClosed> {
   const { config } = state;
   if (state.driftLatched) return refuse(503, "tunnel_drift");
 
   // 1. Host is this installation's tunnel hostname.
-  if (singleHeader(req, "host")?.toLowerCase() !== config.tunnelHostname) return refuse(421, "host_mismatch");
+  // Steps 1 and 2 run before any token is verified: their refusals are not queued.
+  if (singleHeader(req, "host")?.toLowerCase() !== config.tunnelHostname) return refuseUnqueued(421, "host_mismatch");
 
   // 2. POST on an allowlisted command route, carrying the Gate's routing marker.
   const rawTarget = req.url ?? "";
   const cmdId = commandIdFromPath(rawTarget);
-  if (req.method !== "POST" || !cmdId || !isAllowlistedSandboxCommand(cmdId)) return refuse(404, "not_found");
-  if (singleHeader(req, SANDBOX_GATE_MARKER_HEADER) !== "1") return refuse(404, "not_found", "gate_marker_missing");
+  if (req.method !== "POST" || !cmdId || !isAllowlistedSandboxCommand(cmdId)) return refuseUnqueued(404, "not_found");
+  if (singleHeader(req, SANDBOX_GATE_MARKER_HEADER) !== "1") {
+    return refuseUnqueued(404, "not_found", "gate_marker_missing");
+  }
   const entry = state.table.byPath.get(rawTarget);
-  if (!entry) return refuse(404, "not_found", "route_missing");
+  if (!entry) return refuseUnqueued(404, "not_found", "route_missing");
 
   // 3. Body size.
   // The oversized body is drained before the 413 goes out: answering with
@@ -390,9 +449,10 @@ async function decide(
     return refuse(401, "gate_assertion_invalid", assertion.reason);
   }
   track.runId = assertion.run.runId;
+  track.assertionExp = assertion.claims.exp;
 
-  // 6. The Gate never forwards the grant; the stored one is re-verified.
-  if (singleHeader(req, SANDBOX_GRANT_HEADER) !== null) return refuse(400, "body_invalid", "grant_header_present");
+  // 6. The Gate never forwards the grant; the stored one is re-verified. Present at all, even empty, is refused.
+  if (hasHeader(req, SANDBOX_GRANT_HEADER)) return refuse(400, "body_invalid", "grant_header_present");
   const run = getLiveSandboxRun(assertion.run.runId, state.now());
   if (!run) return refuse(401, "grant_revoked", "run_inactive");
   const grant = await verifySandboxGrant(run.grantJws, {
@@ -450,25 +510,35 @@ async function decide(
   if (!child) return refuse(401, "grant_revoked", "context_inactive");
 
   // 12. Dispatch from the child, concrete resource only, never the operator, never a superadmin command.
+  // The slots belong to the dispatch, not to the response: a 504 answers at
+  // the timeout, but the command keeps running and holds its per-run and
+  // global slots until it actually settles, so a timed-out command cannot be
+  // stacked under a fresh request.
   state.inflightGlobal += 1;
   state.inflightByRun.set(run.runId, inflightRun + 1);
-  try {
-    const response = await withTimeout(
-      dispatchAsRun(state, entry, parsed, child, { runId: run.runId, requestId: requestId ?? "" }),
-      state.limits.dispatchTimeoutMs,
+  const dispatching = Promise.resolve()
+    .then(() => dispatchAsRun(state, entry, parsed, child, { runId: run.runId, requestId: requestId ?? "" }))
+    .finally(() => releaseSlots(state, run.runId));
+  const response = await withTimeout(dispatching, state.limits.dispatchTimeoutMs);
+  // 13. Count the request against the run.
+  dbBumpSandboxRunRequest(run.runId, state.now());
+  if (response === TIMEOUT) {
+    // Nobody awaits the late outcome; log it rather than leave a rejection unhandled.
+    dispatching.catch((error) =>
+      log.warn("Timed-out sandbox dispatch failed", { runId: run.runId, cmd: cmdId, error }),
     );
-    // 13. Count the request against the run.
-    dbBumpSandboxRunRequest(run.runId, state.now());
-    if (response === TIMEOUT) return refuse(504, "timeout");
-    if (response.status === 400) return refuse(400, "argument_invalid", "dispatch_usage_error");
-    if (response.status === 403) return refuse(403, "resource_forbidden", "dispatch_denied");
-    return { status: response.status, body: await response.text(), code: null };
-  } finally {
-    state.inflightGlobal -= 1;
-    const remaining = (state.inflightByRun.get(run.runId) ?? 1) - 1;
-    if (remaining <= 0) state.inflightByRun.delete(run.runId);
-    else state.inflightByRun.set(run.runId, remaining);
+    return refuse(504, "timeout");
   }
+  if (response.status === 400) return refuse(400, "argument_invalid", "dispatch_usage_error");
+  if (response.status === 403) return refuse(403, "resource_forbidden", "dispatch_denied");
+  return { status: response.status, body: await response.text(), code: null };
+}
+
+function releaseSlots(state: ListenerState, runId: string): void {
+  state.inflightGlobal -= 1;
+  const remaining = (state.inflightByRun.get(runId) ?? 1) - 1;
+  if (remaining <= 0) state.inflightByRun.delete(runId);
+  else state.inflightByRun.set(runId, remaining);
 }
 
 function dispatchAsRun(
@@ -488,7 +558,15 @@ function dispatchAsRun(
       await state.emitAudit(event, meta);
       return;
     }
-    await emitCliAuditEvent({ ...event, status: "completed", closeLazyConnection: false });
+    // The production audit carries the run and request ids too, so an audit
+    // line joins the listener log and Console's report on the same keys.
+    await emitCliAuditEvent({
+      ...event,
+      status: "completed",
+      closeLazyConnection: false,
+      runId: meta.runId,
+      requestId: meta.requestId,
+    });
   };
   return dispatch(
     strictEntry,
@@ -516,11 +594,26 @@ function errorBody(code: string, requestId: string | null): string {
   return JSON.stringify({ error: { code, requestId, source: SANDBOX_LISTENER_ERROR_SOURCE } });
 }
 
-/** One header value, or null when absent, empty or sent more than once. */
+/**
+ * One header value, or null when absent or empty. Under Bun's node:http a
+ * header sent more than once collapses to its LAST value (no comma join, no
+ * array), so a duplicate is indistinguishable from a single header here; the
+ * `Host` check therefore sees the last `Host` line (pinned by the wire-variant
+ * test). Every check that matters is a signed token, not a header shape.
+ */
 function singleHeader(req: IncomingMessage, name: string): string | null {
   const value = req.headers[name.toLowerCase()];
   if (typeof value !== "string" || value.length === 0) return null;
   return value;
+}
+
+/** Whether the header was sent at all, empty value included (raw header lines, case-insensitive). */
+function hasHeader(req: IncomingMessage, name: string): boolean {
+  const lower = name.toLowerCase();
+  if (req.headers[lower] !== undefined) return true;
+  const raw = req.rawHeaders ?? [];
+  for (let index = 0; index < raw.length; index += 2) if (raw[index]?.toLowerCase() === lower) return true;
+  return false;
 }
 
 /** How much past the limit is discarded, and for how long, before the socket is simply destroyed. */
