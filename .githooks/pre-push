@@ -10,6 +10,8 @@ fi
 
 echo "Running pre-push checks..."
 
+# Git exports GIT_DIR and friends to hooks (absolute paths in a linked worktree). Tests that
+# create throwaway repos must not inherit them, or their `git commit` lands in this repo.
 run_local_check() {
   env \
     -u RAVI_ACCOUNT_ID \
@@ -33,6 +35,13 @@ run_local_check() {
     -u RAVI_SESSION_KEY \
     -u RAVI_SESSION_NAME \
     -u RAVI_TURN_SCOPED_AUTHORITY \
+    -u GIT_DIR \
+    -u GIT_WORK_TREE \
+    -u GIT_INDEX_FILE \
+    -u GIT_COMMON_DIR \
+    -u GIT_OBJECT_DIRECTORY \
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+    -u GIT_PREFIX \
     "$@"
 }
 
