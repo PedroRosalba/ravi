@@ -172,10 +172,35 @@ function readQuoted(text: string): { value: string; end: number } | null {
   return null;
 }
 
-/** The next space or tab in `text` at or after `from`, or -1. */
-function nextBlank(text: string, from: number): number {
-  const at = text.slice(from).search(/[ \t]/);
-  return at < 0 ? -1 : from + at;
+/**
+ * The blank (space or tab) in an unquoted `diff --git` remainder where both halves name
+ * the same path once one component is stripped (`-p1`), or -1. Linear, because the
+ * sandbox writes the line: the stripped first half starts at a fixed `sA`, the second
+ * at `sB`, after the first slash past the blank (found by a forward-only scan); the first
+ * half grows and the second shrinks as the blank moves right, so at most one blank has
+ * halves of equal length, and only that one is compared.
+ */
+function strippedSplit(rest: string): number {
+  const first = rest.indexOf("/");
+  if (first < 0) return -1;
+  let sA = first + 1;
+  while (rest[sA] === "/") sA += 1;
+  let slash = -1;
+  let sB = rest.length;
+  for (let at = sA; at < rest.length; at++) {
+    if (rest[at] !== " " && rest[at] !== "\t") continue;
+    if (slash <= at) {
+      slash = rest.indexOf("/", at + 1);
+      if (slash < 0) return -1;
+      sB = slash + 1;
+      while (rest[sB] === "/") sB += 1;
+    }
+    const lengthA = at - sA;
+    const lengthB = rest.length - sB;
+    if (lengthA < lengthB) continue;
+    return lengthA === lengthB && rest.startsWith(rest.slice(sA, at), sB) ? at : -1;
+  }
+  return -1;
 }
 
 /** `diff --git A B`: the new path after `-p1`, handling git's C-style quoting and spaces in names. */
@@ -194,11 +219,9 @@ export function parseDiffHeader(line: string): string | null {
     return second ? stripComponent(second.value) : null;
   }
   // Unquoted: git splits (at a space or a tab) where both halves name the same path once their first component is gone.
-  for (let at = rest.search(/[ \t]/); at >= 0; at = nextBlank(rest, at + 1)) {
-    const a = stripComponent(rest.slice(0, at));
-    const b = stripComponent(rest.slice(at + 1));
-    if (rest.slice(0, at).includes("/") && rest.slice(at + 1).includes("/") && a === b && b) return b;
-  }
+  const at = strippedSplit(rest);
+  const name = at >= 0 ? stripComponent(rest.slice(at + 1)) : "";
+  if (name) return name;
   // Different paths (a rename): a guess, used for flags only; `rename to` / `+++` name the file.
   const last = rest.lastIndexOf(" b/");
   return last >= 0 ? rest.slice(last + 3) : null;
@@ -206,9 +229,9 @@ export function parseDiffHeader(line: string): string | null {
 
 /**
  * `diff --git A B`: both names as written (no component stripped), for classification.
- * Unquoted names are split wherever the halves name the same file as written (`-p0`)
- * or after one component (`-p1`), at a space or a tab like git; a rename's two
- * different names are split at the last ` b/`.
+ * Unquoted names are split wherever the halves name the same file as written (`-p0`,
+ * only possible at the middle blank) or after one component (`-p1`), at a space or a
+ * tab like git; a rename's two different names are split at the last ` b/`. Linear.
  */
 export function diffHeaderNames(line: string): string[] {
   const rest = line.slice("diff --git ".length);
@@ -224,13 +247,15 @@ export function diffHeaderNames(line: string): string[] {
     const second = open >= 0 ? readQuoted(rest.slice(open + 1)) : null;
     return second ? [rest.slice(0, open), second.value] : [rest];
   }
-  const names: string[] = [];
-  for (let at = 0; at < rest.length; at++) {
-    if (rest[at] !== " " && rest[at] !== "\t") continue;
-    const a = rest.slice(0, at);
-    const b = rest.slice(at + 1);
-    if (a === b || (a.includes("/") && b.includes("/") && stripComponent(a) === stripComponent(b))) names.push(a, b);
-  }
+  const middle = (rest.length - 1) / 2;
+  const asWritten =
+    Number.isInteger(middle) &&
+    (rest[middle] === " " || rest[middle] === "\t") &&
+    rest.slice(0, middle) === rest.slice(middle + 1)
+      ? middle
+      : -1;
+  const splits = [...new Set([asWritten, strippedSplit(rest)])].filter((at) => at >= 0).sort((x, y) => x - y);
+  const names = splits.flatMap((at) => [rest.slice(0, at), rest.slice(at + 1)]);
   if (names.length === 0) {
     const last = rest.lastIndexOf(" b/");
     if (last >= 0) names.push(rest.slice(0, last), rest.slice(last + 1));
@@ -285,7 +310,9 @@ const WHITESPACE = new Set([" ", "\t", "\r", "\v", "\f"]);
  * and with one component stripped (`-p1`), each whole and cut before whitespace (git
  * ends a name at a CR or tab and strips a timestamp after a space). Cuts are made at
  * the first space, tab and CR and at the last few whitespace runs (a timestamp after
- * a name that itself holds spaces), so a long hostile line stays linear.
+ * a name that itself holds spaces): at the start of each run, and at and just after
+ * its last tab (git strips only the tab before a timestamp, and on whitespace damage
+ * keeps everything up to the last tab), so a long hostile line stays linear.
  */
 export function candidateNames(raw: string): string[] {
   const cuts = new Set<number>([raw.length]);
@@ -294,9 +321,14 @@ export function candidateNames(raw: string): string[] {
     if (at >= 0) cuts.add(at);
   }
   let runs = 0;
+  let lastTab = -1;
   for (let at = raw.length - 1; at >= 0 && runs < 8; at--) {
-    if (WHITESPACE.has(raw[at]) && (at === 0 || !WHITESPACE.has(raw[at - 1]))) {
+    if (!WHITESPACE.has(raw[at])) continue;
+    if (raw[at] === "\t" && lastTab < 0) lastTab = at;
+    if (at === 0 || !WHITESPACE.has(raw[at - 1])) {
       cuts.add(at);
+      if (lastTab >= 0) cuts.add(lastTab).add(lastTab + 1);
+      lastTab = -1;
       runs += 1;
     }
   }
@@ -337,7 +369,7 @@ interface Hunk {
 interface FileRecord {
   /** The `diff --git` line's new name (a guess when its two names differ). */
   headerName: string | null;
-  /** Raw `diff --git`, `---`, `+++`, `rename to`, `copy to` names, nothing stripped or cut. */
+  /** Raw `diff --git`, `---`, `+++`, `rename from`/`to`, `copy to` names, nothing stripped or cut. */
   rawNames: string[];
   minus: string | null;
   plus: string | null;
@@ -485,7 +517,7 @@ export function reviewPatch(patch: string): PatchReview {
 }
 
 function readHeaderLine(file: FileRecord, line: string): void {
-  const value = /^(?:--- |\+\+\+ |rename to |rename new |copy to )/.exec(line);
+  const value = /^(?:--- |\+\+\+ |rename to |rename new |rename from |rename old |copy to )/.exec(line);
   const raw = value ? rawName(line.slice(value[0].length)) : null;
   if (raw !== null) file.rawNames.push(raw);
   if (line.startsWith("--- ")) {
@@ -536,17 +568,29 @@ function reviewFile(file: FileRecord, flag: Flagger, exclude: Excluder): void {
     modes.push({ mode: file.indexMode, fromNewFile: true });
   }
   let symlink = false;
+  let byMode = file.binary;
   for (const { mode, fromNewFile } of modes) {
     if ((mode & S_IFMT) === S_IFLNK) {
       symlink = true;
+      byMode = true;
       flag(path, "symlink", "symbolic link; its target is written outside git's control");
     } else if ((mode & S_IFMT) === S_IFGITLINK) {
+      byMode = true;
       flag(path, "git-config", "submodule (gitlink) entry");
     } else if (mode & 0o100) {
+      byMode = true;
       flag(path, "executable", fromNewFile ? "new executable file" : "made executable");
     }
   }
   if (file.binary) flag(path, "binary", "binary content that cannot be read in the diff");
+  // A mode flag holds whatever name git writes: exclude every raw name whole, as written and after `-p1`.
+  if (byMode) {
+    for (const raw of file.rawNames) {
+      for (const name of [raw, stripComponent(raw)]) {
+        if (name.trim() !== "" && name !== "/dev/null") exclude(name);
+      }
+    }
+  }
 
   if (symlink) {
     for (const hunk of file.hunks) {
@@ -862,7 +906,7 @@ export function formatPatchReview(review: PatchReview, clean: (text: string) => 
     rule(`Patch review: ${review.flags.length} flag(s) in ${review.files} file(s), read before applying`),
     ...rows.map((r) => `│ ${r}`),
     "│",
-    "│ Nothing was applied. Check and exclude what you do not want:",
+    "│ Nothing was applied. Check and exclude what you do not want (run `git apply` from the repository root):",
     ...review.suggestions.map((s) => `│   ${visible(s, clean)}`),
     `└${"─".repeat(width)}`,
   ];

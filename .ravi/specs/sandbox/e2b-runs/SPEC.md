@@ -301,8 +301,8 @@ attacker-authored: `git diff` (or `head`, `wc`, the shell) can print anything.
 - Patch review (`src/sandbox/patch-review.ts`, ADR 0002 #9): `changes.patch`
   is read the way `git apply` reads it and never applied. A file starts at a
   `diff --git` line or, between files, at a `--- `/`+++ ` pair with no
-  `diff --git` (a plain unified diff); `---`, `+++`, `rename to`/`rename new`,
-  `copy to`, mode and `index` lines count only in the extended header; hunk
+  `diff --git` (a plain unified diff); `---`, `+++`, `rename from`/`rename old`,
+  `rename to`/`rename new`, `copy to`, mode and `index` lines count only in the extended header; hunk
   bodies are consumed by the `@@ -a,b +c,d @@` counts, so a `+++ b/x` or
   `diff --git` line inside a hunk is content; lines between files are skipped,
   as git skips them. The path a flag is shown under follows `-p1` (the first
@@ -310,11 +310,17 @@ attacker-authored: `git diff` (or `head`, `wc`, the shell) can print anything.
   whitespace): `0120000` and `120000 ` are symlinks, any mode with `0o100` is
   executable, `160000` is a gitlink. Paths are matched lower-cased and with
   `//` and `.` collapsed. The reviewer classifies every name git could write
-  for a file: each raw `diff --git`, `---`, `+++`, `rename to` and `copy to`
-  name as written (`-p0`) and with one component stripped, whole and cut
-  before a space, tab or CR (timestamps, CR terminators), with the union of
-  their flags shown under the best-guess path, so an ordinary `foo.txt 2010-…`
-  header also classifies `foo.txt` and the `---` name of a rename is flagged.
+  for a file: each raw `diff --git`, `---`, `+++`, `rename from`, `rename to`
+  and `copy to` name as written (`-p0`) and with one component stripped, whole
+  and cut before a space, tab or CR (timestamps, CR terminators) and at and
+  just after the last tab of the last few whitespace runs (git's timestamp and
+  whitespace-damage cuts), with the union of their flags shown under the
+  best-guess path, so an ordinary `foo.txt 2010-…` header also classifies
+  `foo.txt`, and a rename that moves `CLAUDE.md` away is flagged under its new
+  name. Unquoted `diff --git` names are split in linear time (only the middle
+  blank can split `-p0` halves, and at most one blank has `-p1` halves of
+  equal length), so a sandbox-written header of megabytes of blanks cannot
+  stall the host.
   Flags: `agent-config` (`.claude/**`, `.cursor/**`, `.gemini/**`,
   `.codex/**`, `.agents/**`, `.windsurf/**`, `.mcp.json`,
   `.vscode/{settings,tasks,launch}.json`, `AGENTS.md`, `CLAUDE.md`,
@@ -351,7 +357,10 @@ attacker-authored: `git diff` (or `head`, `wc`, the shell) can print anything.
   returned as `review` (`{ files, flags[], suggestions[] }`, null when no
   patch was saved), printed as a boxed warning in text mode, and suggests
   `git apply --check changes.patch` and one `git apply --exclude=<path>` per
-  flagged path and per flagged candidate name (`x`, `a/x`, `b/x`), with `[`, `]`, `*`, `?` and `\` escaped for git's wildmatch
+  flagged path and per flagged candidate name (`x`, `a/x`, `b/x`), plus, when
+  an `executable`, `symlink`, `binary` or gitlink flag fires, every raw name of
+  that file whole as written and after `-p1`, all to be run from the
+  repository root (as the box says), with `[`, `]`, `*`, `?` and `\` escaped for git's wildmatch
   and the word shell-quoted (`$'…'` when it holds control characters). Flags
   never change the exit code.
 

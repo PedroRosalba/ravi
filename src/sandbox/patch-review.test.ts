@@ -332,12 +332,82 @@ describe("reviewPatch", () => {
     expect(reviewPatch("")).toEqual({ files: 0, flags: [], suggestions: [] });
   });
 
+  it("classifies a rename source, so renaming a sensitive file away is flagged (b4)", () => {
+    // Fails on 639581b9: `rename from CLAUDE.md` was not classified when the header named another file.
+    const review = reviewPatch(
+      "diff --git a/foo b/foo\nsimilarity index 100%\nrename from CLAUDE.md\nrename to foo2\n" +
+        "diff --git a/bar b/bar\nrename old .envrc\nrename new bar2\n",
+    );
+    expect(review.flags.map((f) => [f.path, f.kind])).toEqual([
+      ["foo2", "agent-config"],
+      ["bar2", "env-config"],
+    ]);
+    expect(review.suggestions).toContain("git apply --exclude=foo2 changes.patch");
+    expect(review.suggestions).toContain("git apply --exclude=bar2 changes.patch");
+  });
+
+  it("excludes every raw name as written and after -p1 when a mode flag fires (b5)", () => {
+    // Fails on 639581b9: after a slash-less plain header git keeps -p0 and writes evil/run.sh,
+    // but only run.sh and lnk were suggested.
+    const patch =
+      "--- /dev/null\n+++ notes.txt\n@@ -0,0 +1 @@\n+hi\n" +
+      "diff --git evil/run.sh evil/run.sh\nnew file mode 100755\n--- /dev/null\n+++ evil/run.sh\n@@ -0,0 +1 @@\n+#!/bin/sh\n" +
+      "diff --git evil/lnk evil/lnk\nnew file mode 120000\n--- /dev/null\n+++ evil/lnk\n@@ -0,0 +1 @@\n+/etc/passwd\n";
+    const review = reviewPatch(patch);
+    expect(review.flags.map((f) => [f.path, f.kind])).toEqual([
+      ["run.sh", "executable"],
+      ["lnk", "symlink"],
+      ["lnk", "path-escape"],
+    ]);
+    for (const name of ["evil/run.sh", "run.sh", "evil/lnk", "lnk"]) {
+      expect(review.suggestions).toContain(`git apply --exclude=${name} changes.patch`);
+    }
+    expect(review.suggestions).not.toContain("git apply --exclude=notes.txt changes.patch");
+  });
+
+  it("excludes the name git keeps on a damaged timestamp: up to and after the last tab", () => {
+    // Fails on 639581b9: git writes `x/a<TAB>b/CLAUDE.md <TAB>` (whitespace damage cuts after the last tab).
+    const damaged = "--- /dev/null\n+++ b/x/a\tb/CLAUDE.md \t 2010-07-05 19:41:17\n@@ -0,0 +1 @@\n+x\n";
+    expect(reviewPatch(damaged).suggestions).toContain("git apply --exclude=$'x/a\\tb/CLAUDE.md \\t' changes.patch");
+    // A tab before the date: git cuts at the tab and keeps the space.
+    const tabbed = "--- /dev/null\n+++ b/y/a\tb/CLAUDE.md \t2010-07-05\n@@ -0,0 +1 @@\n+x\n";
+    expect(reviewPatch(tabbed).suggestions).toContain("git apply --exclude=$'y/a\\tb/CLAUDE.md ' changes.patch");
+  });
+
+  it("parses a long hostile diff --git header in linear time", () => {
+    // Fails on 639581b9: each blank rescanned the rest of the line (1 MiB of tabs took ~11 s).
+    const MiB = 1 << 20;
+    for (const header of [`diff --git a/x${"\t".repeat(MiB)}b/x\n`, `diff --git a/x ${"y ".repeat(MiB / 2)}\n`]) {
+      const start = performance.now();
+      const review = reviewPatch(header);
+      expect(performance.now() - start).toBeLessThan(150);
+      expect(review.files).toBe(1);
+    }
+  });
+
+  it("reviews a 20 MiB hostile patch in a few seconds", () => {
+    const MiB = 1 << 20;
+    const n = 4 * MiB;
+    const patch = [
+      `diff --git a/x${"\t".repeat(n)}b/x\n`,
+      `diff --git a/x ${"y ".repeat(n / 2)}\n`,
+      `--- /dev/null\n+++ b/${"a ".repeat(n / 2)}\n`,
+      "--- a/x y z w\n+++ b/x y z w 2010-07-05 19:41:17\n".repeat(n / 50),
+      "diff --git a/a b/a a/a b/a\nrename to a b c\n".repeat(n / 40),
+    ].join("");
+    expect(patch.length).toBeGreaterThan(19 * MiB);
+    const start = performance.now();
+    reviewPatch(patch);
+    expect(performance.now() - start).toBeLessThan(5000);
+  }, 30_000);
+
   it("formats a boxed warning with terminal controls stripped from the paths", () => {
     const review = reviewPatch(added(".claude/\x1b[2Jx.md"));
     const lines = formatPatchReview(review, (text) => text.replace(/\x1b\[2J/g, ""));
     expect(lines[0]).toStartWith("┌─ Patch review: 1 flag(s) in 1 file(s)");
     expect(lines.join("\n")).toContain("│ .claude/x.md  [agent-config]");
     expect(lines.join("\n")).toContain("Nothing was applied");
+    expect(lines.join("\n")).toContain("run `git apply` from the repository root");
     expect(lines.join("\n")).not.toContain("\x1b");
     expect(lines.at(-1)).toStartWith("└");
     expect(formatPatchReview(reviewPatch(""), (text) => text)).toEqual([]);
