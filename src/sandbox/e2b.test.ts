@@ -1,17 +1,34 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ALL_TRAFFIC,
+  type BuildE2bTemplateOptions,
+  type CreateSandboxInput,
   DEV_REGISTRY_HOSTS,
+  type E2bTemplateDeps,
+  type E2bTemplateRecord,
   MAX_TASK_TEXT_BYTES,
+  NATS_LINUX_AMD64_SHA256,
+  NATS_VERSION,
+  RAVI_REPO,
+  type RunSandboxTaskOptions,
   SANDBOX_PLACEHOLDER_API_KEY,
+  type SandboxCredentials,
   SandboxConfigError,
+  type SandboxHandle,
+  type SandboxNetwork,
+  TEMPLATE_BUN_LINUX_X64_SHA256,
+  TEMPLATE_BUN_VERSION,
+  type TemplateBuilderLike,
+  buildE2bTemplate,
   buildSandboxNetwork,
   describeCommandError,
   e2bSecretPlaceholder,
   githubCloneAuth,
+  pickLsRemoteSha,
+  readE2bTemplateRecord,
   repoHostOf,
   resolveCloneSource,
   resolveSandboxCredentials,
@@ -19,11 +36,6 @@ import {
   safeFileName,
   sandboxHostId,
   shellQuote,
-  type CreateSandboxInput,
-  type RunSandboxTaskOptions,
-  type SandboxCredentials,
-  type SandboxHandle,
-  type SandboxNetwork,
 } from "./e2b.js";
 
 const dirs: string[] = [];
@@ -170,6 +182,7 @@ function fakeSandbox(options: FakeOptions = {}) {
         credentials,
         outputDir: tempDir(),
         hostId: "host-hash-16chars",
+        templateRecord: null,
         createSandbox: this.create,
         secretStore,
         collectTelemetry: noTelemetry,
@@ -328,7 +341,14 @@ describe("runE2bSandboxTask", () => {
       purpose: "ravi-task",
       ravi_run: expect.stringMatching(/^[0-9a-f]{24}$/),
       ravi_host: "host-hash-16chars",
+      // The reaper tells an orphan from a live run by this pid.
+      ravi_pid: String(process.pid),
     });
+    // No record was passed and none exists in the isolated state dir: the run says so.
+    expect(result.templateSha).toBeNull();
+    expect(readFileSync(join(outputDir, "run.log"), "utf8")).toContain(
+      "Warning: no build record for template ravi-runner",
+    );
     expect(fake.state.created?.network).toMatchObject({
       allowPublicTraffic: false,
       denyOut: [ALL_TRAFFIC],
@@ -920,5 +940,266 @@ describe("sandbox observability", () => {
     expect(safeFileName("../..")).toBe("unnamed");
     expect(safeFileName("..")).toBe("unnamed");
     expect(safeFileName("///")).toBe("unnamed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Template build
+
+type TemplateStep =
+  | { kind: "fromBaseImage" }
+  | { kind: "aptInstall"; packages: string[] }
+  | { kind: "runCmd"; commands: string[]; user?: string }
+  | { kind: "gitClone"; url: string; path: string; options?: { branch?: string; depth?: number } }
+  | { kind: "setStartCmd"; command: string }
+  | { kind: "skipCache" };
+
+const SHA = "0123456789abcdef0123456789abcdef01234567";
+const OTHER_SHA = "fedcba9876543210fedcba9876543210fedcba98";
+
+/** Records every builder call; `build` returns a fixed BuildInfo and records its options. */
+function fakeTemplate() {
+  const steps: TemplateStep[] = [];
+  const state = { built: null as null | { name: string; options: Record<string, unknown> } };
+  const builder: TemplateBuilderLike = {
+    fromBaseImage() {
+      steps.push({ kind: "fromBaseImage" });
+      return builder;
+    },
+    aptInstall(packages) {
+      steps.push({ kind: "aptInstall", packages });
+      return builder;
+    },
+    runCmd(commands, options) {
+      steps.push({ kind: "runCmd", commands: Array.isArray(commands) ? commands : [commands], user: options?.user });
+      return builder;
+    },
+    gitClone(url, path, options) {
+      steps.push({ kind: "gitClone", url, path, options });
+      return builder;
+    },
+    setStartCmd(command) {
+      steps.push({ kind: "setStartCmd", command });
+      return builder;
+    },
+    skipCache() {
+      steps.push({ kind: "skipCache" });
+      return builder;
+    },
+  };
+  const deps: E2bTemplateDeps = {
+    Template: () => builder,
+    async build(_template, name, options) {
+      state.built = { name, options: options as unknown as Record<string, unknown> };
+      return { name, templateId: "tpl_1", buildId: "bld_1" };
+    },
+    waitForPort: (port) => ({ port }),
+  };
+  const commands = () => steps.flatMap((step) => (step.kind === "runCmd" ? step.commands : []));
+  return {
+    steps,
+    state,
+    deps,
+    commands,
+    options(overrides: Partial<BuildE2bTemplateOptions> = {}): BuildE2bTemplateOptions {
+      return {
+        apiKey: "e2b_test",
+        deps,
+        recordPath: join(tempDir(), "sandbox-templates.json"),
+        resolveRef: async (_repo, ref) => (ref === "dev" ? SHA : ref === "v1" ? OTHER_SHA : null),
+        now: () => 1_700_000_000_000,
+        ...overrides,
+      };
+    },
+  };
+}
+
+describe("buildE2bTemplate", () => {
+  it("pins every download: real 64-hex digests, sha256sum -c on each archive, no curl | bash", () => {
+    for (const digest of [TEMPLATE_BUN_LINUX_X64_SHA256, NATS_LINUX_AMD64_SHA256]) {
+      expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    }
+    expect(TEMPLATE_BUN_LINUX_X64_SHA256).not.toBe(NATS_LINUX_AMD64_SHA256);
+    expect(TEMPLATE_BUN_VERSION).toBe("1.3.11");
+    expect(NATS_VERSION).toBe("2.11.8");
+  });
+
+  it("resolves the ref on the host, checks out that SHA in the sandbox and never skips the cache", async () => {
+    const fake = fakeTemplate();
+    const recordPath = join(tempDir(), "sandbox-templates.json");
+    const result = await buildE2bTemplate(fake.options({ ref: "dev", recordPath }));
+
+    expect(fake.steps.map((step) => step.kind)).not.toContain("skipCache");
+    expect(fake.steps[0]).toEqual({ kind: "fromBaseImage" });
+    const clone = fake.steps.find((step) => step.kind === "gitClone");
+    expect(clone).toEqual({
+      kind: "gitClone",
+      url: RAVI_REPO,
+      path: "/home/user/ravi",
+      options: { branch: "dev", depth: 50 },
+    });
+    const checkout = fake.commands().find((cmd) => cmd.includes("git checkout --detach"));
+    expect(checkout).toBe(
+      `cd /home/user/ravi && git fetch --depth 1 origin ${SHA} && git checkout --detach ${SHA} && test "$(git rev-parse HEAD)" = ${SHA}`,
+    );
+    // The checkout comes after the clone and before the build.
+    const kinds = fake.steps.map((step) => (step.kind === "runCmd" ? step.commands.join(";") : step.kind));
+    const cloneAt = kinds.indexOf("gitClone");
+    const checkoutAt = kinds.findIndex((entry) => entry.includes("git checkout --detach"));
+    const buildAt = kinds.findIndex((entry) => entry.includes("bun run build"));
+    expect(cloneAt).toBeGreaterThan(-1);
+    expect(checkoutAt).toBeGreaterThan(cloneAt);
+    expect(buildAt).toBeGreaterThan(checkoutAt);
+
+    // Each archive is saved, verified and only then unpacked; nothing is piped into a shell.
+    const joined = fake.commands().join("\n");
+    expect(joined).not.toMatch(/\|\s*(ba)?sh\b/);
+    expect(joined).not.toContain("bun.sh/install");
+    expect(joined).toContain(
+      `curl -fsSL -o /tmp/bun-linux-x64.zip https://github.com/oven-sh/bun/releases/download/bun-v${TEMPLATE_BUN_VERSION}/bun-linux-x64.zip`,
+    );
+    expect(joined).toContain(`echo "${TEMPLATE_BUN_LINUX_X64_SHA256}  /tmp/bun-linux-x64.zip" | sha256sum -c -`);
+    expect(joined).toContain(
+      `echo "${NATS_LINUX_AMD64_SHA256}  /tmp/nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" | sha256sum -c -`,
+    );
+    for (const archive of ["/tmp/bun-linux-x64.zip", `/tmp/nats-server-v${NATS_VERSION}-linux-amd64.tar.gz`]) {
+      const commands = fake.commands();
+      const checkAt = commands.findIndex((cmd) => cmd.includes(`${archive}" | sha256sum -c -`));
+      const unpackAt = commands.findIndex((cmd) => /^(unzip|tar) /.test(cmd) && cmd.includes(archive));
+      expect(checkAt).toBeGreaterThan(-1);
+      expect(unpackAt).toBeGreaterThan(checkAt);
+    }
+    // Downloads run as root into /usr/local/bin; the Ravi build does not.
+    const rootSteps = fake.steps.filter((step) => step.kind === "runCmd" && step.user === "root");
+    expect(rootSteps).toHaveLength(2);
+    expect(
+      fake.steps.find((step) => step.kind === "runCmd" && step.commands[0]?.includes("bun run build")),
+    ).toMatchObject({ user: undefined });
+
+    // The build is tagged with the short SHA and the record says which commit the template holds.
+    expect(fake.state.built?.name).toBe("ravi-runner");
+    expect(fake.state.built?.options).toMatchObject({
+      apiKey: "e2b_test",
+      cpuCount: 2,
+      memoryMB: 4096,
+      tags: [SHA.slice(0, 12)],
+    });
+    expect(result).toEqual({
+      name: "ravi-runner",
+      templateId: "tpl_1",
+      buildId: "bld_1",
+      ref: "dev",
+      sha: SHA,
+      bunVersion: TEMPLATE_BUN_VERSION,
+      natsVersion: NATS_VERSION,
+      builtAt: "2023-11-14T22:13:20.000Z",
+      durationMs: 0,
+    });
+    expect(statSync(recordPath).mode & 0o777).toBe(0o600);
+    const { durationMs: _durationMs, ...record } = result;
+    expect(readE2bTemplateRecord("ravi-runner", recordPath)).toEqual(record);
+    expect(JSON.parse(readFileSync(recordPath, "utf8"))).toEqual({ version: 1, templates: { "ravi-runner": record } });
+    expect(readE2bTemplateRecord("other", recordPath)).toBeNull();
+  });
+
+  it("accepts a 40-hex --ref as the SHA itself, without resolving it", async () => {
+    const fake = fakeTemplate();
+    let resolved = 0;
+    const result = await buildE2bTemplate(
+      fake.options({
+        name: "ravi-pinned",
+        ref: OTHER_SHA.toUpperCase(),
+        resolveRef: async () => {
+          resolved += 1;
+          return SHA;
+        },
+      }),
+    );
+    expect(resolved).toBe(0);
+    expect(result.sha).toBe(OTHER_SHA);
+    expect(fake.steps.find((step) => step.kind === "gitClone")).toMatchObject({
+      options: { branch: "dev", depth: 50 },
+    });
+    expect(fake.commands().some((cmd) => cmd.includes(`git checkout --detach ${OTHER_SHA}`))).toBe(true);
+    expect(fake.state.built?.options.tags).toEqual([OTHER_SHA.slice(0, 12)]);
+  });
+
+  it("keeps one record per template name and replaces an older build of the same name", async () => {
+    const recordPath = join(tempDir(), "sandbox-templates.json");
+    await buildE2bTemplate(fakeTemplate().options({ ref: "dev", recordPath }));
+    await buildE2bTemplate(fakeTemplate().options({ name: "ravi-v1", ref: "v1", recordPath }));
+    await buildE2bTemplate(fakeTemplate().options({ ref: "v1", recordPath, now: () => 1_700_000_060_000 }));
+    const file = JSON.parse(readFileSync(recordPath, "utf8")) as { templates: Record<string, E2bTemplateRecord> };
+    expect(Object.keys(file.templates).sort()).toEqual(["ravi-runner", "ravi-v1"]);
+    expect(file.templates["ravi-runner"]).toMatchObject({
+      ref: "v1",
+      sha: OTHER_SHA,
+      builtAt: "2023-11-14T22:14:20.000Z",
+    });
+    expect(statSync(recordPath).mode & 0o777).toBe(0o600);
+  });
+
+  it("fails clearly when a non-hex ref does not resolve, before any build", async () => {
+    const fake = fakeTemplate();
+    await expect(buildE2bTemplate(fake.options({ ref: "no-such-branch" }))).rejects.toThrow(
+      /Cannot resolve --ref "no-such-branch" to a commit on https:\/\/github\.com\/filipexyz\/ravi\.git/,
+    );
+    await expect(buildE2bTemplate(fake.options({ ref: "no-such-branch" }))).rejects.toThrow(SandboxConfigError);
+    // A resolver that answers with something that is not a SHA is refused as well.
+    await expect(buildE2bTemplate(fake.options({ ref: "dev", resolveRef: async () => "not-a-sha" }))).rejects.toThrow(
+      SandboxConfigError,
+    );
+    for (const ref of ["", "  ", "-rf", "a b"]) {
+      await expect(buildE2bTemplate(fake.options({ ref }))).rejects.toThrow(/Invalid --ref/);
+    }
+    expect(fake.steps).toEqual([]);
+    expect(fake.state.built).toBeNull();
+  });
+
+  it("picks the branch, then the peeled tag, from git ls-remote output", () => {
+    const output = [
+      `${OTHER_SHA}\trefs/tags/dev`,
+      `${SHA}\trefs/heads/dev`,
+      `${"1".repeat(40)}\trefs/tags/dev^{}`,
+      "garbage line",
+    ].join("\n");
+    expect(pickLsRemoteSha(output, "dev")).toBe(SHA);
+    expect(pickLsRemoteSha(`${OTHER_SHA}\trefs/tags/v1\n${SHA}\trefs/tags/v1^{}\n`, "v1")).toBe(SHA);
+    expect(pickLsRemoteSha(`${OTHER_SHA}\trefs/tags/v1\n`, "v1")).toBe(OTHER_SHA);
+    expect(pickLsRemoteSha(`${SHA}\trefs/heads/dev-2\n`, "dev")).toBeNull();
+    expect(pickLsRemoteSha("", "dev")).toBeNull();
+  });
+});
+
+describe("template record in a run", () => {
+  it("writes the template commit to run.log and the result when a record exists", async () => {
+    const fake = fakeSandbox();
+    const outputDir = tempDir();
+    const record: E2bTemplateRecord = {
+      name: "ravi-runner",
+      templateId: "tpl_1",
+      buildId: "bld_1",
+      ref: "dev",
+      sha: SHA,
+      bunVersion: TEMPLATE_BUN_VERSION,
+      natsVersion: NATS_VERSION,
+      builtAt: "2023-11-14T22:13:20.000Z",
+    };
+    const result = await runE2bSandboxTask(fake.options({ outputDir, templateRecord: record }));
+    expect(result.templateSha).toBe(SHA);
+    const log = readFileSync(join(outputDir, "run.log"), "utf8");
+    expect(log).toContain(`Template ravi-runner: ravi ${SHA} (dev, built 2023-11-14T22:13:20.000Z)`);
+    expect(log).not.toContain("Warning: no build record");
+  });
+
+  it("reads the record file written by the build and ignores a corrupt or SHA-less one", async () => {
+    const recordPath = join(tempDir(), "sandbox-templates.json");
+    await buildE2bTemplate(fakeTemplate().options({ ref: "dev", recordPath }));
+    expect(readE2bTemplateRecord("ravi-runner", recordPath)?.sha).toBe(SHA);
+    writeFileSync(recordPath, "{not json");
+    expect(readE2bTemplateRecord("ravi-runner", recordPath)).toBeNull();
+    writeFileSync(recordPath, JSON.stringify({ version: 1, templates: { "ravi-runner": { sha: "short" } } }));
+    expect(readE2bTemplateRecord("ravi-runner", recordPath)).toBeNull();
+    expect(readE2bTemplateRecord("ravi-runner", join(tempDir(), "missing.json"))).toBeNull();
   });
 });

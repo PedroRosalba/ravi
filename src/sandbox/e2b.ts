@@ -14,10 +14,12 @@
  * keep is set) -> save what E2B recorded about it (logs, events, metrics).
  */
 
+import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readOrCreateInstallationKey } from "../cloud-auth/installation-key.js";
+import { writeUserOnlyFile } from "../cloud-auth/secret-backends.js";
 import { classifyAnthropicSecretShape } from "../runtime/credential-secret-shape.js";
 import { getRaviStateDir } from "../utils/paths.js";
 import {
@@ -76,8 +78,18 @@ export const DEV_REGISTRY_HOSTS = [
   "objects.githubusercontent.com",
 ] as const;
 
-const RAVI_REPO = "https://github.com/filipexyz/ravi.git";
-const NATS_VERSION = "2.11.8";
+export const RAVI_REPO = "https://github.com/filipexyz/ravi.git";
+/**
+ * Toolchain the template installs, pinned by version and SHA-256 so a rebuild cannot
+ * silently pick up a different binary. The digests are copied from the publishers'
+ * checksum files (provenance in .ravi/specs/sandbox/e2b-runs/RUNBOOK.md), never computed
+ * from a download here. Bun matches CI (.github/workflows/ci.yml).
+ */
+export const TEMPLATE_BUN_VERSION = "1.3.11";
+export const TEMPLATE_BUN_LINUX_X64_SHA256 = "8611ba935af886f05a6f38740a15160326c15e5d5d07adef966130b4493607ed";
+export const NATS_VERSION = "2.11.8";
+export const NATS_LINUX_AMD64_SHA256 = "397a6deffb5533e160de0cca322bc3dcaec7fb7282d66a3dfa87a9c183152ad1";
+const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const TEMPLATE_RAVI_DIR = "/home/user/ravi";
 const REPO_DIR = "/home/user/work/repo";
 const DAEMON_LOG = "/home/user/.ravi/daemon.log";
@@ -331,6 +343,35 @@ export function describeCommandError(cmd: string, err: unknown): Error {
 // ---------------------------------------------------------------------------
 // Template
 
+/** The few builder calls the template uses; the real `Template()` chain or a recording fake. */
+export interface TemplateBuilderLike {
+  fromBaseImage(): TemplateBuilderLike;
+  aptInstall(packages: string[]): TemplateBuilderLike;
+  runCmd(commands: string | string[], options?: { user?: string }): TemplateBuilderLike;
+  gitClone(url: string, path: string, options?: { branch?: string; depth?: number }): TemplateBuilderLike;
+  setStartCmd(startCommand: string, readyCommand: unknown): TemplateBuilderLike;
+  skipCache(): TemplateBuilderLike;
+}
+
+export interface TemplateBuildOptions {
+  apiKey: string;
+  cpuCount: number;
+  memoryMB: number;
+  tags: string[];
+  onBuildLogs?: (entry: { message?: unknown }) => void;
+}
+
+/** The slice of the e2b Template API the builder uses; tests pass a fake. */
+export interface E2bTemplateDeps {
+  Template: () => TemplateBuilderLike;
+  build: (
+    template: TemplateBuilderLike,
+    name: string,
+    options: TemplateBuildOptions,
+  ) => Promise<{ name?: string; templateId: string; buildId: string }>;
+  waitForPort: (port: number) => unknown;
+}
+
 export interface BuildE2bTemplateOptions {
   name?: string;
   ref?: string;
@@ -338,62 +379,180 @@ export interface BuildE2bTemplateOptions {
   memoryMB?: number;
   apiKey: string;
   onLog?: (line: string) => void;
+  /** Turns a branch or tag into its commit SHA on the host; defaults to `git ls-remote`. */
+  resolveRef?: (repo: string, ref: string) => Promise<string | null>;
+  deps?: E2bTemplateDeps;
+  /** Where the build record goes; defaults to ~/.ravi/sandbox-templates.json. */
+  recordPath?: string;
+  now?: () => number;
 }
 
-export interface BuildE2bTemplateResult {
+/** What `sandbox run` reads back to say which Ravi a template holds. */
+export interface E2bTemplateRecord {
   name: string;
   templateId: string;
+  buildId: string;
   ref: string;
+  sha: string;
+  bunVersion: string;
+  natsVersion: string;
+  builtAt: string;
+}
+
+export interface BuildE2bTemplateResult extends E2bTemplateRecord {
   durationMs: number;
 }
 
+export function sandboxTemplatesPath(): string {
+  return join(getRaviStateDir(), "sandbox-templates.json");
+}
+
+/** The record of the last build of `name`, or null when none was recorded (or the file is unreadable). */
+export function readE2bTemplateRecord(name: string, path: string = sandboxTemplatesPath()): E2bTemplateRecord | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { templates?: Record<string, E2bTemplateRecord> };
+    const record = parsed.templates?.[name];
+    return record && GIT_SHA_RE.test(record.sha ?? "") ? record : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeE2bTemplateRecord(record: E2bTemplateRecord, path: string): void {
+  let templates: Record<string, E2bTemplateRecord> = {};
+  try {
+    templates = (JSON.parse(readFileSync(path, "utf8")) as { templates?: typeof templates }).templates ?? {};
+  } catch {
+    // First build, or a corrupt file: start over.
+  }
+  templates[record.name] = record;
+  writeUserOnlyFile(path, `${JSON.stringify({ version: 1, templates }, null, 2)}\n`);
+}
+
+/**
+ * The SHA `ref` names in `git ls-remote` output: the branch first, then the peeled tag
+ * (the commit, not the tag object), then the tag itself. Null when nothing matches.
+ */
+export function pickLsRemoteSha(output: string, ref: string): string | null {
+  const lines = output
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter((parts): parts is [string, string] => parts.length === 2 && GIT_SHA_RE.test(parts[0]));
+  for (const wanted of [`refs/heads/${ref}`, `refs/tags/${ref}^{}`, `refs/tags/${ref}`]) {
+    const hit = lines.find(([, name]) => name === wanted);
+    if (hit) return hit[0];
+  }
+  return null;
+}
+
+async function gitLsRemoteSha(repo: string, ref: string): Promise<string | null> {
+  const output = await new Promise<string>((resolve, reject) => {
+    execFile(
+      "git",
+      ["ls-remote", "--heads", "--tags", repo, ref, `${ref}^{}`],
+      { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: 60_000 },
+      (err, stdout) => (err ? reject(err) : resolve(stdout)),
+    );
+  });
+  return pickLsRemoteSha(output, ref);
+}
+
+/**
+ * Build the template from one commit of the public Ravi repository. `ref` (a branch,
+ * a tag or a 40-hex SHA) is resolved on the host, and the SHA is what the sandbox
+ * checks out and verifies; it is also in the command string, so E2B's layer cache
+ * is invalidated exactly when the commit changes and `skipCache` is not needed.
+ * Bun and nats-server come from pinned release archives verified with `sha256sum -c`.
+ */
 export async function buildE2bTemplate(options: BuildE2bTemplateOptions): Promise<BuildE2bTemplateResult> {
-  const { Template, waitForPort } = await import("e2b");
+  const deps = options.deps ?? (await e2bTemplateDeps());
+  const now = options.now ?? Date.now;
   const name = options.name ?? DEFAULT_E2B_TEMPLATE;
-  const ref = options.ref ?? DEFAULT_E2B_TEMPLATE_REF;
+  const ref = (options.ref ?? DEFAULT_E2B_TEMPLATE_REF).trim();
+  if (!ref || /\s/.test(ref) || ref.startsWith("-"))
+    throw new SandboxConfigError(`Invalid --ref: ${JSON.stringify(ref)}`);
+  const refIsSha = GIT_SHA_RE.test(ref.toLowerCase());
+  const sha = refIsSha ? ref.toLowerCase() : await (options.resolveRef ?? gitLsRemoteSha)(RAVI_REPO, ref);
+  if (!sha || !GIT_SHA_RE.test(sha)) {
+    throw new SandboxConfigError(
+      `Cannot resolve --ref ${JSON.stringify(ref)} to a commit on ${RAVI_REPO} (git ls-remote found no branch or tag ` +
+        "with that name). Pass a branch, a tag or a 40-hex commit SHA.",
+    );
+  }
+
   const natsTarball = `nats-server-v${NATS_VERSION}-linux-amd64`;
+  const natsUrl = `https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/${natsTarball}.tar.gz`;
+  const bunUrl = `https://github.com/oven-sh/bun/releases/download/bun-v${TEMPLATE_BUN_VERSION}/bun-linux-x64.zip`;
   // Agent Bash tools call `ravi` by name, so it has to be on the default PATH.
   const raviWrapper = `#!/usr/bin/env bash\nexport RAVI_ALLOW_STALE_BUNDLE=1\nexec ${TEMPLATE_RAVI_DIR}/bin/ravi "$@"\n`;
 
-  const template = Template()
+  const template = deps
+    .Template()
     .fromBaseImage()
     .aptInstall(["git", "curl", "unzip", "ca-certificates", "jq"])
+    // Downloads are saved, checked against the pinned digest and only then unpacked.
     .runCmd(
       [
-        `curl -fsSL https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/${natsTarball}.tar.gz | tar xz -C /tmp`,
-        `mv /tmp/${natsTarball}/nats-server /usr/local/bin/nats-server`,
+        `curl -fsSL -o /tmp/${natsTarball}.tar.gz ${natsUrl}`,
+        `echo "${NATS_LINUX_AMD64_SHA256}  /tmp/${natsTarball}.tar.gz" | sha256sum -c -`,
+        `tar xzf /tmp/${natsTarball}.tar.gz -C /tmp`,
+        `install -m 0755 /tmp/${natsTarball}/nats-server /usr/local/bin/nats-server`,
+        `rm -rf /tmp/${natsTarball} /tmp/${natsTarball}.tar.gz`,
       ],
       { user: "root" },
     )
-    .runCmd("curl -fsSL https://bun.sh/install | bash")
-    // bun must be on PATH before building: Ravi's prebuild script calls it by name.
     .runCmd(
       [
-        "ln -sf /home/user/.bun/bin/bun /usr/local/bin/bun",
+        `curl -fsSL -o /tmp/bun-linux-x64.zip ${bunUrl}`,
+        `echo "${TEMPLATE_BUN_LINUX_X64_SHA256}  /tmp/bun-linux-x64.zip" | sha256sum -c -`,
+        "unzip -q /tmp/bun-linux-x64.zip -d /tmp",
+        // bun must be on PATH before building: Ravi's prebuild script calls it by name.
+        "install -m 0755 /tmp/bun-linux-x64/bun /usr/local/bin/bun",
+        "rm -rf /tmp/bun-linux-x64 /tmp/bun-linux-x64.zip",
         `printf '%s' ${shellQuote(raviWrapper)} > /usr/local/bin/ravi && chmod +x /usr/local/bin/ravi`,
       ],
       { user: "root" },
     )
-    // Without this E2B reuses the cached clone layer and a rebuild never picks up
-    // new commits on the ref. Everything from here on (install, build) reruns.
-    .skipCache()
-    .gitClone(RAVI_REPO, TEMPLATE_RAVI_DIR, { branch: ref, depth: 1 })
+    // The clone layer may be served from E2B's cache; the next step fetches the exact
+    // commit and fails unless HEAD is that SHA, so a stale layer cannot leak through.
+    .gitClone(RAVI_REPO, TEMPLATE_RAVI_DIR, { branch: refIsSha ? "dev" : ref, depth: 50 })
+    .runCmd(
+      `cd ${TEMPLATE_RAVI_DIR} && git fetch --depth 1 origin ${sha} && git checkout --detach ${sha} && ` +
+        `test "$(git rev-parse HEAD)" = ${sha}`,
+    )
     .runCmd(`cd ${TEMPLATE_RAVI_DIR} && bun install --frozen-lockfile && bun run build`)
     .runCmd("mkdir -p /home/user/.ravi/jetstream /home/user/work")
-    .setStartCmd("nats-server -js -sd /home/user/.ravi/jetstream -a 127.0.0.1 -p 4222", waitForPort(4222));
+    .setStartCmd("nats-server -js -sd /home/user/.ravi/jetstream -a 127.0.0.1 -p 4222", deps.waitForPort(4222));
 
-  const startedAt = Date.now();
-  const info = await Template.build(template, name, {
+  const startedAt = now();
+  const info = await deps.build(template, name, {
     apiKey: options.apiKey,
     cpuCount: options.cpu ?? 2,
     memoryMB: options.memoryMB ?? 4096,
+    tags: [sha.slice(0, 12)],
     onBuildLogs: options.onLog ? (entry) => options.onLog?.(String(entry.message ?? entry)) : undefined,
   });
-  return {
+  const record: E2bTemplateRecord = {
     name: info.name ?? name,
     templateId: info.templateId,
+    buildId: info.buildId,
     ref,
-    durationMs: Date.now() - startedAt,
+    sha,
+    bunVersion: TEMPLATE_BUN_VERSION,
+    natsVersion: NATS_VERSION,
+    builtAt: new Date(now()).toISOString(),
+  };
+  writeE2bTemplateRecord(record, options.recordPath ?? sandboxTemplatesPath());
+  return { ...record, durationMs: now() - startedAt };
+}
+
+async function e2bTemplateDeps(): Promise<E2bTemplateDeps> {
+  const { Template, waitForPort } = await import("e2b");
+  type RealTemplate = Parameters<typeof Template.build>[0];
+  return {
+    Template: () => Template() as unknown as TemplateBuilderLike,
+    build: (template, name, options) => Template.build(template as unknown as RealTemplate, name, options),
+    waitForPort,
   };
 }
 
@@ -446,6 +605,10 @@ export interface RunSandboxTaskOptions {
   githubAuth?: SandboxGithubAuthMode;
   /** `ravi_host` metadata; defaults to sandboxHostId(). */
   hostId?: string;
+  /** `ravi_pid` metadata, so `sandbox reap` can tell an orphan from a live run; defaults to process.pid. */
+  pid?: number;
+  /** The build record for the template; defaults to the one in ~/.ravi/sandbox-templates.json (null when none). */
+  templateRecord?: E2bTemplateRecord | null;
   onStep?: (message: string) => void;
   pollIntervalMs?: number;
   createSandbox?: (input: CreateSandboxInput) => Promise<SandboxHandle>;
@@ -476,6 +639,8 @@ export interface RunSandboxTaskResult {
   error: string | null;
   /** What E2B recorded about the sandbox (null when it could not be fetched). */
   e2b: E2bTelemetrySummary | null;
+  /** Ravi commit baked into the template, from its build record; null when the template was never recorded here. */
+  templateSha: string | null;
 }
 
 /** File name for a session or transcript path, safe on any filesystem. */
@@ -551,6 +716,9 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
     }
   };
   const template = options.template ?? DEFAULT_E2B_TEMPLATE;
+  const templateRecord =
+    options.templateRecord === undefined ? readE2bTemplateRecord(template) : options.templateRecord;
+  const templateSha = templateRecord?.sha ?? null;
   const timeoutMs = timeoutMin * 60_000;
   const runId = randomBytes(12).toString("hex");
 
@@ -690,6 +858,14 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
     process.off("SIGTERM", onSignal);
   };
 
+  if (templateRecord) {
+    step(`Template ${template}: ravi ${templateRecord.sha} (${templateRecord.ref}, built ${templateRecord.builtAt})`);
+  } else {
+    step(
+      `Warning: no build record for template ${template} in ${sandboxTemplatesPath()}; ` +
+        "which Ravi commit it holds is unknown. `ravi sandbox template build` records one.",
+    );
+  }
   step(`Creating sandbox from ${template}`);
   let created: SandboxHandle;
   try {
@@ -699,7 +875,12 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
       // Sandbox lifetime; the task poll below stops a little earlier.
       timeoutMs: timeoutMs + 5 * 60_000,
       envs,
-      metadata: { purpose: "ravi-task", ravi_run: runId, ravi_host: options.hostId ?? sandboxHostId() },
+      metadata: {
+        purpose: "ravi-task",
+        ravi_run: runId,
+        ravi_host: options.hostId ?? sandboxHostId(),
+        ravi_pid: String(options.pid ?? process.pid),
+      },
       network: { ...buildSandboxNetwork("clone", networkConfig), allowPublicTraffic: false },
       lifecycle: { onTimeout: "kill", autoResume: false },
     });
@@ -725,6 +906,7 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
       durationMs: now() - startedAt,
       error: `${pendingSignal} received during sandbox creation`,
       e2b: null,
+      templateSha,
     };
   }
   step(`Sandbox ${sandbox.sandboxId} is up`);
@@ -1041,5 +1223,6 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
     durationMs: now() - startedAt,
     error,
     e2b,
+    templateSha,
   };
 }
