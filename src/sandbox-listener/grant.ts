@@ -14,7 +14,6 @@ import {
   runIdFromSubject,
   SANDBOX_GRANT_ALG,
   SANDBOX_GRANT_CLOCK_SKEW_SECONDS,
-  SANDBOX_GRANT_DEFAULT_ISSUER,
   SANDBOX_GRANT_JTI_RE,
   SANDBOX_GRANT_KID_RE,
   SANDBOX_GRANT_MAX_LIFETIME_SECONDS,
@@ -29,6 +28,7 @@ import {
   type KeyResolver,
   mapJoseError,
   nowSeconds,
+  requireInput,
   toGetKey,
 } from "./key-resolver.js";
 
@@ -45,8 +45,12 @@ export type SandboxGrantRejectReason =
   | SandboxGrantPolicyRejection;
 
 export type VerifySandboxGrantOptions = {
-  /** The configured Console origin (`https://console.ravi.bot` or the logged-in origin), never a value from the token. */
-  consoleIssuer?: string;
+  /**
+   * The configured Console origin the host CLI logged in to
+   * (`gateway.consoleUrl`), passed explicitly: there is no default and the
+   * value never comes from the token.
+   */
+  consoleIssuer: string;
   /** The installation this daemon serves. */
   installationId: string;
   /** `JwksCache` for `<consoleIssuer>/api/public/sandbox/jwks`, or any jose key resolver. Never keys from the token. */
@@ -62,6 +66,11 @@ export async function verifySandboxGrant(
   token: unknown,
   options: VerifySandboxGrantOptions,
 ): Promise<SandboxGrantVerifyResult> {
+  // A missing issuer would let a token without `iss` pass the equality below.
+  requireInput(
+    typeof options.consoleIssuer === "string" && options.consoleIssuer.length > 0,
+    "verifySandboxGrant: consoleIssuer",
+  );
   if (typeof token !== "string" || !COMPACT_JWS_RE.test(token)) return reject("token_malformed");
 
   let header: ReturnType<typeof decodeProtectedHeader>;
@@ -76,7 +85,7 @@ export async function verifySandboxGrant(
   if ("crit" in header && header.crit !== undefined) return reject("crit_not_allowed");
   // `jku`, `x5u`, `x5c` and `jwk` are ignored: keys come only from `jwks`.
 
-  const issuer = options.consoleIssuer ?? SANDBOX_GRANT_DEFAULT_ISSUER;
+  const issuer = options.consoleIssuer;
   const { now, seconds } = nowSeconds(options.now);
 
   let payload: Record<string, unknown>;

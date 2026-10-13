@@ -6,15 +6,34 @@
  * OSS `.ravi/specs/sandbox/grant-verify`): keep the last set fetched
  * successfully and refresh it when older than 300 s; on an unknown `kid`
  * refetch at most once per 30 s; time out each fetch after 5 s; refuse bodies
- * over 64 KiB and any redirect; when a refresh fails keep the last good set
- * for at most 3600 s after its fetch, then fail closed. jose's
- * `createRemoteJWKSet` drops its set on a failed reload, so the cached set is
- * fed to `createLocalJWKSet` instead. An optional 0600 file persists
- * `{fetchedAt, keys}` so a daemon restart during a Console outage still
- * verifies inside the stale window; a cold start with nothing fails closed.
+ * over 64 KiB and any redirect; a document with zero keys, or an entry
+ * without a string `kid` and `kty`, is an invalid fetch like any other
+ * (last good set kept, nothing persisted, counted as a failed refresh); when
+ * a refresh fails keep the last good set for at most 3600 s after its fetch,
+ * then fail closed. jose's `createRemoteJWKSet` drops its set on a failed
+ * reload, so the cached set is fed to `createLocalJWKSet` instead. An
+ * optional 0600 file persists `{fetchedAt, keys}` so a daemon restart during
+ * a Console outage still verifies inside the stale window; a cold start with
+ * nothing fails closed. The file is opened `O_NOFOLLOW` and checked through
+ * `fstat` on the open descriptor (regular file, owned by this uid, no group
+ * or world bits, at most 64 KiB) before a byte is read; the temp file of a
+ * write passes the same checks before the rename.
  */
 
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+  closeSync,
+  constants as fsConstants,
+  fchmodSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  type Stats,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import {
   createLocalJWKSet,
@@ -50,7 +69,11 @@ export interface JwksCacheOptions {
   unknownKidCooldownMs?: number;
   timeoutMs?: number;
   maxBytes?: number;
-  /** Path of the 0600 `{fetchedAt, keys}` file. Loaded lazily on first use; a file that is not mode 0600 is ignored. */
+  /**
+   * Path of the 0600 `{fetchedAt, keys}` file. Loaded lazily on first use. A
+   * symlink, a non-regular file, another uid's file, group/world bits or a
+   * size over `maxBytes` is ignored (cold start) without reading it.
+   */
   persistPath?: string;
 }
 
@@ -183,14 +206,29 @@ export class JwksCache {
 
   private persist(jwks: JSONWebKeySet) {
     if (!this.persistPath) return;
+    const tmp = `${this.persistPath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+    let fd: number | null = null;
     try {
       mkdirSync(dirname(this.persistPath), { recursive: true, mode: 0o700 });
-      const tmp = `${this.persistPath}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ fetchedAt: this.fetchedAt, keys: jwks.keys }), { mode: 0o600 });
-      chmodSync(tmp, 0o600);
+      // O_EXCL | O_NOFOLLOW: never write through a path another local user
+      // planted; the random suffix keeps a crashed run's leftover out of the way.
+      fd = openSync(tmp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlag(), 0o600);
+      if (process.platform !== "win32") fchmodSync(fd, 0o600);
+      if (!privateRegularFile(fstatSync(fd), Number.POSITIVE_INFINITY)) throw new Error("temp file is not private.");
+      writeSync(fd, JSON.stringify({ fetchedAt: this.fetchedAt, keys: jwks.keys }), null, "utf8");
+      closeSync(fd);
+      fd = null;
       renameSync(tmp, this.persistPath);
     } catch {
       // Persistence is best effort; the in-memory set is authoritative.
+      if (fd !== null) {
+        try {
+          closeSync(fd);
+        } catch {}
+      }
+      try {
+        unlinkSync(tmp);
+      } catch {}
     }
   }
 
@@ -198,10 +236,13 @@ export class JwksCache {
     if (this.loadedPersisted) return;
     this.loadedPersisted = true;
     if (!this.persistPath || this.keySet) return;
+    let fd: number | null = null;
     try {
-      const stat = statSync(this.persistPath);
-      if (!stat.isFile() || (process.platform !== "win32" && (stat.mode & 0o077) !== 0)) return;
-      const raw = readFileSync(this.persistPath, "utf8");
+      // O_NOFOLLOW fails on a symlink (ELOOP); every check below runs on the
+      // descriptor actually opened, so the path cannot be swapped in between.
+      fd = openSync(this.persistPath, fsConstants.O_RDONLY | noFollowFlag());
+      if (!privateRegularFile(fstatSync(fd), this.maxBytes)) return;
+      const raw = readFileSync(fd, "utf8");
       if (Buffer.byteLength(raw, "utf8") > this.maxBytes) return;
       const parsed = JSON.parse(raw) as { fetchedAt?: unknown; keys?: unknown };
       const fetchedAt = parsed.fetchedAt;
@@ -210,9 +251,25 @@ export class JwksCache {
       this.keySet = createLocalJWKSet(parseKeySet({ keys: parsed.keys }));
       this.fetchedAt = fetchedAt;
     } catch {
-      // Unreadable or malformed cache: behave like a cold start.
+      // Unreadable, swapped or malformed cache: behave like a cold start.
+    } finally {
+      if (fd !== null) closeSync(fd);
     }
   }
+}
+
+function noFollowFlag() {
+  return fsConstants.O_NOFOLLOW ?? 0;
+}
+
+/** Regular file, owned by this process's uid, no group/world bits, within `maxBytes`. */
+function privateRegularFile(stat: Stats, maxBytes: number) {
+  if (!stat.isFile()) return false;
+  if (stat.size > maxBytes) return false;
+  if (process.platform === "win32") return true;
+  if ((stat.mode & 0o077) !== 0) return false;
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) return false;
+  return true;
 }
 
 function parseKeySet(parsed: unknown): JSONWebKeySet {
@@ -220,8 +277,19 @@ function parseKeySet(parsed: unknown): JSONWebKeySet {
   if (!Array.isArray(keys) || !keys.every((key) => key && typeof key === "object" && !Array.isArray(key))) {
     throw new Error("JWKS document has no keys array.");
   }
+  // An empty set is a broken publication, not a rotation to nothing: it must
+  // never replace a good set or be persisted.
+  if (keys.length === 0) throw new Error("JWKS document has no keys.");
+  const records = keys as Record<string, unknown>[];
+  if (
+    !records.every(
+      (key) => typeof key.kid === "string" && key.kid.length > 0 && typeof key.kty === "string" && key.kty.length > 0,
+    )
+  ) {
+    throw new Error("JWKS document has a key without kid or kty.");
+  }
   // Public members only: a cache must never carry private key material.
-  if (keys.some((key) => "d" in (key as object) || "p" in (key as object) || "k" in (key as object))) {
+  if (records.some((key) => "d" in key || "p" in key || "k" in key)) {
     throw new Error("JWKS document carries private key material.");
   }
   return { keys } as JSONWebKeySet;

@@ -2,7 +2,11 @@
 // `sandbox-gateway/listener` SPEC §Request Checks step 4: RS256 only, keys
 // only from `https://<accessTeamDomain>/cdn-cgi/access/certs`, exact issuer,
 // audience containing the stored AUD, `type` `app`, ±60 s skew and
-// `common_name` pinned to the Gate's service token client id when configured.
+// `common_name` pinned to the Gate's service token client id. The listener
+// (04b) MUST configure `serviceTokenClientId` (= `accessClientId`) and MUST
+// refuse to start without it; the parameter stays optional here only so the
+// library can be exercised without a pinned id. `kid` is required on the
+// Access JWT header (note for the Console spec: step 4 does not state it).
 
 import { decodeProtectedHeader, jwtVerify } from "jose";
 import { SANDBOX_GRANT_CLOCK_SKEW_SECONDS } from "./contract.js";
@@ -50,7 +54,11 @@ export type VerifyAccessAssertionOptions = {
   aud: string;
   /** `JwksCache` for `accessCertsUrl(teamDomain)`, or any jose key resolver. */
   jwks: KeyResolver;
-  /** The Gate service token client id; when set, `common_name` must equal it. */
+  /**
+   * The configured `accessClientId` (the Gate service token client id):
+   * `common_name` must equal it. The listener MUST set it (and refuse to
+   * start without it); omitting it is for library tests only.
+   */
   serviceTokenClientId?: string;
   now?: Date;
 };

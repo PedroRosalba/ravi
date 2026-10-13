@@ -102,10 +102,12 @@ export function grantClaims(overrides: Record<string, unknown> = {}): JWTPayload
   };
 }
 
+export const TEST_REQUEST_BODY_TEXT = '{"taskId":"task-1","message":"hi"}';
+// `target` is the raw request target; `body` the exact bytes (never a string).
 export const TEST_REQUEST = {
   method: "POST",
-  path: "/api/v1/tasks/report",
-  body: '{"taskId":"task-1","message":"hi"}',
+  target: "/api/v1/tasks/report",
+  body: encoder.encode(TEST_REQUEST_BODY_TEXT),
 };
 
 export function gateAssertionClaims(grant: string, overrides: Record<string, unknown> = {}): JWTPayload {

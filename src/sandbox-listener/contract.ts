@@ -4,7 +4,12 @@
 // `.ravi/specs/console/sandbox-gateway` (SPEC.md §Identifiers,
 // grants/SPEC.md, gate/SPEC.md, listener/SPEC.md); the OSS mirror is
 // `.ravi/specs/sandbox/grant-verify`. Change the spec before changing this
-// file, and keep every constant byte-equal to the Console source.
+// file. Parity rule: constants byte-equal, functions equivalent. Every
+// `shared-constants:begin` … `shared-constants:end` block below is hashed by
+// `contract-parity.test.ts` against the value recorded in the spec's
+// CHECKS.md; a Console change and that value move in lockstep (RUNBOOK).
+
+// shared-constants:begin
 
 export const SANDBOX_GRANT_ALG = "ES256";
 export const SANDBOX_GRANT_TYP = "ravi-sandbox-grant+jwt";
@@ -49,6 +54,7 @@ export const SANDBOX_TASK_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 export const SANDBOX_AGENT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export const SANDBOX_RESERVED_AGENT_IDS: readonly string[] = ["operator", "root", "system", "*"];
 export const ORG_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+// shared-constants:end
 
 export function installationAudience(installationId: string) {
   return `${INSTALLATION_AUDIENCE_PREFIX}${installationId}`;
@@ -78,11 +84,13 @@ export function isSandboxAgentId(value: unknown): value is string {
 // `<seg1>.….<segN>`. 2 to 8 segments, each `[a-z][a-z0-9-]{0,63}`; a segment
 // starting with `_` (`_stream`, `_meta`), an empty segment or any uppercase
 // letter is never a command id.
+// shared-constants:begin
 export const SANDBOX_COMMAND_SEGMENT_RE = /^[a-z][a-z0-9-]{0,63}$/;
 export const SANDBOX_COMMAND_MIN_SEGMENTS = 2;
 export const SANDBOX_COMMAND_MAX_SEGMENTS = 8;
 export const SANDBOX_COMMAND_ID_RE = /^[a-z][a-z0-9-]{0,63}(?:\.[a-z][a-z0-9-]{0,63}){1,7}$/;
 export const SANDBOX_GRANT_MAX_CMDS = 32;
+// shared-constants:end
 
 export function isSandboxCommandId(value: unknown): value is string {
   return typeof value === "string" && SANDBOX_COMMAND_ID_RE.test(value);
@@ -97,6 +105,7 @@ export function commandIdFromSegments(segments: readonly string[]): string | nul
 // The Gate's static allowlist (milestone 1), equal to Console's
 // `SANDBOX_COMMAND_ALLOWLIST`. Canonical (sorted) order. `tasks.comment` is
 // excluded until the OSS command declares its task as `resourceId`.
+// shared-constants:begin
 export const SANDBOX_COMMAND_ALLOWLIST = Object.freeze([
   "tasks.block",
   "tasks.done",
@@ -104,6 +113,7 @@ export const SANDBOX_COMMAND_ALLOWLIST = Object.freeze([
   "tasks.report",
   "tasks.show",
 ] as const);
+// shared-constants:end
 
 export type SandboxCommandId = (typeof SANDBOX_COMMAND_ALLOWLIST)[number];
 
@@ -113,9 +123,11 @@ export function isAllowlistedSandboxCommand(value: unknown): value is SandboxCom
 
 // Capabilities (milestone 1): exactly `read:task:<taskId>` and/or
 // `mutate:task:<taskId>` where `<taskId>` equals `grant.task`.
+// shared-constants:begin
 export const SANDBOX_CAP_KINDS = ["read", "mutate"] as const;
 export type SandboxCapKind = (typeof SANDBOX_CAP_KINDS)[number];
 export const SANDBOX_CAP_RE = /^(read|mutate):task:([A-Za-z0-9_-]{1,64})$/;
+// shared-constants:end
 
 export function parseSandboxCap(value: unknown): { kind: SandboxCapKind; taskId: string } | null {
   if (typeof value !== "string") return null;

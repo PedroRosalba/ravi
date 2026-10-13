@@ -80,8 +80,13 @@ describe("verifySandboxGrant (daemon)", () => {
       exp: T + 600,
       jti: "7c9e6679-7425-40de-944b-e07fc1f90ae7",
     });
-    // The Console origin defaults to https://console.ravi.bot.
-    expect(await reasonOf(good, { consoleIssuer: undefined })).toBe("ok");
+    // There is no default Console origin: a missing issuer is misuse, not a
+    // verdict (a token without `iss` must never equal an undefined issuer).
+    const { consoleIssuer: _issuer, ...withoutIssuer } = opts();
+    const noIss = await forge(grantClaims({ iss: undefined }));
+    // @ts-expect-error consoleIssuer is required
+    await expect(verifySandboxGrant(noIss, withoutIssuer)).rejects.toBeInstanceOf(TypeError);
+    await expect(verifySandboxGrant(good, opts({ consoleIssuer: "" }))).rejects.toBeInstanceOf(TypeError);
   });
 
   test("ignores unknown claims and a payload-level alg", async () => {

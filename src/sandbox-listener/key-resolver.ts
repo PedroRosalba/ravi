@@ -60,3 +60,13 @@ export function nowSeconds(now: Date | undefined): { now: Date; seconds: number 
   const date = now ?? new Date();
   return { now: date, seconds: Math.floor(date.getTime() / 1000) };
 }
+
+/**
+ * A missing or malformed REQUIRED input is library misuse, not a token
+ * verdict: it throws (the listener fails closed with a 500) instead of
+ * returning a reason that a caller could map to 401. `config_invalid` stays
+ * for stored operator configuration with a bad grammar.
+ */
+export function requireInput(condition: boolean, what: string): asserts condition {
+  if (!condition) throw new TypeError(`${what} is required.`);
+}

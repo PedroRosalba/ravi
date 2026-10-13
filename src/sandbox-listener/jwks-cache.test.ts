@@ -2,7 +2,7 @@
 // refetch per 30 s, 5 s timeout, 64 KiB cap, no redirects, 0600 persistence.
 
 import { beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { errors as joseErrors } from "jose";
@@ -14,6 +14,7 @@ import {
   grantClaims,
   jwksResponse,
   signCompact,
+  TEST_CONSOLE_ISSUER,
   TEST_INSTALLATION_A,
   TEST_NOW,
   type TestSigner,
@@ -49,7 +50,12 @@ describe("JwksCache", () => {
     const origin = fakeJwksOrigin(failingResponder);
     const cache = new JwksCache({ url: URL, fetch: origin.fetch, now });
     await expect(resolve(cache)).rejects.toBeInstanceOf(JwksUnavailableError);
-    const result = await verifySandboxGrant(token, { jwks: cache, installationId: TEST_INSTALLATION_A, now: TEST_NOW });
+    const result = await verifySandboxGrant(token, {
+      jwks: cache,
+      consoleIssuer: TEST_CONSOLE_ISSUER,
+      installationId: TEST_INSTALLATION_A,
+      now: TEST_NOW,
+    });
     expect(result).toEqual({ ok: false, reason: "key_set_unavailable" });
     expect(cache.snapshot()).toEqual({ fetchedAt: null, hasKeys: false });
   });
@@ -89,7 +95,12 @@ describe("JwksCache", () => {
     await expect(resolve(cache)).rejects.toBeInstanceOf(JwksUnavailableError);
     // Verification through the cache maps the outage to key_set_unavailable.
     expect(
-      await verifySandboxGrant(token, { jwks: cache, installationId: TEST_INSTALLATION_A, now: TEST_NOW }),
+      await verifySandboxGrant(token, {
+        jwks: cache,
+        consoleIssuer: TEST_CONSOLE_ISSUER,
+        installationId: TEST_INSTALLATION_A,
+        now: TEST_NOW,
+      }),
     ).toEqual({
       ok: false,
       reason: "key_set_unavailable",
@@ -144,6 +155,54 @@ describe("JwksCache", () => {
     await expect(resolve(cache)).rejects.toBeInstanceOf(JwksUnavailableError);
   });
 
+  test("an empty key set, or an entry without kid or kty, is an invalid fetch", async () => {
+    clock = 1_000_000;
+    for (const document of [
+      { keys: [] },
+      { keys: [{ ...issuer.publicJwk, kid: undefined }] },
+      { keys: [{ ...issuer.publicJwk, kid: "" }] },
+      { keys: [{ ...issuer.publicJwk, kty: undefined }] },
+      { keys: [issuer.publicJwk, {}] },
+    ]) {
+      const cache = new JwksCache({ url: URL, fetch: fakeJwksOrigin(() => jwksResponse(document)).fetch, now });
+      await expect(resolve(cache)).rejects.toBeInstanceOf(JwksUnavailableError);
+      expect(cache.snapshot()).toEqual({ fetchedAt: null, hasKeys: false });
+    }
+  });
+
+  test("a good set followed by {keys: []} keeps serving the good set inside the stale window and never persists the empty set", async () => {
+    clock = 1_000_000;
+    const persistPath = join(mkdtempSync(join(tmpdir(), "ravi-jwks-")), "grant-jwks.json");
+    const origin = fakeJwksOrigin(serving(issuer));
+    const cache = new JwksCache({ url: URL, fetch: origin.fetch, now, persistPath });
+    await resolve(cache);
+    origin.respond(() => jwksResponse({ keys: [] }));
+    tick(301_000); // refresh due: the empty document is a failed refresh
+    await expect(resolve(cache)).resolves.toBeDefined();
+    expect(origin.calls).toHaveLength(2);
+    expect(cache.snapshot()).toEqual({ fetchedAt: 1_000_000, hasKeys: true });
+    expect(
+      await verifySandboxGrant(token, {
+        jwks: cache,
+        consoleIssuer: TEST_CONSOLE_ISSUER,
+        installationId: TEST_INSTALLATION_A,
+        now: TEST_NOW,
+      }),
+    ).toMatchObject({ ok: true });
+    // Counted as a failed refresh: one retry per 30 s, and the stale window still ends at 3600 s.
+    tick(10_000);
+    await resolve(cache);
+    expect(origin.calls).toHaveLength(2);
+    tick(20_000);
+    await resolve(cache);
+    expect(origin.calls).toHaveLength(3);
+    clock = 1_000_000 + 3_601_000;
+    await expect(resolve(cache)).rejects.toBeInstanceOf(JwksUnavailableError);
+    // The file still holds the good set from the first fetch.
+    const persisted = JSON.parse(readFileSync(persistPath, "utf8")) as { fetchedAt: number; keys: unknown[] };
+    expect(persisted).toEqual({ fetchedAt: 1_000_000, keys: issuer.jwks.keys });
+  });
+
   describe("persisted cache", () => {
     const dir = () => mkdtempSync(join(tmpdir(), "ravi-jwks-"));
 
@@ -164,7 +223,12 @@ describe("JwksCache", () => {
       await expect(resolve(restarted)).resolves.toBeDefined();
       expect(down.calls).toHaveLength(1);
       expect(
-        await verifySandboxGrant(token, { jwks: restarted, installationId: TEST_INSTALLATION_A, now: TEST_NOW }),
+        await verifySandboxGrant(token, {
+          jwks: restarted,
+          consoleIssuer: TEST_CONSOLE_ISSUER,
+          installationId: TEST_INSTALLATION_A,
+          now: TEST_NOW,
+        }),
       ).toMatchObject({ ok: true });
     });
 
@@ -202,6 +266,61 @@ describe("JwksCache", () => {
       writeFileSync(
         persistPath,
         JSON.stringify({ fetchedAt: clock - 1000, keys: [{ ...issuer.publicJwk, d: "AAAA" }] }),
+        { mode: 0o600 },
+      );
+      await expect(
+        resolve(new JwksCache({ url: URL, fetch: fakeJwksOrigin(failingResponder).fetch, now, persistPath })),
+      ).rejects.toBeInstanceOf(JwksUnavailableError);
+    });
+
+    test("ignores a symlink to a 0600 file: the path is opened O_NOFOLLOW and checked through fstat", async () => {
+      clock = 10_000_000;
+      const base = dir();
+      const target = join(base, "elsewhere.json");
+      const persistPath = join(base, "grant-jwks.json");
+      writeFileSync(target, JSON.stringify({ fetchedAt: clock - 1000, keys: issuer.jwks.keys }), { mode: 0o600 });
+      symlinkSync(target, persistPath);
+      const cache = new JwksCache({ url: URL, fetch: fakeJwksOrigin(failingResponder).fetch, now, persistPath });
+      expect(cache.snapshot()).toEqual({ fetchedAt: null, hasKeys: false });
+      await expect(resolve(cache)).rejects.toBeInstanceOf(JwksUnavailableError);
+      // A write through the symlinked path is refused too: the target stays untouched and no temp file is left.
+      const origin = fakeJwksOrigin(serving(issuer));
+      await resolve(new JwksCache({ url: URL, fetch: origin.fetch, now, persistPath }));
+      expect(JSON.parse(readFileSync(target, "utf8")).fetchedAt).toBe(clock - 1000);
+      expect(readdirSync(base).sort()).toEqual(["elsewhere.json", "grant-jwks.json"]);
+    });
+
+    test("ignores an oversized file by its size, before reading it", async () => {
+      clock = 10_000_000;
+      const persistPath = join(dir(), "grant-jwks.json");
+      // Valid JSON and a valid key set, padded past 64 KiB: only the size check can refuse it.
+      const padded = { fetchedAt: clock - 1000, keys: issuer.jwks.keys, pad: "x".repeat(JWKS_MAX_BYTES) };
+      writeFileSync(persistPath, JSON.stringify(padded), { mode: 0o600 });
+      expect(statSync(persistPath).size).toBeGreaterThan(JWKS_MAX_BYTES);
+      const cache = new JwksCache({ url: URL, fetch: fakeJwksOrigin(failingResponder).fetch, now, persistPath });
+      expect(cache.snapshot()).toEqual({ fetchedAt: null, hasKeys: false });
+      await expect(resolve(cache)).rejects.toBeInstanceOf(JwksUnavailableError);
+      // A larger limit admits the same file, so it was the size that refused it.
+      const roomy = new JwksCache({
+        url: URL,
+        fetch: fakeJwksOrigin(failingResponder).fetch,
+        now,
+        persistPath,
+        maxBytes: JWKS_MAX_BYTES * 2,
+      });
+      expect(roomy.snapshot()).toEqual({ fetchedAt: clock - 1000, hasKeys: true });
+    });
+
+    test("a persisted document with no keys, or a key without kid, is a cold start", async () => {
+      clock = 10_000_000;
+      const persistPath = join(dir(), "grant-jwks.json");
+      writeFileSync(persistPath, JSON.stringify({ fetchedAt: clock - 1000, keys: [] }), { mode: 0o600 });
+      await expect(
+        resolve(new JwksCache({ url: URL, fetch: fakeJwksOrigin(failingResponder).fetch, now, persistPath })),
+      ).rejects.toBeInstanceOf(JwksUnavailableError);
+      writeFileSync(
+        persistPath,
+        JSON.stringify({ fetchedAt: clock - 1000, keys: [{ ...issuer.publicJwk, kid: undefined }] }),
         { mode: 0o600 },
       );
       await expect(
