@@ -5,7 +5,13 @@ import {
   TEST_ACCESS_TEAM_DOMAIN,
   TEST_INSTALLATION_A,
 } from "../test/sandbox-grant-tokens.js";
-import { normalizeConsoleIssuer, readSandboxListenerConfig, SANDBOX_LISTENER_SETTINGS } from "./config.js";
+import {
+  normalizeConsoleIssuer,
+  readSandboxListenerConfig,
+  SANDBOX_LISTENER_SETTINGS,
+  type SandboxListenerConfig,
+  sameSandboxListenerConfig,
+} from "./config.js";
 
 const settings: Record<string, string> = {
   [SANDBOX_LISTENER_SETTINGS.port]: "47231",
@@ -32,12 +38,17 @@ describe("readSandboxListenerConfig", () => {
         installationId: TEST_INSTALLATION_A,
         consoleIssuer: "https://console.ravi.bot",
         tunnelHostname: `${TEST_INSTALLATION_A}.tun.ravi.bot`,
-        driftLatched: false,
       },
     });
-    expect(read({ [SANDBOX_LISTENER_SETTINGS.driftLatched]: "1" })).toMatchObject({
-      config: { driftLatched: true },
-    });
+    // The drift latch is not a setting (it lives in sandbox_listener_state, see tunnel-state.ts).
+    expect(Object.values(SANDBOX_LISTENER_SETTINGS)).not.toContain("gateway.tunnel.driftLatched");
+  });
+
+  test("sameSandboxListenerConfig compares every field", () => {
+    const a = (read() as { config: SandboxListenerConfig }).config;
+    expect(sameSandboxListenerConfig(a, { ...a })).toBe(true);
+    expect(sameSandboxListenerConfig(a, { ...a, port: a.port + 1 })).toBe(false);
+    expect(sameSandboxListenerConfig(a, { ...a, accessAud: `${a.accessAud}x` })).toBe(false);
   });
 
   test("names every malformed key and never starts without the common_name pin", () => {

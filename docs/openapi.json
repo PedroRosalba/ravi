@@ -12,7 +12,7 @@
   "info": {
     "description": "OpenAPI 3.1 spec auto-generated from the Ravi CLI registry. Each operation maps 1:1 to a `ravi <group> <command>` invocation.",
     "title": "Ravi API",
-    "version": "37a68bce96a2a755"
+    "version": "cfa082b169ced116"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -120058,6 +120058,10 @@
     {
       "description": "Send structured feedback to Ravi Console",
       "name": "feedback"
+    },
+    {
+      "description": "Expose this host's sandbox listener to connected sandbox runs through a Cloudflare tunnel",
+      "name": "gateway"
     },
     {
       "description": "Operate Gmail through a connected Google connector",

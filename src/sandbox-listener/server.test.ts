@@ -56,6 +56,9 @@ const {
   TEST_INSTALLATION_A,
   TEST_RUN_ID,
 } = await import("../test/sandbox-grant-tokens.js");
+const { dbClearTunnelDriftLatch, dbGetListenerArmed, dbLatchTunnelDrift, dbRecordTunnelPoll } = await import(
+  "../sandbox/tunnel-state.js"
+);
 const { installationAudience, runSubject, SANDBOX_GATE_ISSUER, SANDBOX_GATE_JWKS_PATH } = await import("./contract.js");
 const { sha256Base64url } = await import("./gate-assertion.js");
 const { SANDBOX_LISTENER_MAX_BODY_BYTES, startSandboxListener } = await import("./server.js");
@@ -91,7 +94,6 @@ const config = (patch: Partial<SandboxListenerConfig> = {}): SandboxListenerConf
   installationId: TEST_INSTALLATION_A,
   consoleIssuer: CONSOLE_ISSUER,
   tunnelHostname: TUNNEL_HOSTNAME,
-  driftLatched: false,
   ...patch,
 });
 
@@ -112,6 +114,8 @@ async function start(patch: Partial<SandboxListenerConfig> = {}, deps: SandboxLi
       emitAudit: (event, meta) => {
         audits.push({ event, meta });
       },
+      // An open tunnel gate unless a test asks for the real ravi.db reader (`readTunnelGate: undefined`).
+      readTunnelGate: () => ({ latch: null, lastPollAt: (deps.now ?? Date.now)() }),
       ...deps,
     },
   });
@@ -718,25 +722,76 @@ describe("sandbox listener", () => {
     expect(response.headers["x-ravi-listener"]).toBe("1");
   });
 
-  test("the drift latch refuses everything with 503 tunnel_drift until cleared", async () => {
-    const handle = await start();
-    handle.setDriftLatched(true);
-    expect(handle.isDriftLatched()).toBe(true);
+  test("the tunnel gate in ravi.db: closed before the first poll, open after it, closed when stale or latched", async () => {
+    let clock = Date.now();
+    const handle = await start({}, { readTunnelGate: undefined, now: () => clock });
+    expect(dbGetListenerArmed()).toMatchObject({ pid: process.pid, port: handle.port });
+
+    // First-poll gate: no successful `/config` poll yet.
+    const beforePoll = await send();
+    expect(beforePoll.status).toBe(503);
+    expect(errorCode(beforePoll)).toBe("tunnel_drift");
+    expect(lastOutcome().reason).toBe("no_successful_poll");
+    expect(beforePoll.headers["x-ravi-listener"]).toBe("1");
+    // A refused Gate request is still served (marked) and queued for Console.
+    expect(dbListUnacknowledgedServedJtis().map((row) => row.jti)).toContain(beforePoll.requestId!);
+
+    // The gate is cached for at most 1 s: a poll recorded now is seen after the cache expires.
+    dbRecordTunnelPoll(clock);
+    expect((await send()).status).toBe(503);
+    clock += 1_000;
+    dbRecordTunnelPoll(clock);
+    expect((await send()).status).toBe(200);
+
+    // Stale: no successful poll within the last 10 s.
+    clock += 10_001;
+    expect((await send()).status).toBe(503);
+    expect(lastOutcome().reason).toBe("poll_stale");
+    dbRecordTunnelPoll(clock);
+    clock += 1_000;
+    expect((await send()).status).toBe(200);
+
+    // Latched by the runner (another process): refused within a second, polls do not reopen it.
+    dbLatchTunnelDrift("config_version", clock);
+    clock += 1_000;
+    dbRecordTunnelPoll(clock);
     const latched = await send();
     expect(latched.status).toBe(503);
-    expect(errorCode(latched)).toBe("tunnel_drift");
-    handle.setDriftLatched(false);
+    expect(lastOutcome().reason).toBe("drift_latched");
+    expect(handle.tunnelGate()).toEqual({ open: false, reason: "drift_latched" });
+
+    // Only a rotate clears it; then the next successful poll reopens the gate.
+    dbClearTunnelDriftLatch();
+    dbRecordTunnelPoll(clock);
+    clock += 1_000;
     expect((await send()).status).toBe(200);
-    const fromSettings = await startSandboxListener({
-      port: 0,
-      config: config({ driftLatched: true }),
-      deps: { jwksPersistDir: null, fetch: fakeJwksOrigin(jwksByUrl).fetch },
-    });
-    try {
-      expect((await send({ port: fromSettings.port })).status).toBe(503);
-    } finally {
-      await fromSettings.stop();
-    }
+
+    await handle.stop();
+    listener = null;
+    expect(dbGetListenerArmed()).toBeNull();
+  });
+
+  test("a tunnel gate read that throws refuses (fail closed)", async () => {
+    await start(
+      {},
+      {
+        readTunnelGate: () => {
+          throw new Error("database is locked");
+        },
+      },
+    );
+    const response = await send();
+    expect(response.status).toBe(503);
+    expect(errorCode(response)).toBe("tunnel_drift");
+  });
+
+  test("Host and routing refusals come before the tunnel gate and stay unqueued", async () => {
+    await start({}, { readTunnelGate: () => ({ latch: { at: 1, reason: "test" }, lastPollAt: null }) });
+    const wrongHost = await send({ headers: { host: "evil.example" } });
+    expect(wrongHost.status).toBe(421);
+    const wrongRoute = await send({ path: "/api/v1/agents/permissions" });
+    expect(wrongRoute.status).toBe(404);
+    expect(dbListUnacknowledgedServedJtis()).toHaveLength(0);
   });
 
   test("rate limits per run and overall with 429 rate_limited", async () => {

@@ -33,6 +33,14 @@ import {
   dbListRecentServedJtis,
   dbPruneAcknowledgedServedJtis,
 } from "../sandbox/runs-db.js";
+import {
+  dbClearListenerArmed,
+  dbReadTunnelGateState,
+  dbSetListenerArmed,
+  evaluateTunnelGate,
+  type TunnelGateDecision,
+  type TunnelGateState,
+} from "../sandbox/tunnel-state.js";
 import { type AuditEvent, dispatch } from "../sdk/gateway/dispatcher.js";
 import { buildRouteTable, type RouteTable } from "../sdk/gateway/route-table.js";
 import { logger } from "../utils/logger.js";
@@ -85,6 +93,9 @@ const REPLAY_UNKNOWN_EXP_KEEP_SECONDS =
   SANDBOX_GATE_ASSERTION_MAX_LIFETIME_SECONDS + 2 * SANDBOX_GRANT_CLOCK_SKEW_SECONDS;
 const REPLAY_PRELOAD_WINDOW_MS = REPLAY_UNKNOWN_EXP_KEEP_SECONDS * 1000;
 
+/** The tunnel gate (drift latch + last successful poll) is re-read from ravi.db at most this often. */
+export const SANDBOX_LISTENER_TUNNEL_GATE_CACHE_MS = 1_000;
+
 /** How often a running listener drops acknowledged served jtis past retention. */
 export const SANDBOX_SERVED_JTI_PRUNE_INTERVAL_MS = 10 * 60 * 1000;
 
@@ -134,6 +145,14 @@ export interface SandboxListenerDeps {
   /** Acknowledged served-jti prune period; defaults to `SANDBOX_SERVED_JTI_PRUNE_INTERVAL_MS` (tests shorten it). */
   servedJtiPruneIntervalMs?: number;
   onOutcome?: (outcome: SandboxListenerOutcome) => void;
+  /**
+   * Reads the cross-process tunnel gate (drift latch + last successful
+   * `/config` poll) the tunnel runner writes; defaults to ravi.db. Tests
+   * inject an open gate or a scripted one.
+   */
+  readTunnelGate?: () => TunnelGateState;
+  /** Records/clears `listener.armed` so the runner starts cloudflared only after the checks are armed; tests disable it with `null`. */
+  armedRecord?: { set: typeof dbSetListenerArmed; clear: typeof dbClearListenerArmed } | null;
 }
 
 export interface StartSandboxListenerOptions {
@@ -150,9 +169,8 @@ export interface SandboxListenerHandle {
   url: string;
   /** Unix seconds. */
   startedAt: number;
-  isDriftLatched(): boolean;
-  /** 05a/05b: a latched listener refuses every request with 503 `tunnel_drift`. */
-  setDriftLatched(latched: boolean): void;
+  /** The tunnel gate as the next request would see it (cache bypassed). Closed ⇒ every request is 503 `tunnel_drift`. */
+  tunnelGate(): TunnelGateDecision;
   stop(): Promise<void>;
 }
 
@@ -192,7 +210,8 @@ export async function startSandboxListener(options: StartSandboxListenerOptions)
     gateJwks: jwks("gate", `${config.consoleIssuer}${SANDBOX_GATE_JWKS_PATH}`),
     grantJwks: jwks("grant", `${config.consoleIssuer}${SANDBOX_GRANT_JWKS_PATH}`),
     replayCache: new GateAssertionReplayCache(),
-    driftLatched: config.driftLatched,
+    readTunnelGate: deps.readTunnelGate ?? dbReadTunnelGateState,
+    tunnelGateCache: null,
     globalBucket: new TokenBucket(limits.globalPerMinute),
     runBuckets: new Map(),
     inflightGlobal: 0,
@@ -244,12 +263,19 @@ export async function startSandboxListener(options: StartSandboxListenerOptions)
     throw error;
   }
   const port = (server.address() as AddressInfo).port;
+  const armed =
+    deps.armedRecord === undefined ? { set: dbSetListenerArmed, clear: dbClearListenerArmed } : deps.armedRecord;
+  try {
+    armed?.set({ pid: process.pid, port, at: now() });
+  } catch (error) {
+    log.warn("Could not record the listener as armed; the tunnel runner will wait", { error });
+  }
   log.info("Sandbox listener ready", {
     host,
     port,
     tunnelHostname: config.tunnelHostname,
     replayPreloaded: state.replayCache.size,
-    driftLatched: state.driftLatched,
+    tunnelGate: currentTunnelGate(state, true),
   });
 
   return {
@@ -257,13 +283,14 @@ export async function startSandboxListener(options: StartSandboxListenerOptions)
     port,
     url: `http://${host}:${port}`,
     startedAt,
-    isDriftLatched: () => state.driftLatched,
-    setDriftLatched(latched) {
-      state.driftLatched = latched;
-      log.warn("Sandbox listener drift latch changed", { driftLatched: latched });
-    },
+    tunnelGate: () => currentTunnelGate(state, true),
     async stop() {
       clearInterval(pruneTimer);
+      try {
+        armed?.clear(process.pid);
+      } catch (error) {
+        log.warn("Could not clear the listener armed record", { error });
+      }
       await closeServer(server);
       log.info("Sandbox listener stopped", { port });
     },
@@ -280,7 +307,8 @@ interface ListenerState {
   gateJwks: JwksCache;
   grantJwks: JwksCache;
   replayCache: GateAssertionReplayCache;
-  driftLatched: boolean;
+  readTunnelGate: () => TunnelGateState;
+  tunnelGateCache: { at: number; decision: TunnelGateDecision } | null;
   globalBucket: TokenBucket;
   runBuckets: Map<string, TokenBucket>;
   inflightGlobal: number;
@@ -386,9 +414,29 @@ async function handleRequest(state: ListenerState, req: IncomingMessage, res: Se
   state.onOutcome?.(outcome);
 }
 
+/**
+ * The tunnel gate, read from ravi.db at most once per second. A read that
+ * throws closes the gate (fail closed) and is not cached.
+ */
+function currentTunnelGate(state: ListenerState, bypassCache = false): TunnelGateDecision {
+  const now = state.now();
+  const cached = state.tunnelGateCache;
+  if (!bypassCache && cached && now - cached.at >= 0 && now - cached.at < SANDBOX_LISTENER_TUNNEL_GATE_CACHE_MS) {
+    return cached.decision;
+  }
+  try {
+    const decision = evaluateTunnelGate(state.readTunnelGate(), now);
+    state.tunnelGateCache = { at: now, decision };
+    return decision;
+  } catch (error) {
+    log.error("Tunnel gate read failed; refusing", { error });
+    state.tunnelGateCache = null;
+    return { open: false, reason: "drift_latched" };
+  }
+}
+
 async function decide(state: ListenerState, req: IncomingMessage, track: RequestTrack): Promise<DecisionOrClosed> {
   const { config } = state;
-  if (state.driftLatched) return refuse(503, "tunnel_drift");
 
   // 1. Host is this installation's tunnel hostname.
   // Steps 1 and 2 run before any token is verified: their refusals are not queued.
@@ -403,6 +451,14 @@ async function decide(state: ListenerState, req: IncomingMessage, track: Request
   }
   const entry = state.table.byPath.get(rawTarget);
   if (!entry) return refuseUnqueued(404, "not_found", "route_missing");
+
+  // Tunnel gate (Console listener SPEC §Drift Check): nothing is served while
+  // the drift latch is set, before the runner's first successful `/config`
+  // poll, or once its last success is older than 10 s. Checked after the
+  // unqueued Host/routing refusals so a local flood cannot reach the queue
+  // through it; a Gate request refused here IS queued (it was marked).
+  const gate = currentTunnelGate(state);
+  if (!gate.open) return refuse(503, "tunnel_drift", gate.reason);
 
   // 3. Body size.
   // The oversized body is drained before the 413 goes out: answering with

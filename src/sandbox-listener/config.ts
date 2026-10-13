@@ -3,7 +3,9 @@
 // tunnel; the daemon starts the listener only when every one of them is
 // present and well-formed. The listener never derives any of them from a
 // request. Missing `gateway.access.clientId` is a refusal to start, not a
-// degraded mode (Console listener SPEC §Request Checks step 4).
+// degraded mode (Console listener SPEC §Request Checks step 4). The drift
+// latch is not a setting: it lives in `sandbox_listener_state`
+// (`src/sandbox/tunnel-state.ts`), written by the tunnel runner.
 
 import { dbGetSetting } from "../router/router-db.js";
 import { ACCESS_AUD_RE, ACCESS_TEAM_DOMAIN_RE } from "./access-jwt.js";
@@ -17,7 +19,6 @@ export const SANDBOX_LISTENER_SETTINGS = Object.freeze({
   installationId: "gateway.installationId",
   consoleUrl: "gateway.consoleUrl",
   tunnelHostname: "gateway.tunnel.hostname",
-  driftLatched: "gateway.tunnel.driftLatched",
 } as const);
 
 export type SandboxListenerSettingKey = keyof typeof SANDBOX_LISTENER_SETTINGS;
@@ -33,8 +34,6 @@ export interface SandboxListenerConfig {
   consoleIssuer: string;
   /** `<installationId>.<TUNNEL_ZONE>`; the `Host` header must equal it. */
   tunnelHostname: string;
-  /** Persistent drift latch (05a sets it); a latched listener refuses every request with 503. */
-  driftLatched: boolean;
 }
 
 export type ReadSandboxListenerConfigResult =
@@ -97,7 +96,6 @@ export function validateSandboxListenerConfig(
       installationId,
       consoleIssuer: consoleIssuer!,
       tunnelHostname,
-      driftLatched: raw.driftLatched?.trim() === "1",
     },
   };
 }
@@ -116,4 +114,9 @@ export function normalizeConsoleIssuer(value: string | null | undefined): string
   if (url.pathname !== "/" && url.pathname !== "") return null;
   if (trimmed.endsWith("/") && trimmed !== `${url.origin}/`) return null;
   return url.origin;
+}
+
+/** Same settings, same values: the daemon keeps the running listener (ADR 0002 #8 reload). */
+export function sameSandboxListenerConfig(a: SandboxListenerConfig, b: SandboxListenerConfig): boolean {
+  return (Object.keys(a) as Array<keyof SandboxListenerConfig>).every((key) => a[key] === b[key]);
 }

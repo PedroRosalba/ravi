@@ -95,6 +95,7 @@ const AGENT_CONTRACT_DOMAINS = [
   "cron",
   "devin",
   "feedback",
+  "gateway",
   "gmail",
   "heartbeat",
   "hooks",
