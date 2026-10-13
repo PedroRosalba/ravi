@@ -168,4 +168,27 @@ describe("calendar access gate", () => {
     expect(canUseCalendarProvider(DEV, "sync", "google")).toBe(false);
     expect(canUseCalendarProvider(ctxWith([cap("sync", "calendar-provider", "google")]), "sync", "google")).toBe(true);
   });
+
+  it("never gives a context record without an agent local-operator authority", () => {
+    const agentlessContext: ScopeContext = {
+      context: {
+        contextId: "ctx_calendar_agentless",
+        contextKey: "ctx_key_calendar_agentless",
+        kind: "test-agentless",
+        capabilities: [],
+        metadata: {},
+        createdAt: 0,
+      },
+    };
+    expect(canUseCalendar(agentlessContext, "read", calendar())).toBe(false);
+    expect(canUseAnyCalendar(agentlessContext, "read")).toBe(false);
+    expect(canUseCalendarProvider(agentlessContext, "sync", "google")).toBe(false);
+    expect(calendarAccessLevel(agentlessContext, calendar())).toBe("none");
+
+    const granted: ScopeContext = {
+      context: { ...agentlessContext.context!, capabilities: [cap("read", "calendar", "cal-1")] },
+    };
+    expect(canUseCalendar(granted, "read", calendar())).toBe(true);
+    expect(canUseCalendar(granted, "write", calendar())).toBe(false);
+  });
 });

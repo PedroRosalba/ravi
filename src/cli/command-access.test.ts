@@ -679,6 +679,31 @@ describe("CLI command access enforcement", () => {
     expect(result.attempted.every((decision) => decision.providerId === "context-capabilities")).toBe(true);
   });
 
+  it("authorizes a gateway call under an agentless context record from the record only", () => {
+    const agentless = (capabilities: ContextRecord["capabilities"]): ContextRecord => ({
+      ...context(capabilities),
+      contextId: "ctx_command_access_agentless",
+      contextKey: "rctx_command_access_agentless",
+      kind: "test-agentless",
+      agentId: undefined,
+    });
+    const run = (record: ContextRecord) =>
+      runWithContext({ context: record }, () =>
+        enforceCliCommandAccess({ group: "demo", command: "create", access: ACCESS, source: "gateway" }),
+      );
+
+    const denied = run(agentless([]));
+    expect(denied.allowed).toBe(false);
+    expect(denied.errorMessage).toContain("agent:unknown cannot execute demo create");
+    expect(denied.attempted.length).toBeGreaterThan(0);
+    expect(denied.attempted.every((decision) => decision.providerId === "context-capabilities")).toBe(true);
+
+    const allowed = run(agentless([{ permission: "mutate", objectType: "demo.items", objectId: "create" }]));
+    expect(allowed.allowed).toBe(true);
+    expect(allowed.decision?.providerId).toBe("context-capabilities");
+    expect(allowed.decision?.objectId).toBe("create");
+  });
+
   it("includes matching provider-owned permission tags in command denial guidance", () => {
     dbCreateTagDefinition({
       slug: "permission-demo-writer",
