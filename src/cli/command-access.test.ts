@@ -12,7 +12,15 @@ import {
 } from "./command-access.js";
 import type { CommandAccessOptions } from "./decorators.js";
 import { createRuntimeContext, revokeRuntimeContext } from "../runtime/context-registry.js";
-import { enforceScopeCheck, getScopeContext, isLocalOperatorScope, isScopeEnforced } from "../permissions/scope.js";
+import {
+  canAccessResource,
+  canAccessSession,
+  canModifySession,
+  enforceScopeCheck,
+  getScopeContext,
+  isLocalOperatorScope,
+  isScopeEnforced,
+} from "../permissions/scope.js";
 import { emptyCredentialsFile, upsertCredentialsEntry, writeCredentialsFile } from "../runtime/credentials-store.js";
 import {
   cleanupIsolatedRaviState,
@@ -372,6 +380,24 @@ describe("CLI command access enforcement", () => {
       expect(result.errorMessage).toContain("requires a resolved runtime principal");
       expect(result.attempted).toEqual([]);
     }
+  });
+
+  it("never fills a resolved agentless record's identity from RAVI_AGENT_ID or RAVI_SESSION_*", () => {
+    const record = createRuntimeContext({ kind: "test-agentless", capabilities: [], ttlMs: 0 });
+    process.env.RAVI_CONTEXT_KEY = record.contextKey;
+    process.env.RAVI_AGENT_ID = "main";
+    process.env.RAVI_SESSION_KEY = "agent:main:victim";
+    process.env.RAVI_SESSION_NAME = "victim";
+
+    const scope = getScopeContext();
+    expect(scope.context?.contextId).toBe(record.contextId);
+    expect(scope.agentId).toBeUndefined();
+    expect(scope.sessionName).toBeUndefined();
+    expect(isLocalOperatorScope(scope)).toBe(false);
+    expect(canAccessResource(scope, "main", "read")).toBe(false);
+    expect(canAccessResource(scope, "main", "mutate")).toBe(false);
+    expect(canAccessSession(scope, "victim")).toBe(false);
+    expect(canModifySession(scope, "victim")).toBe(false);
   });
 
   describe("a set but unresolvable RAVI_CONTEXT_KEY with an admin default credential", () => {

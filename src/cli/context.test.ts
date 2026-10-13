@@ -172,6 +172,20 @@ describe("cli context resolution", () => {
     expect(getContext()).toEqual({ unresolvedContextKey: true });
   });
 
+  it("takes identity only from a resolved record, never from env", () => {
+    process.env.RAVI_CONTEXT_KEY = "rctx_agentless";
+    process.env.RAVI_AGENT_ID = "main";
+    process.env.RAVI_SESSION_KEY = "agent:main:victim";
+    process.env.RAVI_SESSION_NAME = "victim";
+    resolvedContext = { contextId: "ctx_agentless", kind: "test-agentless", capabilities: [], createdAt: 0 };
+
+    const ctx = getContext();
+    expect(ctx?.contextId).toBe("ctx_agentless");
+    expect(ctx?.agentId).toBeUndefined();
+    expect(ctx?.sessionKey).toBeUndefined();
+    expect(ctx?.sessionName).toBeUndefined();
+  });
+
   it("treats a blank RAVI_CONTEXT_KEY as unset", () => {
     process.env.RAVI_CONTEXT_KEY = "   ";
     process.env.RAVI_AGENT_ID = "main";

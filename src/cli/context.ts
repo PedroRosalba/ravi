@@ -106,12 +106,15 @@ export function getContext(options: { localOnly?: boolean } = {}): ToolContext |
     return { unresolvedContextKey: true };
   }
   if (resolvedContext) {
+    // A resolved record is the only source of identity. Env vars must not fill
+    // a missing agent or session: RAVI_AGENT_ID would grant own-resource access
+    // and RAVI_SESSION_NAME own-session access to a record that has neither.
     const ctx: ToolContext = {
       contextId: resolvedContext.contextId,
       context: resolvedContext,
-      sessionKey: resolvedContext.sessionKey ?? env.RAVI_SESSION_KEY,
-      sessionName: resolvedContext.sessionName ?? env.RAVI_SESSION_NAME,
-      agentId: resolvedContext.agentId ?? env.RAVI_AGENT_ID,
+      sessionKey: resolvedContext.sessionKey,
+      sessionName: resolvedContext.sessionName,
+      agentId: resolvedContext.agentId,
     };
 
     const source = resolvedContext.source;
