@@ -3,7 +3,7 @@
 ## Suites
 
 ```bash
-bun test src/sandbox-listener/ src/sandbox/ src/sdk/gateway/dispatcher.test.ts
+bun test src/sandbox-listener/ src/sandbox/ src/sdk/gateway/dispatcher.test.ts src/gateway-expose/
 bun run typecheck
 bunx biome check src/sandbox-listener/ src/sandbox/ src/daemon.ts
 ```
@@ -67,9 +67,27 @@ and the listener binds an ephemeral loopback port.
   `access_invalid`, no audit ("never reads Authorization").
 - A JWKS cold start with the origin down MUST be 503 `jwks_unavailable`,
   marked ("a JWKS cold start").
-- `setDriftLatched(true)` MUST make every request 503 `tunnel_drift` until
-  `setDriftLatched(false)`; a config with `driftLatched: true` MUST start
-  latched ("the drift latch").
+- Tunnel gate from ravi.db (`server.test.ts`, "the tunnel gate in ravi.db"):
+  before any recorded poll every Gate-shaped request MUST be 503
+  `tunnel_drift` (reason `no_successful_poll`), marked and queued; a poll
+  recorded by another writer MUST open it within 1 s (cache) and not before;
+  a last poll older than 10 s MUST close it (`poll_stale`); a latch MUST close
+  it (`drift_latched`) even with a fresh poll, until `dbClearTunnelDriftLatch`;
+  the listener MUST record `listener.armed` with its port on start and clear
+  it on stop.
+- A tunnel-gate read that throws MUST refuse 503 `tunnel_drift` ("fail
+  closed"); a wrong `Host` (421) or route (404) MUST still be refused first
+  and stay unqueued while the gate is closed ("come before the tunnel gate").
+- The drift latch MUST NOT be a setting (`config.test.ts`); a latch row that
+  does not parse MUST still latch, and the first latch cause MUST be kept
+  (`src/sandbox/tunnel-state.test.ts`).
+- Settings reload (`supervisor.test.ts`): the supervisor MUST start the
+  listener when settings become complete, keep it when nothing changed,
+  restart it when any value changed, stop it when settings are removed or
+  invalid, retry after a failed start, and reconcile on every
+  `ravi.config.changed`; with real settings in ravi.db a
+  `gateway.listener.port` change MUST move the listener to the new port with
+  the old one closed and no daemon restart.
 - The third request in a minute under `perRunPerMinute: 2` MUST be 429
   `rate_limited` with `Retry-After: 1` ("rate limits").
 - The served jti MUST be appended for an accepted and for a refused request,

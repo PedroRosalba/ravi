@@ -29,8 +29,9 @@ Assertion and §Upstream Classification, `tunnels/SPEC.md` §Host Report.
 
 - The daemon starts the listener when `gateway.listener.port` and the other
   `gateway.*` settings are present; `ravi gateway expose` (05b) writes them.
-  A log line `Sandbox listener not started: invalid gateway settings` names
-  the malformed keys; fix the setting and restart the daemon.
+  A log line `Sandbox listener settings are invalid` names the malformed
+  keys; fix the setting: the daemon picks it up on `ravi.config.changed` (or
+  within 30 s) and starts, restarts or stops the listener without a restart.
 - `Sandbox runs pruned at start` (every daemon start, listener or not) logs
   how many stale runs and acknowledged jtis went. `Sandbox listener ready`
   logs the port, the tunnel hostname and how many served jtis were preloaded
@@ -45,7 +46,7 @@ Every refusal logs `requestId`, `runId` (once known), `cmd`, `status`,
 
 | Code | Meaning | First step |
 | --- | --- | --- |
-| 503 `tunnel_drift` | The drift latch is set | `ravi gateway status`; only a successful rotate clears it (05a) |
+| 503 `tunnel_drift` | Reason `drift_latched`: the runner latched drift. `no_successful_poll`: the runner has not polled yet (or stopped). `poll_stale`: no successful poll for 10 s (runner dead or hung) | `pm2 logs ravi-gateway`; `sandbox/tunnel-runner` RUNBOOK. Only a successful rotate clears a latch (05b) |
 | 421 `host_mismatch` | `Host` differs from `gateway.tunnel.hostname` | Compare the cloudflared ingress hostname with the setting |
 | 404 `not_found` | Not a `POST` on an allowlisted route, or no `X-Ravi-Gate: 1` | Expected for probes; a legitimate Gate request means an allowlist drift between Console and `contract.ts` |
 | 401 `access_invalid` (`common_name_mismatch`) | Access service token differs from the pin | Console rotated the Gate's token; refresh `gateway.access.clientId` |

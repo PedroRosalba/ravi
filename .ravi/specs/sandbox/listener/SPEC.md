@@ -14,6 +14,7 @@ tags:
 applies_to:
   - src/sandbox-listener/server.ts
   - src/sandbox-listener/config.ts
+  - src/sandbox-listener/supervisor.ts
   - src/sandbox/runs-db.ts
   - src/sandbox/run-context.ts
 owners:
@@ -40,10 +41,11 @@ disagree, Console's spec wins and this one is corrected. The stack plan
 (`.agent/context/plans`, §04b) predates the Console spec; where the two
 differ this spec follows Console (see WHY §Plan items the spec superseded).
 
-The verifiers it composes are specified in `sandbox/grant-verify`. The host
-CLI slice that creates run authority (06b), the cloudflared runner and drift
-poller (05a) and the host report (05b) are later slices; this spec states
-what they read and write here.
+The verifiers it composes are specified in `sandbox/grant-verify`; the
+cloudflared runner and drift poller that write the tunnel gate it reads are
+specified in `sandbox/tunnel-runner` (05a). The host CLI slice that creates
+run authority (06b) and the host report (05b) are later slices; this spec
+states what they read and write here.
 
 ## Vocabulary
 
@@ -57,9 +59,12 @@ what they read and write here.
 - Served jti: the `X-Ravi-Request-Id` of a request the listener answered with
   `x-ravi-listener: 1`, any status. Queued in `sandbox_served_jtis` until
   Console acknowledges the host report that carried it.
-- Drift latch: the persistent flag (`gateway.tunnel.driftLatched`, set by
-  the drift poller) that makes the listener refuse every request with 503
-  `tunnel_drift`; `setDriftLatched` flips it in process.
+- Tunnel gate: the drift latch and the last successful `/config` poll, both
+  in `sandbox_listener_state` (`tunnel.drift_latch`, `tunnel.last_poll_at`;
+  `src/sandbox/tunnel-state.ts`), written by the tunnel runner process and
+  read by the listener. Open only when no latch is set and the last
+  successful poll is at most 10 s old. Not a setting: a `gateway.*` write
+  restarts the listener and `ravi settings set` must not clear a latch.
 - Configured Console issuer: `gateway.consoleUrl`, an `https` origin; the
   grant and gate JWKS are fetched from it. Never a value from a request.
 
@@ -86,14 +91,20 @@ what they read and write here.
   `servedAt` + 180 s (60 s assertion lifetime + 60 s skew + 60 s post-`exp`
   grace). A restart therefore never reopens the window, even for an
   assertion the Gate dated up to 60 s ahead of our clock.
-- Temporary (04b): the drift latch and the listener's start/stop are read at
-  boot only. 05b must add the `ravi.config.changed` hook (ADR 0002 #8) and a
-  cross-process latch before cloudflared is ever started.
+- On start it records `listener.armed` `{pid, port, at}` in
+  `sandbox_listener_state` and removes it on stop (only its own); the tunnel
+  runner starts cloudflared only once that record names the configured port
+  and a live pid.
 - It owns exactly one `GateAssertionReplayCache` and one `JwksCache` per key
   set (Access certs, gate JWKS, grant JWKS), persisted 0600 under
   `<RAVI_STATE_DIR>/sandbox-listener/`.
-- The daemon starts it in process after the webhook server when configured
-  and stops it at shutdown; it spawns no child process.
+- The daemon runs it in process through `SandboxListenerSupervisor` and stops
+  it at shutdown; it spawns no child process. The supervisor reconciles at
+  boot, on every `ravi.config.changed` and every 30 s: it starts the
+  listener when the `gateway.*` settings became complete, stops it when they
+  were removed or became invalid, restarts it when any value changed, and
+  leaves it alone otherwise (ADR 0002 #8: no daemon restart). A failed start
+  leaves it stopped and the next reconcile retries. Reconciles are serialised.
 
 ### Request checks
 
@@ -103,7 +114,6 @@ In order; the first failure ends the request. Every response carries
 other field, no token and no claim value. Under Bun's node:http a header sent
 more than once collapses to its last value; the checks below see that value.
 
-0. Drift latched → 503 `tunnel_drift`.
 1. `Host` equals `gateway.tunnel.hostname` (lowercased, no port) → else
    421 `host_mismatch`.
 2. Method `POST`, raw target resolving to a command id under the
@@ -112,6 +122,12 @@ more than once collapses to its last value; the checks below see that value.
    the static allowlist `tasks.block|done|fail|report|show`, `X-Ravi-Gate: 1`
    present, and the route in the registry route table (`cliOnly` excluded)
    → else 404 `not_found`. There is no health route; any `GET` is 404.
+   Then the tunnel gate (Console listener SPEC §Drift Check), read from
+   ravi.db at most once per second: latched, no successful poll yet, or the
+   last success older than 10 s → 503 `tunnel_drift` (outcome reason
+   `drift_latched`, `no_successful_poll`, `poll_stale`). A read that throws
+   refuses. It comes after steps 1 and 2 so those refusals stay unqueued; a
+   Gate-shaped request refused here is marked and queued like any other.
 3. Body at most 2 MiB by bytes received → else 413 `payload_too_large` with
    `Connection: close`, sent only after the oversized body was drained (at
    most 8 MiB past the limit, 10 s in all); a client that keeps sending past
@@ -220,13 +236,14 @@ child's `contextId`, its `parentContextId` (the root), the agent id, the
 
 `gateway.listener.port`, `gateway.access.teamDomain`, `gateway.access.aud`,
 `gateway.access.clientId`, `gateway.installationId`, `gateway.consoleUrl`,
-`gateway.tunnel.hostname`, `gateway.tunnel.driftLatched` (`"1"` when
-latched).
+`gateway.tunnel.hostname`. The drift latch is not among them (see
+Vocabulary, Tunnel gate).
 
 ## Out Of Scope
 
-- Writing the cloudflared config, running cloudflared, the `/config` drift
-  poll and clearing the latch (05a).
+- Writing the cloudflared config, running cloudflared and the `/config`
+  drift poll (`sandbox/tunnel-runner`, 05a); clearing the latch on a rotate
+  (05b).
 - Sending the host report, acknowledging served jtis and clearing
   `jti_overflow_at` (05b).
 - Creating run authority from a Console mint, attaching the E2B sandbox id
