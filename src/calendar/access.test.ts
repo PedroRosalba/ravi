@@ -6,7 +6,9 @@ import {
   calendarAccessLevel,
   canUseAnyCalendar,
   canUseCalendar,
+  calendarScopeSubjects,
   canUseCalendarProvider,
+  getCalendarScopeContext,
   resolveDefaultCalendarOwnerSubject,
 } from "./access.js";
 import { addCalendarMember, createCalendar, createCalendarAccount } from "./db.js";
@@ -135,6 +137,33 @@ describe("calendar access gate", () => {
         delete process.env.RAVI_CONTACT_ID;
       } else {
         process.env.RAVI_CONTACT_ID = previousContactId;
+      }
+    }
+  });
+
+  it("ignores legacy RAVI_CONTACT_ID when RAVI_CONTEXT_KEY is set but does not resolve", () => {
+    const previous = {
+      RAVI_CONTEXT_KEY: process.env.RAVI_CONTEXT_KEY,
+      RAVI_CONTACT_ID: process.env.RAVI_CONTACT_ID,
+      RAVI_AGENT_ID: process.env.RAVI_AGENT_ID,
+    };
+    process.env.RAVI_CONTEXT_KEY = "rctx_does_not_exist";
+    process.env.RAVI_CONTACT_ID = "victim";
+    delete process.env.RAVI_AGENT_ID;
+    try {
+      const victims = calendar({ ownerType: "contact", ownerId: "victim" });
+      const ctx = getCalendarScopeContext();
+
+      expect(ctx.unresolvedContextKey).toBe(true);
+      expect(calendarScopeSubjects(ctx)).toEqual([]);
+      expect(canUseCalendar(ctx, "read", victims)).toBe(false);
+      expect(canUseCalendar(ctx, "manage", victims)).toBe(false);
+      expect(calendarAccessLevel(ctx, victims)).toBe("none");
+      expect(canUseAnyCalendar(ctx, "read")).toBe(false);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
       }
     }
   });

@@ -86,7 +86,9 @@ export function calendarScopeSubjects(ctx: CalendarScopeContext): CalendarSubjec
     subjects.push({ type: "contact", id: contactId });
   }
 
-  const legacyEnvContactId = ctx.context ? null : stringEnv("RAVI_CONTACT_ID");
+  // Legacy env identity only applies to a caller with no context key at all: a
+  // resolved record speaks for itself, and an unresolved key has no identity.
+  const legacyEnvContactId = ctx.context || ctx.unresolvedContextKey ? null : stringEnv("RAVI_CONTACT_ID");
   if (legacyEnvContactId) {
     subjects.push({ type: "contact", id: legacyEnvContactId });
   }
