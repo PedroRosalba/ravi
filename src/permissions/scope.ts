@@ -296,6 +296,8 @@ export interface ScopeContext {
   sessionKey?: string;
   sessionName?: string;
   source?: ContextSource;
+  /** RAVI_CONTEXT_KEY was set but did not resolve; never the local operator. */
+  unresolvedContextKey?: boolean;
 }
 
 /**
@@ -311,6 +313,7 @@ export function getScopeContext(): ScopeContext {
     sessionKey: hasToolContext ? (ctx.sessionKey ?? ctx.context?.sessionKey) : process.env.RAVI_SESSION_KEY,
     sessionName: hasToolContext ? (ctx.sessionName ?? ctx.context?.sessionName) : process.env.RAVI_SESSION_NAME,
     source: ctx?.source,
+    ...(ctx?.unresolvedContextKey === true ? { unresolvedContextKey: true } : {}),
   };
 }
 
@@ -325,9 +328,12 @@ export function getScopeContext(): ScopeContext {
  * local operator. A context record without an agent (for example an orphaned
  * context whose agent was deleted, since `agent_id` is `ON DELETE SET NULL`)
  * authorizes from its own capabilities only and never gains operator authority.
+ * Neither does a caller whose RAVI_CONTEXT_KEY is set but did not resolve.
  */
-export function isLocalOperatorScope(ctx: { agentId?: string; context?: unknown } | undefined): boolean {
-  return !ctx?.agentId && !ctx?.context;
+export function isLocalOperatorScope(
+  ctx: { agentId?: string; context?: unknown; unresolvedContextKey?: boolean } | undefined,
+): boolean {
+  return !ctx?.agentId && !ctx?.context && ctx?.unresolvedContextKey !== true;
 }
 
 /**

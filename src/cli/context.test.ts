@@ -162,6 +162,25 @@ describe("cli context resolution", () => {
     });
   });
 
+  it("marks a set but unresolvable RAVI_CONTEXT_KEY instead of falling back to legacy env identity", () => {
+    process.env.RAVI_CONTEXT_KEY = "rctx_does_not_exist";
+    process.env.RAVI_SESSION_KEY = "agent:main:main";
+    process.env.RAVI_SESSION_NAME = "main";
+    process.env.RAVI_AGENT_ID = "main";
+    resolvedContext = undefined;
+
+    expect(getContext()).toEqual({ unresolvedContextKey: true });
+  });
+
+  it("treats a blank RAVI_CONTEXT_KEY as unset", () => {
+    process.env.RAVI_CONTEXT_KEY = "   ";
+    process.env.RAVI_AGENT_ID = "main";
+
+    const ctx = getContext();
+    expect(ctx?.unresolvedContextKey).toBeUndefined();
+    expect(ctx?.agentId).toBe("main");
+  });
+
   it("does not mistake the generic CLI handler boundary for a runtime invocation", () => {
     for (const context of [{}, { agentId: "operator", sessionName: "default" }]) {
       expect(
