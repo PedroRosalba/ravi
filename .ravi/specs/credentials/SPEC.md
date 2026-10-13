@@ -69,6 +69,9 @@ and runtime/model provider credential pools.
 - Public CLI/SDK output SHOULD prefer stable connection ids and redacted backend
   aliases over raw backend coordinates.
 - Local development SHOULD use macOS Keychain when available.
+- Keychain writes MUST NOT put the secret in process args: they run
+  `security -i` with the command on stdin and the secret hex-encoded. A secret
+  too large for one `security -i` line is refused (use Vault), never truncated.
 - Production SHOULD use Vault/KMS or an equivalent secret manager.
 - The broker MUST validate both caller identity and capabilities before
   resolving a provider secret.

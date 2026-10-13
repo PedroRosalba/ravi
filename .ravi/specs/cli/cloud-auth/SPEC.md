@@ -155,7 +155,11 @@ The CLI MUST use a capability-detected backend abstraction:
 2. **Optional:** FreeDesktop Secret Service / libsecret when `secret-tool` is
    available (`RAVI_CLOUD_AUTH_BACKEND=libsecret` or `auto` on Linux).
 3. **Optional:** macOS Keychain when `security` is available
-   (`RAVI_CLOUD_AUTH_BACKEND=keychain` or `auto` on Darwin).
+   (`RAVI_CLOUD_AUTH_BACKEND=keychain` or `auto` on Darwin). The credential
+   payload MUST NOT appear in any `security` argv: the write runs
+   `security -i` with the `add-generic-password` command on stdin and the
+   payload hex-encoded (`-X`). A payload too large for one `security -i` line
+   is not written to Keychain; the write falls back to the portable file store.
 
 `auto` MAY prefer an optional backend when present. Unavailable optional
 backends MUST fall back to the portable file store. The CLI MUST never require

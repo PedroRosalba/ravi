@@ -20,6 +20,11 @@
   `installationId`; a stored local id is replaced after the next `/me`.
 - Default secret backend is the portable file store. Keychain is optional
   and never required.
+- The Keychain backend runs `security -i` and passes the payload only
+  hex-encoded on stdin: no argv element contains it, quotes/newlines/
+  `"; delete-keychain` in the payload cannot add a command, and an oversized
+  payload is refused before `security` runs
+  (`bun test src/cloud-auth/secret-backends.test.ts`).
 - No remote-login discovery, post-login provider, or remote installation
   credential module is present in the root auth implementation.
 - Login polling retries `AUTH_PENDING`, `RATE_LIMITED`, and `SERVER_UNAVAILABLE`

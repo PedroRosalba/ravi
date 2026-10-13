@@ -22,6 +22,11 @@ When `src/credentials` exists:
 bun test src/credentials/**/*.test.ts src/cli/commands/credentials.test.ts
 ```
 
+- A Keychain write sends `security` the argv `["-i"]` only; the secret is
+  hex-encoded in the stdin line and appears in no argv element; an oversized
+  secret or a service name with spaces is refused before `security` runs
+  (`bun test src/credentials/ src/security/macos-keychain.test.ts`).
+
 Before closing a CLI-facing change:
 
 ```bash

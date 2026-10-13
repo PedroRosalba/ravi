@@ -14,6 +14,9 @@ applies_to:
   - src/router/router-db.ts
   - src/cli/commands/context.ts
   - src/cli/context.ts
+  - src/cli/remote-gateway.ts
+  - src/cli/host-cli-gateway.ts
+  - src/security/private-files.ts
 owners:
   - ravi-dev
 status: active
@@ -55,6 +58,19 @@ Runtime context keys are opaque credentials that connect provider turns, Ravi to
 - Bulk cleanup of historical `agent-runtime` contexts MUST be opt-in and
   exposed through an explicit CLI path. It MUST NOT run automatically during
   dispatch or daemon startup.
+- `ravi.db` (which holds context records) and its `-wal`/`-shm` files MUST be
+  owner-only after every open: group/other bits are removed when the file is a
+  regular file owned by the current user. Symlinks and files owned by another
+  user are left alone, `RAVI_STATE_DIR_KEEP_PERMISSIONS=1` opts out, and a
+  failure never stops the open. The credential broker DB follows the same rule.
+- A CLI sends its context key as a bearer token to `RAVI_GATEWAY_URL`. An
+  `http:` URL MUST be refused with `REMOTE_GATEWAY_INSECURE` (exit 2) unless its
+  host, as WHATWG URL parsing reads it, is `localhost` or a literal
+  127.0.0.0/8 or `::1` address. There is no override; use `https:` or `unix://`.
+- A starting daemon MUST NOT unlink the host CLI gateway socket while another
+  process accepts connections on it, nor a path that is not a socket owned by
+  the current user; it starts without the gateway instead. Stopping the gateway
+  MUST NOT remove a socket file that another daemon bound after it.
 
 ## Acceptance
 
