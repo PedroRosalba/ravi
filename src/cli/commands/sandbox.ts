@@ -6,7 +6,7 @@ import "reflect-metadata";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { CONTRACT_EXIT_USAGE, contractFail } from "../agent-contract.js";
+import { CONTRACT_EXIT_USAGE, ContractError, contractDryRun, contractFail } from "../agent-contract.js";
 import { Arg, CliOnly, Command, CommandAccess, Group, Option, Returns } from "../decorators.js";
 import { fail } from "../context.js";
 import {
@@ -26,8 +26,16 @@ import {
   resolveE2bApiKey,
   resolveSandboxCredentials,
   runE2bSandboxTask,
+  sandboxHostId,
 } from "../../sandbox/e2b.js";
 import { collectE2bTelemetry, type E2bTelemetrySummary } from "../../sandbox/observe.js";
+import {
+  DEFAULT_REAP_OLDER_THAN_MIN,
+  type ReapDeps,
+  type ReapResult,
+  e2bReapDeps,
+  reapSandboxes,
+} from "../../sandbox/reap.js";
 import { getRaviStateDir } from "../../utils/paths.js";
 
 const e2bTelemetrySummarySchema = z.object({
@@ -55,6 +63,28 @@ const sandboxRunReturnSchema = z.object({
   durationMs: z.number(),
   error: z.string().nullable(),
   e2b: e2bTelemetrySummarySchema.nullable(),
+  templateSha: z.string().nullable(),
+});
+const sandboxReapReturnSchema = z.object({
+  hostId: z.string(),
+  allHosts: z.boolean(),
+  olderThanMin: z.number(),
+  scanned: z.number(),
+  candidates: z.array(
+    z.object({
+      sandboxId: z.string(),
+      state: z.string(),
+      ageMin: z.number(),
+      raviHost: z.string().nullable(),
+      raviRun: z.string().nullable(),
+      raviPid: z.number().nullable(),
+      cause: z.string(),
+    }),
+  ),
+  skipped: z.array(z.object({ sandboxId: z.string(), cause: z.string() })),
+  executed: z.boolean(),
+  killed: z.array(z.string()),
+  failed: z.array(z.object({ sandboxId: z.string(), error: z.string() })),
 });
 const sandboxLogsReturnSchema = z.object({
   sandboxId: z.string(),
@@ -65,7 +95,12 @@ const sandboxLogsReturnSchema = z.object({
 const sandboxTemplateBuildReturnSchema = z.object({
   name: z.string(),
   templateId: z.string(),
+  buildId: z.string(),
   ref: z.string(),
+  sha: z.string(),
+  bunVersion: z.string(),
+  natsVersion: z.string(),
+  builtAt: z.string(),
   durationMs: z.number(),
 });
 function parsePositiveNumber(value: string | undefined, label: string, fallback: number): number {
@@ -194,6 +229,70 @@ export function validateTaskText(title: string, instructions: string, asJson?: b
       asJson,
     );
   }
+}
+
+export interface SandboxReapFlags {
+  olderThan?: string;
+  allHosts?: boolean;
+  execute?: boolean;
+  asJson?: boolean;
+}
+
+/**
+ * `sandbox reap` without the E2B wiring: validates `--older-than` (usage error, exit 2),
+ * lists and selects through `deps`, and either dry-runs (exit 3, nothing killed) or
+ * kills with `--execute`. With no candidate there is nothing to brake, so it returns
+ * the empty plan with exit 0.
+ */
+export async function executeSandboxReap(flags: SandboxReapFlags, hostId: string, deps: ReapDeps): Promise<ReapResult> {
+  let olderThanMin = DEFAULT_REAP_OLDER_THAN_MIN;
+  if (flags.olderThan?.trim()) {
+    const raw = flags.olderThan.trim();
+    olderThanMin = Number(raw);
+    if (!/^\d+$/.test(raw) || olderThanMin < 1) {
+      contractFail(
+        "sandbox reap",
+        "USAGE_ERROR",
+        `--older-than must be a whole number of minutes, at least 1, got ${raw}.`,
+        {
+          asJson: flags.asJson,
+          exitCode: CONTRACT_EXIT_USAGE,
+          details: { suggestedAction: "Fix the flag and re-run `ravi sandbox reap`." },
+        },
+      );
+    }
+  }
+  const plan = await reapSandboxes({ hostId, olderThanMin, allHosts: flags.allHosts, execute: false }, deps);
+  if (plan.candidates.length === 0) return plan;
+  if (flags.execute !== true) {
+    contractDryRun(
+      "sandbox reap",
+      {
+        hostId,
+        allHosts: plan.allHosts,
+        olderThanMin,
+        kill: plan.candidates.map(({ sandboxId, state, ageMin, cause, raviHost }) => ({
+          sandboxId,
+          state,
+          ageMin,
+          cause,
+          raviHost,
+        })),
+        skipped: plan.skipped.length,
+      },
+      { asJson: flags.asJson },
+    );
+  }
+  const result: ReapResult = { ...plan, executed: true };
+  for (const candidate of plan.candidates) {
+    try {
+      await deps.kill(candidate.sandboxId);
+      result.killed.push(candidate.sandboxId);
+    } catch (error) {
+      result.failed.push({ sandboxId: candidate.sandboxId, error: errorMessage(error) });
+    }
+  }
+  return result;
 }
 
 function readInstructions(task?: string, taskFile?: string): string {
@@ -383,6 +482,11 @@ export class SandboxCommands {
       console.log(`\nStatus:   ${result.status}`);
       if (result.taskId) console.log(`Task:     ${result.taskId}`);
       console.log(`Sandbox:  ${result.sandboxId}${result.kept ? " (paused)" : ""}`);
+      console.log(
+        result.templateSha
+          ? `Template: ${template ?? DEFAULT_E2B_TEMPLATE} @ ravi ${result.templateSha}`
+          : `Template: ${template ?? DEFAULT_E2B_TEMPLATE} (warning: no build record; run \`ravi sandbox template build\` to pin a commit)`,
+      );
       console.log(`Outputs:  ${result.outputDir}`);
       if (result.error) console.log(`Error:    ${result.error}`);
       if (result.e2b) printTelemetry(result.e2b);
@@ -441,6 +545,70 @@ export class SandboxCommands {
     if (collected.summary.errors.length > 0) process.exitCode = 1;
     return result;
   }
+
+  @Command({
+    name: "reap",
+    description:
+      "Kill orphaned task sandboxes this host created: paused, running too long or whose ravi process is gone (dry-run by default)",
+  })
+  @CommandAccess({
+    kind: "mutate",
+    resource: "sandbox",
+    action: "reap",
+    risk: "high",
+    requiresConfirmation: true,
+  })
+  // Reads this host's installation key and process table, like `sandbox run`.
+  @CliOnly()
+  @Returns(sandboxReapReturnSchema)
+  async reap(
+    @Option({
+      flags: "--older-than <minutes>",
+      description: `Running sandboxes older than this are orphans (default ${DEFAULT_REAP_OLDER_THAN_MIN}: the longest run plus a margin)`,
+    })
+    olderThan?: string,
+    @Option({
+      flags: "--all-hosts",
+      description: "Also consider ravi-task sandboxes other hosts created (paused or overdue only)",
+    })
+    allHosts?: boolean,
+    @Option({ flags: "--execute", description: "Kill the candidates; the default is a dry-run (exit 3)" })
+    execute?: boolean,
+    @Option({ flags: "--json", description: "Print the plan or result as JSON" })
+    asJson?: boolean,
+  ) {
+    let apiKey: string;
+    try {
+      apiKey = resolveE2bApiKey();
+    } catch (error) {
+      fail(errorMessage(error));
+    }
+    let result: ReapResult;
+    try {
+      result = await executeSandboxReap({ olderThan, allHosts, execute, asJson }, sandboxHostId(), e2bReapDeps(apiKey));
+    } catch (error) {
+      if (error instanceof ContractError) throw error;
+      fail(errorMessage(error));
+    }
+    if (asJson) {
+      console.log(JSON.stringify(result, null, 2));
+    } else if (result.candidates.length === 0) {
+      console.log(
+        `No sandboxes to reap (${result.scanned} ravi-task sandbox(es) seen, ${result.skipped.length} skipped).`,
+      );
+    } else {
+      for (const candidate of result.candidates) {
+        const outcome = result.killed.includes(candidate.sandboxId)
+          ? "killed"
+          : (result.failed.find((f) => f.sandboxId === candidate.sandboxId)?.error ?? "not killed");
+        console.log(
+          `${candidate.sandboxId}  ${candidate.state}  ${candidate.ageMin} min  ${candidate.cause}  -> ${outcome}`,
+        );
+      }
+    }
+    if (result.failed.length > 0) process.exitCode = 1;
+    return result;
+  }
 }
 
 @Group({
@@ -468,7 +636,7 @@ export class SandboxTemplateCommands {
     name?: string,
     @Option({
       flags: "--ref <ref>",
-      description: `Ravi branch or tag baked into the template (default ${DEFAULT_E2B_TEMPLATE_REF})`,
+      description: `Ravi branch, tag or 40-hex commit baked into the template (default ${DEFAULT_E2B_TEMPLATE_REF}); resolved to a SHA on this host`,
     })
     ref?: string,
     @Option({ flags: "--cpu <count>", description: "vCPUs (default 2)" })
@@ -500,7 +668,10 @@ export class SandboxTemplateCommands {
       if (asJson) {
         console.log(JSON.stringify(result, null, 2));
       } else {
-        console.log(`\nTemplate ready: ${result.name} (id ${result.templateId}, ref ${result.ref})`);
+        console.log(
+          `\nTemplate ready: ${result.name} (id ${result.templateId}, build ${result.buildId}, ` +
+            `ravi ${result.sha} from ${result.ref}, bun ${result.bunVersion}, nats-server ${result.natsVersion})`,
+        );
       }
       return result;
     } catch (error) {

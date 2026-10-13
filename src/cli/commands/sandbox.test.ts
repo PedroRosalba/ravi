@@ -4,8 +4,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withoutRaviRuntimeContextEnv } from "../../test/ravi-state.js";
+import type { ReapDeps, ReapSandboxInfo } from "../../sandbox/reap.js";
 import { ContractError } from "../agent-contract.js";
-import { validateSandboxRunFlags, validateTaskText } from "./sandbox.js";
+import { executeSandboxReap, validateSandboxRunFlags, validateTaskText } from "./sandbox.js";
 
 setDefaultTimeout(60_000);
 
@@ -111,12 +112,114 @@ describe("sandbox run flag validation", () => {
   });
 });
 
+describe("sandbox reap", () => {
+  const HOST = "host-hash-16chars";
+  const NOW = 1_700_000_000_000;
+  function fleet(): ReapSandboxInfo[] {
+    const base = { purpose: "ravi-task", ravi_run: "a".repeat(24), ravi_host: HOST };
+    return [
+      {
+        sandboxId: "sbx-live",
+        state: "running",
+        startedAt: new Date(NOW - 60_000),
+        metadata: { ...base, ravi_pid: "1" },
+      },
+      { sandboxId: "sbx-paused", state: "paused", startedAt: new Date(NOW - 60_000), metadata: base },
+      {
+        sandboxId: "sbx-dead",
+        state: "running",
+        startedAt: new Date(NOW - 60_000),
+        metadata: { ...base, ravi_pid: "2" },
+      },
+      {
+        sandboxId: "sbx-elsewhere",
+        state: "paused",
+        startedAt: new Date(NOW - 60_000),
+        metadata: { ...base, ravi_host: "other-host-hash0" },
+      },
+    ];
+  }
+  function fakeDeps(items = fleet()) {
+    const state = { queries: [] as Record<string, string>[], killed: [] as string[] };
+    const deps: ReapDeps = {
+      async list(metadata) {
+        state.queries.push(metadata);
+        return items.filter((info) => Object.entries(metadata).every(([k, v]) => info.metadata[k] === v));
+      },
+      async kill(sandboxId) {
+        state.killed.push(sandboxId);
+      },
+      now: () => NOW,
+      isAlive: (pid) => pid === 1,
+    };
+    return { state, deps };
+  }
+  async function contractError(run: () => Promise<unknown>): Promise<ContractError> {
+    try {
+      await run();
+    } catch (error) {
+      if (error instanceof ContractError) return error;
+      throw error;
+    }
+    throw new Error("expected a contract error");
+  }
+
+  it("dry-runs by default: exit 3 with the plan and no kill", async () => {
+    const fake = fakeDeps();
+    const error = await contractError(() => executeSandboxReap({ asJson: true }, HOST, fake.deps));
+    expect(error.exitCode).toBe(3);
+    expect(error.code).toBe("WRITE_REQUIRES_EXECUTE");
+    const plan = error.details.plan as { kill: Array<{ sandboxId: string; cause: string }> };
+    expect(plan).toMatchObject({ hostId: HOST, allHosts: false, olderThanMin: 65, skipped: 1 });
+    expect(plan.kill.map(({ sandboxId, cause }) => [sandboxId, cause])).toEqual([
+      ["sbx-paused", "paused"],
+      ["sbx-dead", "dead-pid"],
+    ]);
+    expect(fake.state.killed).toEqual([]);
+    expect(fake.state.queries).toEqual([{ purpose: "ravi-task", ravi_host: HOST }]);
+  });
+
+  it("with --execute kills only the matching sandboxes of this host", async () => {
+    const fake = fakeDeps();
+    const result = await executeSandboxReap({ execute: true, asJson: true }, HOST, fake.deps);
+    expect(result.executed).toBe(true);
+    expect(result.killed).toEqual(["sbx-paused", "sbx-dead"]);
+    expect(result.failed).toEqual([]);
+    expect(fake.state.killed).toEqual(["sbx-paused", "sbx-dead"]);
+    expect(fake.state.killed).not.toContain("sbx-live");
+    expect(fake.state.killed).not.toContain("sbx-elsewhere");
+  });
+
+  it("reaches other hosts' sandboxes only with --all-hosts", async () => {
+    const fake = fakeDeps();
+    const result = await executeSandboxReap({ execute: true, allHosts: true, asJson: true }, HOST, fake.deps);
+    expect(fake.state.queries).toEqual([{ purpose: "ravi-task" }]);
+    expect(result.killed).toEqual(["sbx-paused", "sbx-dead", "sbx-elsewhere"]);
+  });
+
+  it("returns the empty plan with nothing to brake, and rejects a bad --older-than as a usage error", async () => {
+    const quiet = fakeDeps(fleet().filter((info) => info.sandboxId === "sbx-live"));
+    const result = await executeSandboxReap({ asJson: true }, HOST, quiet.deps);
+    expect(result).toMatchObject({ candidates: [], executed: false, killed: [], scanned: 1 });
+    for (const olderThan of ["0", "abc", "1.5", "-3"]) {
+      const fake = fakeDeps();
+      const error = await contractError(() => executeSandboxReap({ olderThan, asJson: true }, HOST, fake.deps));
+      expect(error.exitCode).toBe(2);
+      expect(error.code).toBe("USAGE_ERROR");
+      expect(fake.state.queries).toEqual([]);
+    }
+    const fake = fakeDeps();
+    const error = await contractError(() => executeSandboxReap({ olderThan: " 10 ", asJson: true }, HOST, fake.deps));
+    expect(error.details.plan).toMatchObject({ olderThanMin: 10 });
+  });
+});
+
 /**
  * Process-level proof: the usage errors happen before any credential is read or
  * any E2B call is made, so the spawned CLI gets no credential at all.
  */
 describe("sandbox run usage exit codes", () => {
-  function runCli(args: string[], options: { task?: boolean } = {}) {
+  function runCli(args: string[], options: { task?: boolean; command?: string[] } = {}) {
     const env = withoutRaviRuntimeContextEnv();
     for (const name of [
       "E2B_API_KEY",
@@ -133,11 +236,13 @@ describe("sandbox run usage exit codes", () => {
       "bun",
       [
         "src/cli/index.ts",
-        "sandbox",
-        "run",
-        "--repo",
-        "https://github.com/o/r.git",
-        ...(options.task === false ? [] : ["--task", "x"]),
+        ...(options.command ?? [
+          "sandbox",
+          "run",
+          "--repo",
+          "https://github.com/o/r.git",
+          ...(options.task === false ? [] : ["--task", "x"]),
+        ]),
         ...args,
       ],
       {
@@ -178,5 +283,12 @@ describe("sandbox run usage exit codes", () => {
     expect(result.status).toBe(2);
     expect(JSON.parse(result.stdout)).toMatchObject({ success: false, error: { code: "USAGE_ERROR" } });
     expect(JSON.parse(result.stdout).error.message).toContain("100 KiB");
+  });
+
+  it("exits 1 without E2B_API_KEY on sandbox reap, so no listing or kill is attempted", () => {
+    const result = runCli(["--json"], { command: ["sandbox", "reap"] });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({ success: false, op: "sandbox reap" });
+    expect(JSON.parse(result.stdout).error.message).toContain("E2B_API_KEY");
   });
 });

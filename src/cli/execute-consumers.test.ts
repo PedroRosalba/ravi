@@ -141,6 +141,11 @@ const executeInstructions = [
     path: "docs/console/pages.mdx",
     instruction: "ravi pages chat set acme-website --enabled true --execute",
   },
+  {
+    name: "sandbox reap root instructions",
+    path: "AGENTS.md",
+    instruction: "ravi sandbox reap --execute",
+  },
 ] as const;
 
 const obsoleteExecuteConsumers = [
