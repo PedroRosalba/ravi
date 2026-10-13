@@ -36,8 +36,11 @@ import {
   dispatchRemoteCodexBashHook,
   isCodexBashHookCommand,
 } from "./codex-hook-transport.js";
+import { getCliInvocationTarget, homeCommandNotAllowedError, isHomeCommand } from "./home-mode.js";
 import {
   dispatchRemote,
+  getHomeGatewayConfig,
+  homeGatewayErrorToContractError,
   resolveRemoteGatewayConfig,
   remoteGatewayErrorToContractError,
   remoteGatewayExitCode,
@@ -244,6 +247,31 @@ function registerCommand(
       if (input[optName] === undefined) input[optName] = optionValue;
     }
 
+    // `ravi home …`: this invocation goes to HOME only, authenticated by the
+    // sandbox grant. No local fallback, no context key, no codex-hook path.
+    if (getCliInvocationTarget() === "home") {
+      const op = commandOperation(groupName, cmdMeta.name);
+      let homeConfig: RemoteGatewayConfig;
+      try {
+        const commandId = [...groupName.split("_"), cmdMeta.name].join(".");
+        if (!isHomeCommand(commandId)) throw homeCommandNotAllowedError(commandId);
+        homeConfig = getHomeGatewayConfig(process.env, op);
+      } catch (error) {
+        if (!(error instanceof ContractError)) throw error;
+        renderContractError(error, input.json === true);
+        process.exit(error.exitCode);
+      }
+      await dispatchRemoteCommand({
+        config: homeConfig,
+        groupName,
+        command: cmdMeta.name,
+        groupSegments: groupName.split("_"),
+        input,
+        timeoutMs: cmdMeta.remoteTimeoutMs,
+      });
+      return;
+    }
+
     let remoteConfig: RemoteGatewayConfig | null;
     try {
       remoteConfig = await resolveRemoteGatewayConfig(process.env, commandOperation(groupName, cmdMeta.name));
@@ -413,8 +441,10 @@ interface DispatchRemoteCommandInput {
 
 async function dispatchRemoteCommand(input: DispatchRemoteCommandInput): Promise<void> {
   const op = commandOperation(input.groupName, input.command);
-  const contextKey = resolveContextKeyForRemote();
-  if (!contextKey) {
+  const home = input.config.auth === "sandbox-grant";
+  // HOME never receives a context key: the sandbox grant is the credential.
+  const contextKey = home ? undefined : (resolveContextKeyForRemote() ?? undefined);
+  if (!home && !contextKey) {
     const error = new ContractError(
       op,
       "REMOTE_CONTEXT_REQUIRED",
@@ -436,19 +466,30 @@ async function dispatchRemoteCommand(input: DispatchRemoteCommandInput): Promise
       body: omitRenderingFlags(input.input),
       config: input.config,
       contextKey,
-      cwd: process.cwd(),
+      ...(home ? {} : { cwd: process.cwd() }),
       timeoutMs: input.timeoutMs,
     });
-  } catch {
-    const error = new ContractError(op, "SERVER_UNAVAILABLE", "Remote gateway request failed.", 1, {
-      retryable: true,
-      suggestedAction: "Check gateway availability and retry",
-    });
+  } catch (cause) {
+    // Never the cause's message: a transport error can quote the request.
+    const error =
+      cause instanceof ContractError
+        ? cause
+        : home
+          ? new ContractError(op, "HOME_GATEWAY_UNREACHABLE", "HOME gateway request failed.", 1, {
+              retryable: true,
+              suggestedAction: "Check that this sandbox can reach the HOME gateway and retry",
+            })
+          : new ContractError(op, "SERVER_UNAVAILABLE", "Remote gateway request failed.", 1, {
+              retryable: true,
+              suggestedAction: "Check gateway availability and retry",
+            });
     renderContractError(error, input.input.json === true);
     process.exit(error.exitCode);
   }
 
-  const remoteError = remoteGatewayErrorToContractError(op, result);
+  const remoteError = home
+    ? homeGatewayErrorToContractError(op, result)
+    : remoteGatewayErrorToContractError(op, result);
   if (remoteError) {
     renderContractError(remoteError, input.input.json === true);
     process.exit(remoteError.exitCode);

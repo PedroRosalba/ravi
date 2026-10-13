@@ -42,7 +42,7 @@ import {
   type ContractErrorDetails,
 } from "./agent-contract.js";
 import { CALLER_CWD_HEADER, parseCallerCwd } from "./caller-cwd.js";
-import { cloudContractCatalogCopy } from "./cloud-error-contract.js";
+import { cloudContractCatalogCopy, commandOperation } from "./cloud-error-contract.js";
 import { localMediaSendCatalogCopy } from "./media-send-auth.js";
 import { isSafeLocalPayloadMessage } from "./payload-error-message.js";
 import { projectPublicIssues, sanitizePublicValue } from "./redaction.js";
@@ -113,8 +113,89 @@ const REMOTE_PLAN_MAX_PROPERTIES = 64;
 export interface RemoteGatewayConfig {
   url: string;
   /** Source of the configuration value, used for log/error messages. */
-  source: "env" | "host-socket";
+  source: "env" | "host-socket" | "home";
   socketPath?: string;
+  /**
+   * How the request authenticates. `context-key` (the default) sends the
+   * runtime context-key as a bearer token. `sandbox-grant` is `ravi home`: no
+   * bearer, no caller cwd, no internal marker; the Console sandbox grant is
+   * the only credential, normally injected by the sandbox egress proxy.
+   */
+  auth?: "context-key" | "sandbox-grant";
+}
+
+export const HOME_GATEWAY_URL_ENV = "RAVI_HOME_GATEWAY_URL";
+export const SANDBOX_GRANT_ENV = "RAVI_SANDBOX_GRANT";
+export const SANDBOX_GRANT_HEADER = "X-Ravi-Sandbox-Grant";
+export const HOME_REQUEST_ID_HEADER = "X-Ravi-Request-Id";
+/** Above the Gate's 30 s upstream timeout, so the Gate's own answer arrives first. */
+export const HOME_GATEWAY_DEFAULT_TIMEOUT_MS = 35_000;
+const SANDBOX_GRANT_MAX_LENGTH = 8192;
+const COMPACT_JWS_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const HOME_ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const HOME_REQUEST_ID_PATTERN = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/;
+const HOME_LISTENER_SOURCE = "ravi-listener";
+
+/**
+ * The HOME gateway for `ravi home` (`RAVI_HOME_GATEWAY_URL`): the Gate URL of
+ * the installation that started this sandbox run. https only, with no
+ * credentials, query or fragment. Errors never echo the value.
+ */
+export function getHomeGatewayConfig(env: NodeJS.ProcessEnv = process.env, op = "home"): RemoteGatewayConfig {
+  const raw = env[HOME_GATEWAY_URL_ENV]?.trim();
+  if (!raw) {
+    throw new ContractError(op, "HOME_GATEWAY_REQUIRED", `ravi home needs ${HOME_GATEWAY_URL_ENV}.`, 1, {
+      suggestedAction: `Run inside a connected sandbox run, which sets ${HOME_GATEWAY_URL_ENV}`,
+    });
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw invalidHomeGatewayError(op, "is not a valid URL");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new ContractError(
+      op,
+      "HOME_GATEWAY_INSECURE",
+      `${HOME_GATEWAY_URL_ENV} must use https://.`,
+      CONTRACT_EXIT_USAGE,
+      {
+        suggestedAction: `Set ${HOME_GATEWAY_URL_ENV} to the https:// gateway URL of this run`,
+      },
+    );
+  }
+  if (parsed.username || parsed.password || /[@\s]/.test(raw))
+    throw invalidHomeGatewayError(op, "must not carry credentials");
+  if (raw.includes("?") || raw.includes("#")) throw invalidHomeGatewayError(op, "must not carry a query or fragment");
+  if (!parsed.hostname) throw invalidHomeGatewayError(op, "has no host");
+  return { url: `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`, source: "home", auth: "sandbox-grant" };
+}
+
+function invalidHomeGatewayError(op: string, why: string): ContractError {
+  return new ContractError(op, "HOME_GATEWAY_INVALID", `${HOME_GATEWAY_URL_ENV} ${why}.`, CONTRACT_EXIT_USAGE, {
+    suggestedAction: `Correct ${HOME_GATEWAY_URL_ENV} before retrying`,
+  });
+}
+
+/**
+ * The `RAVI_SANDBOX_GRANT` fallback, or null when unset. Only a single compact
+ * JWS is sent; anything else is refused without ever echoing the value.
+ */
+export function readSandboxGrantFallback(env: NodeJS.ProcessEnv, op: string): string | null {
+  const raw = env[SANDBOX_GRANT_ENV];
+  if (raw === undefined || raw.trim() === "") return null;
+  const grant = raw.trim();
+  if (grant.length > SANDBOX_GRANT_MAX_LENGTH || !COMPACT_JWS_PATTERN.test(grant)) {
+    throw new ContractError(
+      op,
+      "HOME_GRANT_INVALID",
+      `${SANDBOX_GRANT_ENV} is set but is not a single compact token; nothing was sent.`,
+      CONTRACT_EXIT_USAGE,
+      { suggestedAction: `Unset ${SANDBOX_GRANT_ENV} or set it to the grant of this run` },
+    );
+  }
+  return grant;
 }
 
 export function getRemoteGatewayConfig(env: NodeJS.ProcessEnv = process.env, op = "cli"): RemoteGatewayConfig | null {
@@ -303,11 +384,14 @@ export interface RemoteDispatchInput {
   command: string;
   body: Record<string, unknown>;
   config: RemoteGatewayConfig;
-  contextKey: string;
-  /** Caller's working directory; sent as `x-ravi-cwd` so relative file args resolve. */
+  /** Required unless `config.auth` is `sandbox-grant`, which never sends it. */
+  contextKey?: string;
+  /** Caller's working directory; sent as `x-ravi-cwd` so relative file args resolve. Never sent to HOME. */
   cwd?: string;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  /** Environment read for the `RAVI_SANDBOX_GRANT` fallback in home mode (default `process.env`). */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface RemoteDispatchResult {
@@ -317,6 +401,8 @@ export interface RemoteDispatchResult {
   /** Exact response bytes, used for binary @Returns responses. */
   bodyBytes?: Uint8Array;
   contentType: string | null;
+  /** `X-Ravi-Request-Id` of a HOME response, when it is a UUID. */
+  requestId?: string | null;
 }
 
 export type RemoteDispatchOutput = { kind: "bytes"; value: Uint8Array } | { kind: "text"; value: string };
@@ -630,6 +716,8 @@ function isCompleteContractErrorBody(value: unknown, expectedOp?: string): value
 
 export async function dispatchRemote(input: RemoteDispatchInput): Promise<RemoteDispatchResult> {
   const path = `/api/v1/${[...input.groupSegments, input.command].join("/")}`;
+  if (input.config.auth === "sandbox-grant") return dispatchHome(input, path);
+  if (!input.contextKey) throw new Error("Remote gateway dispatch requires a context key");
   const socketPath = input.config.socketPath ?? parseUnixGatewayUrl(input.config.url);
   const url = socketPath ? `http://ravi-cli-gateway.local${path}` : `${input.config.url}${path}`;
   const headers: Record<string, string> = {
@@ -663,6 +751,140 @@ export async function dispatchRemote(input: RemoteDispatchInput): Promise<Remote
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * `ravi home`: POST the decorated command's flat body to the HOME gateway.
+ * The request carries no `authorization`, no `x-ravi-cwd`, no
+ * `x-ravi-gateway-internal`, no cookie and nothing from the caller's `RAVI_*`
+ * identity env. The only credential is the sandbox grant, which the egress
+ * proxy injects; `RAVI_SANDBOX_GRANT` is the fallback. Redirects are not
+ * followed.
+ */
+async function dispatchHome(input: RemoteDispatchInput, path: string): Promise<RemoteDispatchResult> {
+  const op = commandOperation(input.groupSegments.join("_"), input.command);
+  const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json" };
+  const grant = readSandboxGrantFallback(input.env ?? process.env, op);
+  if (grant) headers[SANDBOX_GRANT_HEADER] = grant;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? HOME_GATEWAY_DEFAULT_TIMEOUT_MS);
+  try {
+    const fetchFn = input.fetchImpl ?? fetch;
+    const response = await fetchFn(`${input.config.url}${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(input.body),
+      redirect: "manual",
+      credentials: "omit",
+      signal: controller.signal,
+    });
+    const result = await remoteResultFromResponse(response);
+    const requestId = response.headers.get(HOME_REQUEST_ID_HEADER);
+    return { ...result, requestId: requestId && HOME_REQUEST_ID_PATTERN.test(requestId) ? requestId : null };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Project a HOME failure. The Gate answers `{error:{code,requestId}}` and the
+ * listener `{error:{code,requestId,source:"ravi-listener"}}`; both become
+ * `HOME_<CODE>` with the request id in the message. A complete contract
+ * envelope relayed from the daemon's dispatcher keeps the remote projection.
+ * Nothing else from the body is shown.
+ */
+export function homeGatewayErrorToContractError(op: string, result: RemoteDispatchResult): ContractError | null {
+  if (result.ok) return null;
+  const headerRequestId = result.requestId ?? null;
+  if (result.status >= 300 && result.status < 400) {
+    return new ContractError(
+      op,
+      "HOME_GATEWAY_REDIRECT",
+      `HOME gateway answered ${result.status} with a redirect, which is not followed.${requestIdSuffix(headerRequestId)}`,
+      1,
+      { status: result.status, requestId: headerRequestId, suggestedAction: `Check ${HOME_GATEWAY_URL_ENV}` },
+    );
+  }
+  let body: unknown;
+  try {
+    body = result.contentType?.includes("json") ? JSON.parse(result.body) : undefined;
+  } catch {
+    body = undefined;
+  }
+  const envelope = homeErrorEnvelope(body);
+  if (envelope) {
+    const requestId = envelope.requestId ?? headerRequestId;
+    const exitCode = homeErrorExitCode(result.status, envelope.code);
+    return new ContractError(
+      op,
+      `HOME_${envelope.code.toUpperCase()}`,
+      `HOME refused the command: ${envelope.code} (status ${result.status}, from ${envelope.source}).${requestIdSuffix(requestId)}`,
+      exitCode,
+      {
+        retryable: HOME_RETRYABLE_STATUSES.has(result.status),
+        status: result.status,
+        homeCode: envelope.code,
+        source: envelope.source,
+        requestId,
+        suggestedAction: HOME_SUGGESTED_ACTIONS[envelope.code] ?? "Inspect HOME's audit for this request id",
+      },
+    );
+  }
+  if (isCompleteContractErrorBody(body, op)) return remoteGatewayErrorToContractError(op, result);
+  return new ContractError(
+    op,
+    "HOME_GATEWAY_FAILED",
+    `HOME gateway request failed (status ${result.status}).${requestIdSuffix(headerRequestId)}`,
+    1,
+    {
+      retryable: result.status >= 500,
+      status: result.status,
+      requestId: headerRequestId,
+      suggestedAction: "Check HOME gateway availability and retry",
+    },
+  );
+}
+
+/** Bad input is a usage error (2), a command outside the grant is a policy block (3), the rest fail (1). */
+function homeErrorExitCode(status: number, code: string): 1 | 2 | 3 {
+  if (status === 400 || status === 413) return CONTRACT_EXIT_USAGE;
+  if (code === "command_not_allowed") return 3;
+  return 1;
+}
+
+const HOME_RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
+
+const HOME_SUGGESTED_ACTIONS: Record<string, string> = {
+  grant_missing: `Run inside a connected sandbox run; the egress proxy adds the grant (or set ${SANDBOX_GRANT_ENV} when the run allows it)`,
+  grant_invalid: "Start a new connected run; this run's grant is not accepted",
+  grant_revoked: "This run was revoked or has expired; start a new connected run",
+  command_not_allowed: "Use one of the commands listed by `ravi home --help`",
+  task_not_allowed: "Use the HOME task id given to this run",
+  resource_forbidden: "Use the HOME task id given to this run",
+  body_invalid: "Inspect `ravi home <group> <command> --help` and retry with valid input",
+  argument_invalid: "Inspect `ravi home <group> <command> --help` and retry with valid input",
+  rate_limited: "Wait and retry",
+  daemon_offline: "HOME is offline; retry later",
+};
+
+function requestIdSuffix(requestId: string | null): string {
+  return requestId ? ` Request id: ${requestId}.` : "";
+}
+
+function homeErrorEnvelope(body: unknown): { code: string; requestId: string | null; source: string } | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const error = (body as Record<string, unknown>).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return null;
+  const record = error as Record<string, unknown>;
+  if (typeof record.code !== "string" || !HOME_ERROR_CODE_PATTERN.test(record.code)) return null;
+  if (record.source !== undefined && record.source !== HOME_LISTENER_SOURCE) return null;
+  const requestId =
+    typeof record.requestId === "string" && HOME_REQUEST_ID_PATTERN.test(record.requestId) ? record.requestId : null;
+  return {
+    code: record.code,
+    requestId,
+    source: record.source === HOME_LISTENER_SOURCE ? HOME_LISTENER_SOURCE : "gate",
+  };
 }
 
 async function fetchViaUnixSocket(input: {
