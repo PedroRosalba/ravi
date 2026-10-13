@@ -9,8 +9,7 @@
 // the host CLI (06b) creates this authority, from the grant it received at
 // mint and verified with 04a; the listener only reads it and never mints.
 
-import { isAgentSuperadmin } from "../permissions/provider-runtime.js";
-import { canWithCapabilityContext } from "../permissions/capability-context.js";
+import { canWithCapabilityContext, isAgentSuperadmin } from "../permissions/provider-runtime.js";
 import { type ContextCapability, type ContextRecord, dbGetAgent, dbGetContext } from "../router/router-db.js";
 import {
   createRuntimeContext,
