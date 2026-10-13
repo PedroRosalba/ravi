@@ -107,3 +107,31 @@ connected-run grant (ADR 0001) is bounded at 65 minutes for the same reason.
 The bootstrap floor already grants the tools and the task group the worker
 needs; `full-access` would add `admin:system:*`, which a coding task has no use
 for. `execute:executable:*` is the one addition (build and test commands).
+
+### Template pinned to a commit, toolchain pinned to digests
+
+The template is the trusted base every sandbox boots from, so it must be
+possible to say which Ravi it holds and to rebuild the same thing twice. A
+branch name says neither: `dev` moves, and the previous build used
+`skipCache()` to notice that, which also rebuilt every later layer on every
+run. Resolving the ref to a SHA on the host and putting that SHA into the
+checkout command gives E2B's cache the right key for free and lets the sandbox
+prove the checkout with `rev-parse`. Bun and nats-server used to arrive through
+`curl … | bash` and an unchecked tarball, which means whoever controls those
+URLs (or the path to them) controls the template; downloading the pinned
+release archive and checking it against a digest copied by hand from the
+publisher's checksum file closes that. The record file exists so that a run
+can report the commit without asking E2B, and it is 0600 because it names the
+template ids of this account.
+
+### Reaper that dry-runs and never crosses hosts by default
+
+A sandbox that outlived its run holds a clone and bills time, so there has to
+be a way to find and kill them. Killing is external and irreversible, so it
+follows the CLI brake. The dangerous mistake is killing a machine that belongs
+to someone else's live run, so scope is narrow by construction: this host's
+`ravi-task` sandboxes, with the metadata filter repeated client-side because
+the server-side semantics are an open check. The pid test only makes sense for
+sandboxes created here, and `--all-hosts` therefore falls back to the two
+causes that need no local knowledge, paused and overdue. `cause` rather than
+`reason` names the field because the CLI redacts `reason` as free text.
