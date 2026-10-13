@@ -3,7 +3,12 @@ import { Database } from "bun:sqlite";
 import { chmodSync, lstatSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensurePrivateFile, ensurePrivateSqliteFiles } from "./private-files.js";
+import {
+  createPrivateFileIfMissing,
+  ensurePrivateFile,
+  ensurePrivateSqliteFiles,
+  preparePrivateSqliteFile,
+} from "./private-files.js";
 
 const tempDirs: string[] = [];
 
@@ -147,5 +152,62 @@ describe("ensurePrivateSqliteFiles", () => {
       "missing",
       "missing",
     ]);
+  });
+});
+
+describe("createPrivateFileIfMissing / preparePrivateSqliteFile", () => {
+  posixOnly("creates a missing db file 0600 whatever the umask", () => {
+    const path = join(tempDir(), "ravi.db");
+    const previousUmask = process.umask(0o022);
+    try {
+      expect(createPrivateFileIfMissing(path)).toBe("created");
+    } finally {
+      process.umask(previousUmask);
+    }
+    expect(modeOf(path)).toBe(0o600);
+    expect(statSync(path).size).toBe(0);
+  });
+
+  posixOnly("leaves an existing file, a symlink and relative or :memory: paths alone", () => {
+    const existing = fileWithMode(0o644);
+    expect(createPrivateFileIfMissing(existing)).toBe("exists");
+    expect(modeOf(existing)).toBe(0o644);
+
+    const target = join(tempDir(), "elsewhere.db");
+    const link = join(tempDir(), "linked.db");
+    symlinkSync(target, link);
+    expect(createPrivateFileIfMissing(link)).toBe("exists");
+    expect(() => statSync(target)).toThrow();
+
+    expect(createPrivateFileIfMissing(":memory:")).toBe("skipped");
+    expect(createPrivateFileIfMissing("relative.db")).toBe("skipped");
+  });
+
+  posixOnly("a WAL database opened after prepare is 0600 with its -wal/-shm, with no chmod afterwards", () => {
+    const dbPath = join(tempDir(), "ravi.db");
+    const previousUmask = process.umask(0o022);
+    const db = (() => {
+      try {
+        preparePrivateSqliteFile(dbPath);
+        const opened = new Database(dbPath);
+        opened.exec("PRAGMA journal_mode = WAL");
+        opened.exec("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);");
+        return opened;
+      } finally {
+        process.umask(previousUmask);
+      }
+    })();
+    try {
+      for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) expect(modeOf(path)).toBe(0o600);
+      expect(db.query("SELECT count(*) AS n FROM t").get()).toEqual({ n: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
+  posixOnly("honours RAVI_STATE_DIR_KEEP_PERMISSIONS=1 for new files too", () => {
+    const dbPath = join(tempDir(), "ravi.db");
+    preparePrivateSqliteFile(dbPath, { env: { RAVI_STATE_DIR_KEEP_PERMISSIONS: "1" } });
+    expect(() => statSync(dbPath)).toThrow();
   });
 });

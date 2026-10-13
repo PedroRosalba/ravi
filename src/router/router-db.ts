@@ -20,7 +20,7 @@ import { normalizePhone, normalizeRoutePattern } from "../utils/phone.js";
 import { normalizeLimitOffsetPage, type ListPage } from "../utils/pagination.js";
 import { timestampLikeToMs } from "../utils/provider-timestamp.js";
 import { executeWrite } from "../db/write-retry.js";
-import { ensurePrivateSqliteFiles } from "../security/private-files.js";
+import { preparePrivateSqliteFile } from "../security/private-files.js";
 import {
   CLI_COMMAND_ACCESS_KIND_MIGRATION_KEYS,
   migrateAgentDefaultsRecord,
@@ -1246,17 +1246,16 @@ function getDb(): Database {
     }
   }
 
+  // Owner-only from the start: SQLite would create ravi.db with the umask
+  // (usually 0644). The -wal/-shm files it creates inherit the db's mode.
+  preparePrivateSqliteFile(nextDbPath);
   const db = new Database(nextDbPath);
-  // ravi.db is created with the umask (usually 0644): keep it owner-only.
-  ensurePrivateSqliteFiles(nextDbPath);
   instrumentSlowQueries(db);
   routerDbState.db = db;
   routerDbState.dbPath = nextDbPath;
 
   // WAL mode for concurrent read/write access (CLI + daemon).
   db.exec("PRAGMA journal_mode = WAL");
-  // The -wal/-shm files appear here; an existing pair may predate the db fix.
-  ensurePrivateSqliteFiles(nextDbPath);
   // Wait up to 5s for locks to clear instead of failing immediately.
   db.exec("PRAGMA busy_timeout = 5000");
   // synchronous=NORMAL halves fsync count vs FULL while remaining crash-safe in

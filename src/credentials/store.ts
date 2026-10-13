@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { executeWrite, resetWriteCounter } from "../db/write-retry.js";
-import { ensurePrivateSqliteFiles } from "../security/private-files.js";
+import { preparePrivateSqliteFile } from "../security/private-files.js";
 import { buildSqlWhereClause, countRows, normalizeLimitOffsetPage } from "../utils/pagination.js";
 import { getRaviStateDir } from "../utils/paths.js";
 import type {
@@ -295,9 +295,9 @@ function getCredentialDb(options: CredentialStoreOptions = {}): Database {
   if (handle?.path === path) return handle.db;
   handle?.db.close();
   mkdirSync(dirname(path), { recursive: true });
+  preparePrivateSqliteFile(path);
   const db = new Database(path, { create: true });
   db.exec("PRAGMA journal_mode = WAL");
-  ensurePrivateSqliteFiles(path);
   db.exec("PRAGMA foreign_keys = ON");
   ensureSchema(db);
   handle = { db, path };

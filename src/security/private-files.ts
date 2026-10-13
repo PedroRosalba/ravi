@@ -14,14 +14,19 @@
  * else, honour RAVI_STATE_DIR_KEEP_PERMISSIONS=1, and never throw.
  *
  * SQLite gives `-wal` and `-shm` the mode of the database file, so once the db
- * is 0600 the journal files it creates later are 0600 too.
+ * is 0600 the journal files it creates later are 0600 too. Openers call
+ * `preparePrivateSqliteFile()` before `new Database()`: a missing db is
+ * created empty with mode 0600 (SQLite treats an empty file as a new
+ * database), so there is no window in which it exists with the umask's mode.
  */
 
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, type Stats } from "node:fs";
+import { isAbsolute } from "node:path";
 import { formatMode, KEEP_STATE_DIR_PERMISSIONS_ENV } from "./state-dir-permissions.js";
 
 const GROUP_OTHER_BITS = 0o077;
 const OWNER_BITS = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
 
 export const SQLITE_COMPANION_SUFFIXES = ["-wal", "-shm"] as const;
 
@@ -132,4 +137,48 @@ export function ensurePrivateSqliteFiles(dbPath: string, deps: PrivateFilesDeps 
   return [dbPath, ...SQLITE_COMPANION_SUFFIXES.map((suffix) => `${dbPath}${suffix}`)].map((path) =>
     ensurePrivateFile(path, deps),
   );
+}
+
+export type CreatePrivateFileAction = "created" | "exists" | "skipped" | "unsupported" | "error";
+
+/**
+ * Create `path` as an empty 0600 file when nothing is there yet
+ * (O_CREAT|O_EXCL|O_NOFOLLOW, then fchmod so the umask cannot change the
+ * mode). An existing file or symlink is left alone. Only absolute paths are
+ * created, so `:memory:` and `file:` URIs are skipped. Never throws.
+ */
+export function createPrivateFileIfMissing(
+  path: string,
+  deps: Pick<PrivateFilesDeps, "platform"> = {},
+): CreatePrivateFileAction {
+  if ((deps.platform ?? process.platform) === "win32") return "unsupported";
+  if (!isAbsolute(path)) return "skipped";
+  let fd: number;
+  try {
+    fd = openSync(
+      path,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      PRIVATE_FILE_MODE,
+    );
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | null)?.code === "EEXIST" ? "exists" : "error";
+  }
+  try {
+    fchmodSync(fd, PRIVATE_FILE_MODE);
+    return "created";
+  } catch {
+    return "error";
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Call before opening a SQLite database: create it 0600 when missing, and
+ * tighten an existing db and its `-wal`/`-shm`. Never throws.
+ */
+export function preparePrivateSqliteFile(dbPath: string, deps: PrivateFilesDeps = {}): PrivateFileResult[] {
+  // The opt-out keeps whatever mode the operator's umask gives new files too.
+  if ((deps.env ?? process.env)[KEEP_STATE_DIR_PERMISSIONS_ENV] !== "1") createPrivateFileIfMissing(dbPath, deps);
+  return ensurePrivateSqliteFiles(dbPath, deps);
 }

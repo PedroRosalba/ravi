@@ -4,6 +4,7 @@ import { chmodSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { enqueueTraceExportBatch } from "../session-trace/cloud-trace-export.js";
 import { recordSessionEvent } from "../session-trace/session-trace-db.js";
+import { saveMessage } from "../db.js";
 import { getSyncCursor } from "../sync/db.js";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
 import {
@@ -556,6 +557,11 @@ describe("ravi.db file permissions", () => {
       if (existsSync(path)) expect(modeOf(path)).toBe(0o600);
     }
     expect(modeOf(dbPath)).toBe(0o600);
+  });
+
+  posixOnly("chat.db (message contents) is created 0600", () => {
+    saveMessage("agent:main:main", "user", "hello");
+    expect(modeOf(join(stateDir!, "chat.db"))).toBe(0o600);
   });
 
   posixOnly("an existing 0644 ravi.db is tightened when it is reopened", () => {

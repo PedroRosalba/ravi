@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { normalizeConsoleUrl } from "../cloud-auth/client.js";
 import { CloudAuthError } from "../cloud-auth/errors.js";
-import { ensurePrivateSqliteFiles } from "../security/private-files.js";
+import { preparePrivateSqliteFile } from "../security/private-files.js";
 import { getRaviStateDir } from "../utils/paths.js";
 import {
   CONSOLE_SCOPE_KINDS,
@@ -180,8 +180,8 @@ function getDb(options: ConsoleScopeStoreOptions = {}): Database {
   if (handle?.path === path) return handle.db;
   handle?.db.close();
   mkdirSync(dirname(path), { recursive: true });
+  preparePrivateSqliteFile(path);
   const db = new Database(path, { create: true });
-  ensurePrivateSqliteFiles(path);
   ensureSchema(db);
   handle = { db, path };
   return db;
