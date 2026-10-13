@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   ALL_TRAFFIC,
   type BuildE2bTemplateOptions,
@@ -36,8 +36,10 @@ import {
   runE2bSandboxTask,
   safeFileName,
   sandboxHostId,
+  sandboxRunExitCode,
   shellQuote,
 } from "./e2b.js";
+import { MAX_DAEMON_LOG, MAX_JSON, MAX_PATCH } from "./outputs.js";
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -60,6 +62,16 @@ interface FakeOptions {
   /** What `getInfo` reports as the sandbox's template id (default `tpl_1`, the id the fake build records). */
   templateId?: string;
   getInfoFails?: boolean;
+  /** What `ravi tasks show --json` prints, instead of a task with the next status. */
+  taskShowStdout?: string;
+  /** Session names `ravi sessions list` reports. */
+  sessions?: string[];
+  /** What `git diff` prints. */
+  patch?: string;
+  /** What the final `cat` of the daemon log prints. */
+  daemonLog?: string;
+  /** Chunks the live `tail` of the daemon log streams. */
+  daemonChunks?: string[];
 }
 
 const PATCH = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n \n-a\n+b\n";
@@ -76,6 +88,10 @@ function expectOnlyPlaceholders(network: SandboxNetwork | undefined): void {
     }
   }
 }
+
+type RunOpts = Parameters<SandboxHandle["commands"]["run"]>[1];
+type RunResult = Awaited<ReturnType<SandboxHandle["commands"]["run"]>>;
+const CAPPED_RE = /^out=\$\(mktemp\) && \( ([\s\S]*) \) > "\$out"; rc=\$\?; head -c (\d+) "\$out";/;
 
 function fakeSandbox(options: FakeOptions = {}) {
   const commands: string[] = [];
@@ -95,49 +111,61 @@ function fakeSandbox(options: FakeOptions = {}) {
     secrets: {} as Record<string, string>,
     destroyedSecrets: [] as string[],
   };
+  // What the sandbox answers to one command; reads arrive wrapped by `cappedCommand`.
+  const respond = async (cmd: string, opts?: RunOpts): Promise<RunResult> => {
+    if (cmd.includes(" clone --depth 50 ")) state.cloneTimeoutMs = opts?.timeoutMs;
+    if (cmd.startsWith("tail -n +1 -F")) {
+      // Two whole lines and a partial one, split across chunks.
+      for (const chunk of options.daemonChunks ?? ["daemon line 1\ndaemon ", "line 2 tok-secret-123\npartial"]) {
+        opts?.onStdout?.(chunk);
+      }
+      return { disconnect: async () => (state.tailDisconnected = true) };
+    }
+    if (options.failOn?.test(cmd)) throw options.failWith ?? new Error(`boom: ${cmd}`);
+    if (cmd.startsWith("ravi tasks create")) return { stdout: JSON.stringify({ task: { id: "task-1" } }) };
+    if (cmd.startsWith("ravi tasks show")) {
+      if (options.taskShowStdout !== undefined) return { stdout: options.taskShowStdout };
+      const status = statuses.length > 1 ? statuses.shift() : statuses[0];
+      return {
+        stdout: JSON.stringify({
+          task: {
+            id: "task-1",
+            sessionName: "task-1-work",
+            status,
+            progress: status === "done" ? 100 : 10,
+          },
+        }),
+      };
+    }
+    if (cmd.includes("git diff")) return { stdout: options.patch ?? PATCH };
+    if (cmd.includes("git write-tree")) return { stdout: "tree-base\n" };
+    if (cmd.startsWith("cat /home/user/.ravi/daemon.log")) {
+      if (options.daemonLogFails) throw new Error("sandbox gone");
+      return { stdout: options.daemonLog ?? "full daemon log tok-secret-123\n" };
+    }
+    if (cmd.startsWith("ravi sessions list")) {
+      const names = options.sessions ?? ["worker-task-1", "agent:operator:main"];
+      return { stdout: JSON.stringify({ items: names.map((name) => ({ name })) }) };
+    }
+    if (cmd.startsWith("ravi sessions trace")) return { stdout: `trace for ${cmd}\n` };
+    if (cmd.startsWith("find /home/user/.claude/projects")) {
+      return { stdout: "/home/user/.claude/projects/-home-user-work-repo/abc.jsonl\n" };
+    }
+    if (cmd.startsWith("cat '/home/user/.claude/projects/")) return { stdout: '{"type":"user"}\n' };
+    if (cmd.startsWith("cat ")) return { stdout: "# TASK" };
+    return { stdout: "" };
+  };
   const handle: SandboxHandle = {
     sandboxId: "sbx-test",
     commands: {
-      async run(cmd, opts) {
-        commands.push(cmd);
-        if (cmd.includes(" clone --depth 50 ")) state.cloneTimeoutMs = opts?.timeoutMs;
-        if (cmd.startsWith("tail -n +1 -F")) {
-          // Two whole lines and a partial one, split across chunks.
-          opts?.onStdout?.("daemon line 1\ndaemon ");
-          opts?.onStdout?.("line 2 tok-secret-123\npartial");
-          return { disconnect: async () => (state.tailDisconnected = true) };
-        }
-        if (options.failOn?.test(cmd)) throw options.failWith ?? new Error(`boom: ${cmd}`);
-        if (cmd.startsWith("ravi tasks create")) return { stdout: JSON.stringify({ task: { id: "task-1" } }) };
-        if (cmd.startsWith("ravi tasks show")) {
-          const status = statuses.length > 1 ? statuses.shift() : statuses[0];
-          return {
-            stdout: JSON.stringify({
-              task: {
-                id: "task-1",
-                sessionName: "task-1-work",
-                status,
-                progress: status === "done" ? 100 : 10,
-              },
-            }),
-          };
-        }
-        if (cmd.includes("git diff")) return { stdout: PATCH };
-        if (cmd.includes("git write-tree")) return { stdout: "tree-base\n" };
-        if (cmd.startsWith("cat /home/user/.ravi/daemon.log")) {
-          if (options.daemonLogFails) throw new Error("sandbox gone");
-          return { stdout: "full daemon log tok-secret-123\n" };
-        }
-        if (cmd.startsWith("ravi sessions list")) {
-          return { stdout: JSON.stringify({ items: [{ name: "worker-task-1" }, { name: "agent:operator:main" }] }) };
-        }
-        if (cmd.startsWith("ravi sessions trace")) return { stdout: `trace for ${cmd}\n` };
-        if (cmd.startsWith("find /home/user/.claude/projects")) {
-          return { stdout: "/home/user/.claude/projects/-home-user-work-repo/abc.jsonl\n" };
-        }
-        if (cmd.startsWith("cat '/home/user/.claude/projects/")) return { stdout: '{"type":"user"}\n' };
-        if (cmd.startsWith("cat ")) return { stdout: "# TASK" };
-        return { stdout: "" };
+      async run(wrapped, opts) {
+        commands.push(wrapped);
+        // Behave like the real wrapper: run the inner command, keep cap + 1 bytes, report the size.
+        const capped = CAPPED_RE.exec(wrapped);
+        if (!capped) return respond(wrapped, opts);
+        const result = await respond(capped[1], opts);
+        const out = Buffer.from(result.stdout ?? "");
+        return { stdout: out.subarray(0, Number(capped[2])).toString(), stderr: `ravi-bytes=${out.length}\n` };
       },
     },
     files: {
@@ -397,6 +425,7 @@ describe("runE2bSandboxTask", () => {
       "TASK.md",
       "changes.patch",
       "daemon.log",
+      "review.json",
       "run.log",
       "sessions/agent_operator_main.trace.jsonl",
       "sessions/agent_operator_main.trace.txt",
@@ -1254,5 +1283,125 @@ describe("template record in a run", () => {
     writeFileSync(recordPath, JSON.stringify({ version: 1, templates: { "ravi-runner": { sha: "short" } } }));
     expect(readE2bTemplateRecord("ravi-runner", recordPath)).toBeNull();
     expect(readE2bTemplateRecord("ravi-runner", join(tempDir(), "missing.json"))).toBeNull();
+  });
+});
+
+describe("untrusted outputs", () => {
+  /** Every file and directory under `dir`, relative paths. */
+  function walk(dir: string, prefix = ""): string[] {
+    return readdirSync(join(dir, prefix), { withFileTypes: true }).flatMap((entry) => {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      return entry.isDirectory() ? [`${path}/`, ...walk(dir, path)] : [path];
+    });
+  }
+
+  it("treats a status with terminal escapes as invalid, which exits 1", async () => {
+    const fake = fakeSandbox({ statuses: ["\x1b[31mdone"] });
+    const steps: string[] = [];
+    const result = await runE2bSandboxTask(fake.options({ onStep: (line) => steps.push(line) }));
+    expect(result.reportedStatus).toBe("invalid");
+    expect(result.status).toBe("invalid");
+    expect(sandboxRunExitCode(result)).toBe(1);
+    expect(sandboxRunExitCode({ reportedStatus: "done" })).toBe(0);
+    expect(fake.state.killed).toBe(true);
+    expect(steps.join("\n")).not.toContain("\x1b");
+  });
+
+  it("rejects a task.json over 1 MiB: not saved, not parsed, the run is invalid", async () => {
+    const big = JSON.stringify({
+      task: { id: "task-1", status: "done", sessionName: "task-1-work", pad: "x".repeat(MAX_JSON) },
+    });
+    const fake = fakeSandbox({ taskShowStdout: big });
+    const outputDir = tempDir();
+    const result = await runE2bSandboxTask(fake.options({ outputDir }));
+    expect(result.reportedStatus).toBe("invalid");
+    expect(existsSync(join(outputDir, "task.json"))).toBe(false);
+    expect(result.files).toContain("task.json.TOO_LARGE.txt");
+    expect(readFileSync(join(outputDir, "task.json.TOO_LARGE.txt"), "utf8")).toContain(
+      `(${Buffer.byteLength(big)} bytes)`,
+    );
+    // The session name inside the oversized task.json is never read.
+    expect(result.files).not.toContain("sessions/task-1-work.trace.txt");
+  });
+
+  it("keeps a session named ../../x under sessions/", async () => {
+    const fake = fakeSandbox({ sessions: ["../../x", "/etc/passwd"] });
+    const outputDir = tempDir();
+    const result = await runE2bSandboxTask(fake.options({ outputDir }));
+    expect(result.files).toContain("sessions/x.trace.txt");
+    expect(result.files).toContain("sessions/etc_passwd.trace.txt");
+    for (const file of result.files) expect(resolve(outputDir, file)).toStartWith(`${outputDir}/`);
+    expect(existsSync(join(outputDir, "sessions/x.trace.txt"))).toBe(true);
+  });
+
+  it("writes every output 0600 in 0700 directories, under a custom --output too", async () => {
+    const fake = fakeSandbox();
+    const outputDir = join(tempDir(), "custom", "out");
+    const result = await runE2bSandboxTask(fake.options({ outputDir }));
+    expect(result.files.length).toBeGreaterThan(5);
+    expect(statSync(outputDir).mode & 0o777).toBe(0o700);
+    for (const path of walk(outputDir)) {
+      expect([path, statSync(join(outputDir, path)).mode & 0o777]).toEqual([path, path.endsWith("/") ? 0o700 : 0o600]);
+    }
+  });
+
+  it("saves no part of a patch over 20 MiB, only a note with its size", async () => {
+    const patch = `diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+${"b".repeat(MAX_PATCH)}\n`;
+    const fake = fakeSandbox({ patch });
+    const outputDir = tempDir();
+    const steps: string[] = [];
+    const result = await runE2bSandboxTask(fake.options({ outputDir, onStep: (line) => steps.push(line) }));
+    expect(existsSync(join(outputDir, "changes.patch"))).toBe(false);
+    expect(existsSync(join(outputDir, "review.json"))).toBe(false);
+    expect(result.review).toBeNull();
+    expect(result.files).toContain("changes.patch.TOO_LARGE.txt");
+    expect(readFileSync(join(outputDir, "changes.patch.TOO_LARGE.txt"), "utf8")).toContain(
+      `(${Buffer.byteLength(patch)} bytes)`,
+    );
+    expect(steps.some((line) => line.includes("changes.patch is over 20.0 MiB"))).toBe(true);
+    // The read itself was capped in the sandbox.
+    expect(fake.commands.some((cmd) => cmd.includes(`head -c ${MAX_PATCH + 1} `))).toBe(true);
+  });
+
+  it("cuts the daemon log at 50 MiB and says so", async () => {
+    const fake = fakeSandbox({ daemonLog: "y".repeat(MAX_DAEMON_LOG + 10) });
+    const outputDir = tempDir();
+    await runE2bSandboxTask(fake.options({ outputDir }));
+    const log = readFileSync(join(outputDir, "daemon.log"), "utf8");
+    expect(log.startsWith("y".repeat(1000))).toBe(true);
+    expect(log).toEndWith(
+      `[ravi: output truncated at ${MAX_DAEMON_LOG} bytes; the sandbox reported ${MAX_DAEMON_LOG + 10} bytes]\n`,
+    );
+    expect(Buffer.byteLength(log)).toBeLessThan(MAX_DAEMON_LOG + 200);
+  });
+
+  it("prints daemon lines without terminal controls and saves them as they came, redacted", async () => {
+    const fake = fakeSandbox({
+      daemonLogFails: true,
+      daemonChunks: ["\x1b]52;c;ZXZpbA==\x07copied tok-secret-123\n\x1b[2Jcleared\n"],
+    });
+    const outputDir = tempDir();
+    const printed: string[] = [];
+    await runE2bSandboxTask(fake.options({ outputDir, onDaemonLog: (line) => printed.push(line) }));
+    expect(printed).toEqual(["copied ***", "cleared"]);
+    const saved = readFileSync(join(outputDir, "daemon.log"), "utf8");
+    expect(saved).toStartWith("\x1b]52;c;ZXZpbA==\x07copied ***\n\x1b[2Jcleared\n");
+  });
+
+  it("reviews the patch into review.json and the result, and never applies it", async () => {
+    const patch =
+      "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\nnew file mode 100644\n" +
+      "--- /dev/null\n+++ b/.github/workflows/ci.yml\n@@ -0,0 +1 @@\n+on: push\n";
+    const fake = fakeSandbox({ patch });
+    const outputDir = tempDir();
+    const result = await runE2bSandboxTask(fake.options({ outputDir }));
+    expect(result.review?.flags).toEqual([
+      { path: ".github/workflows/ci.yml", kind: "hooks-ci", reason: "GitHub Actions workflow" },
+    ]);
+    expect(JSON.parse(readFileSync(join(outputDir, "review.json"), "utf8"))).toEqual(result.review);
+    expect(statSync(join(outputDir, "review.json")).mode & 0o777).toBe(0o600);
+    // Advisory only: the exit code still follows the reported status.
+    expect(sandboxRunExitCode(result)).toBe(0);
+    expect(fake.commands.some((cmd) => cmd.includes("git apply"))).toBe(false);
   });
 });

@@ -9,8 +9,8 @@
  * - metrics (Sandbox.getMetrics): CPU, memory and disk sampled every 5 s.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { mkdirPrivate, writePrivate } from "./outputs.js";
 
 const LOG_PAGE_SIZE = 1000;
 const MAX_LOG_PAGES = 50;
@@ -291,11 +291,11 @@ export async function collectE2bTelemetry(
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const api = { apiUrl: options.apiUrl, fetch: options.fetch };
   const dir = join(options.outputDir, "e2b");
-  mkdirSync(dir, { recursive: true });
+  mkdirPrivate(dir);
   const files: string[] = [];
   const errors: string[] = [];
   const write = (name: string, content: string) => {
-    writeFileSync(join(dir, name), redactTelemetry(content, options.secrets));
+    writePrivate(join(dir, name), redactTelemetry(content, options.secrets));
     files.push(`e2b/${name}`);
   };
   const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));

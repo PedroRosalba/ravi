@@ -27,8 +27,11 @@ import {
   resolveSandboxCredentials,
   runE2bSandboxTask,
   sandboxHostId,
+  sandboxRunExitCode,
 } from "../../sandbox/e2b.js";
 import { collectE2bTelemetry, type E2bTelemetrySummary } from "../../sandbox/observe.js";
+import { stripTerminalControls } from "../../sandbox/outputs.js";
+import { formatPatchReview } from "../../sandbox/patch-review.js";
 import {
   DEFAULT_REAP_OLDER_THAN_MIN,
   type ReapDeps,
@@ -54,10 +57,18 @@ const e2bTelemetrySummarySchema = z.object({
   errors: z.array(z.string()),
 });
 
+const patchReviewSchema = z.object({
+  files: z.number(),
+  flags: z.array(z.object({ path: z.string(), kind: z.string(), reason: z.string() })),
+  suggestions: z.array(z.string()),
+});
 const sandboxRunReturnSchema = z.object({
   sandboxId: z.string(),
   taskId: z.string().nullable(),
+  // As the sandbox reported it (unverified), or `invalid`, `timeout`, `error`, `aborted`.
+  reportedStatus: z.string(),
   status: z.string(),
+  review: patchReviewSchema.nullable(),
   kept: z.boolean(),
   outputDir: z.string(),
   files: z.array(z.string()),
@@ -473,16 +484,19 @@ export class SandboxCommands {
     if (asJson) {
       console.log(JSON.stringify(result, null, 2));
     } else {
-      console.log(`\nStatus:   ${result.status}`);
+      console.log(`\nStatus:   ${result.reportedStatus} (reported by the sandbox, unverified)`);
       if (result.taskId) console.log(`Task:     ${result.taskId}`);
       console.log(`Sandbox:  ${result.sandboxId}${result.kept ? " (paused)" : ""}`);
       // Same text as run.log: the commit only when E2B's template id is the one this host recorded.
       console.log(`Template ${template ?? DEFAULT_E2B_TEMPLATE}: ${result.templateNote}`);
       console.log(`Outputs:  ${result.outputDir}`);
-      if (result.error) console.log(`Error:    ${result.error}`);
+      // The error can quote the sandbox's stderr.
+      if (result.error) console.log(`Error:    ${stripTerminalControls(result.error)}`);
       if (result.e2b) printTelemetry(result.e2b);
+      // Advisory only: the exit code does not change (ADR 0002 #9).
+      if (result.review) for (const line of formatPatchReview(result.review, stripTerminalControls)) console.log(line);
     }
-    if (result.status !== "done") process.exitCode = 1;
+    if (sandboxRunExitCode(result) !== 0) process.exitCode = 1;
     return result;
   }
 

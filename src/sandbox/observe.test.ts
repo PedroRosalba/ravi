@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -167,6 +167,9 @@ describe("collectE2bTelemetry", () => {
     expect(processes).toContain("clone ***");
     expect(readFileSync(join(outputDir, "e2b/logs.jsonl"), "utf8")).not.toContain("secret-token-1");
     expect(readFileSync(join(outputDir, "e2b/metrics.csv"), "utf8")).toContain("2026-10-06T21:39:20.000Z,42.5,2,300");
+    // Owner-only, like every other output of a run.
+    expect(statSync(join(outputDir, "e2b")).mode & 0o777).toBe(0o700);
+    for (const file of files) expect(statSync(join(outputDir, file)).mode & 0o777).toBe(0o600);
   });
 
   it("records a part that fails instead of throwing", async () => {
