@@ -58,6 +58,7 @@ import {
   getDb,
   getDefaultAgentId,
   getRaviDbPath,
+  PLAINTEXT_CONTEXT_KEY_SQL,
 } from "../../router/router-db.js";
 import {
   currentCliOnlyCommands,
@@ -563,6 +564,7 @@ export function inspectDoctor(overrides: Partial<DoctorDeps> = {}, options: Insp
     addCheck(checks, () => buildCronTargetsCheck(deps));
     addCheck(checks, () => buildRuntimeSchemaCheck(deps));
     addCheck(checks, () => buildRuntimeMigrationCheck(deps));
+    addCheck(checks, () => buildContextKeysAtRestCheck(deps));
     addCheck(checks, () => {
       if (!agents) agents = deps.dbListAgents();
       if (!instances) instances = deps.dbListInstances();
@@ -1752,6 +1754,67 @@ function buildRuntimeMigrationCheck(deps: DoctorDeps): LegacyDoctorCheck {
       knownLedgerTables,
       foundLedgerTables: ledgers,
     },
+  };
+}
+
+/**
+ * Context keys are stored as digests; the daemon hashes legacy plaintext rows at
+ * boot. Rows still in plaintext mean the daemon has not restarted on this
+ * version yet (or the migration failed), and they are usable bearers to anyone
+ * who can read ravi.db. The count and the context ids are reported (ids are not
+ * secrets), never a key. A row that survives a boot is a plaintext twin of a
+ * hashed key, which the migration skips; the remedy is to revoke it.
+ */
+const PLAINTEXT_CONTEXT_IDS_CAP = 20;
+
+function buildContextKeysAtRestCheck(deps: DoctorDeps): LegacyDoctorCheck {
+  const base = {
+    id: "runtime.context_keys_at_rest",
+    domain: "runtime",
+    title: "Context keys at rest",
+  } as const;
+  let plaintext: number;
+  let plaintextContextIds: string[] = [];
+  try {
+    const rows = deps.queryRows<{ plaintext?: number }>(
+      `SELECT COUNT(*) AS plaintext FROM contexts WHERE ${PLAINTEXT_CONTEXT_KEY_SQL}`,
+    );
+    plaintext = Number(rows[0]?.plaintext ?? 0);
+    if (plaintext > 0) {
+      plaintextContextIds = deps
+        .queryRows<{ context_id: string }>(
+          `SELECT context_id FROM contexts WHERE ${PLAINTEXT_CONTEXT_KEY_SQL} ORDER BY created_at ASC, context_id ASC LIMIT ${PLAINTEXT_CONTEXT_IDS_CAP}`,
+        )
+        .map((row) => row.context_id);
+    }
+  } catch (error) {
+    return {
+      ...base,
+      status: "skip",
+      summary: `cannot count stored context keys: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (plaintext > 0) {
+    return {
+      ...base,
+      status: "warn",
+      summary: `${plaintext} context key(s) are stored in plaintext instead of as digests`,
+      fixHint:
+        'restart the daemon (`ravi daemon restart -m "hash context keys"`); if rows remain, revoke the listed contexts with `ravi context revoke <id>`',
+      data: {
+        plaintextContextKeys: plaintext,
+        plaintextContextIds,
+        plaintextContextIdsTruncated: plaintext > plaintextContextIds.length,
+      },
+    };
+  }
+
+  return {
+    ...base,
+    status: "ok",
+    summary: "every stored context key is a digest",
+    data: { plaintextContextKeys: 0 },
   };
 }
 
