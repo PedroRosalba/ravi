@@ -21,6 +21,7 @@ import {
   SANDBOX_MODEL_AUTH_MODES,
   type SandboxEgressMode,
   type SandboxGithubAuthMode,
+  type RunSandboxTaskResult,
   type SandboxModelAuthMode,
   buildE2bTemplate,
   resolveE2bApiKey,
@@ -30,7 +31,7 @@ import {
   sandboxRunExitCode,
 } from "../../sandbox/e2b.js";
 import { collectE2bTelemetry, type E2bTelemetrySummary } from "../../sandbox/observe.js";
-import { stripTerminalControls } from "../../sandbox/outputs.js";
+import { stripTerminalControls, terminalSafeJson } from "../../sandbox/outputs.js";
 import { formatPatchReview } from "../../sandbox/patch-review.js";
 import {
   DEFAULT_REAP_OLDER_THAN_MIN,
@@ -317,18 +318,41 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function printTelemetry(summary: E2bTelemetrySummary): void {
-  console.log(
+/** What E2B recorded, as printed; event names, kill reason and errors pass through stripTerminalControls. */
+export function formatTelemetry(summary: E2bTelemetrySummary): string[] {
+  const lines = [
     `E2B:      ${summary.processes} processes (${summary.failedProcesses} failed), ` +
       `${summary.logLines} log lines, events ${summary.events.join(" > ") || "none"}`,
-  );
-  console.log(
     `          peak CPU ${summary.peakCpuPct ?? "?"}%, memory ${summary.peakMemMB ?? "?"}/${summary.memTotalMB ?? "?"} MB, ` +
       `disk ${summary.peakDiskMB ?? "?"} MB` +
       (summary.killReason ? `, ended by ${summary.killReason}` : "") +
       (summary.executionMs !== null ? ` after ${(summary.executionMs / 1000).toFixed(1)}s` : ""),
-  );
-  if (summary.errors.length) console.log(`          missing: ${summary.errors.join("; ")}`);
+  ];
+  if (summary.errors.length) lines.push(`          missing: ${summary.errors.join("; ")}`);
+  return lines.map(stripTerminalControls);
+}
+
+function printTelemetry(summary: E2bTelemetrySummary): void {
+  for (const line of formatTelemetry(summary)) console.log(line);
+}
+
+/**
+ * The text summary of `sandbox run`. Every line passes through stripTerminalControls:
+ * the task id, sandbox and template ids, the error and E2B's telemetry can all carry
+ * what the sandbox said. The patch review box escapes control characters in paths.
+ */
+export function formatSandboxRunSummary(result: RunSandboxTaskResult, template: string): string[] {
+  const lines = ["", `Status:   ${result.reportedStatus} (reported by the sandbox, unverified)`];
+  if (result.taskId) lines.push(`Task:     ${result.taskId}`);
+  lines.push(`Sandbox:  ${result.sandboxId}${result.kept ? " (paused)" : ""}`);
+  // Same text as run.log: the commit only when E2B's template id is the one this host recorded.
+  lines.push(`Template ${template}: ${result.templateNote}`);
+  lines.push(`Outputs:  ${result.outputDir}`);
+  if (result.error) lines.push(`Error:    ${result.error}`);
+  if (result.e2b) lines.push(...formatTelemetry(result.e2b));
+  // Advisory only: the exit code does not change (ADR 0002 #9).
+  if (result.review) lines.push(...formatPatchReview(result.review, stripTerminalControls));
+  return lines.map(stripTerminalControls);
 }
 
 /**
@@ -482,19 +506,10 @@ export class SandboxCommands {
     }
 
     if (asJson) {
-      console.log(JSON.stringify(result, null, 2));
+      // C1 controls and bidi characters in sandbox-chosen strings are written as \uXXXX.
+      console.log(terminalSafeJson(result));
     } else {
-      console.log(`\nStatus:   ${result.reportedStatus} (reported by the sandbox, unverified)`);
-      if (result.taskId) console.log(`Task:     ${result.taskId}`);
-      console.log(`Sandbox:  ${result.sandboxId}${result.kept ? " (paused)" : ""}`);
-      // Same text as run.log: the commit only when E2B's template id is the one this host recorded.
-      console.log(`Template ${template ?? DEFAULT_E2B_TEMPLATE}: ${result.templateNote}`);
-      console.log(`Outputs:  ${result.outputDir}`);
-      // The error can quote the sandbox's stderr.
-      if (result.error) console.log(`Error:    ${stripTerminalControls(result.error)}`);
-      if (result.e2b) printTelemetry(result.e2b);
-      // Advisory only: the exit code does not change (ADR 0002 #9).
-      if (result.review) for (const line of formatPatchReview(result.review, stripTerminalControls)) console.log(line);
+      for (const line of formatSandboxRunSummary(result, template ?? DEFAULT_E2B_TEMPLATE)) console.log(line);
     }
     if (sandboxRunExitCode(result) !== 0) process.exitCode = 1;
     return result;
@@ -541,7 +556,7 @@ export class SandboxCommands {
     }
     const result = { sandboxId, outputDir, files: collected.files, e2b: collected.summary };
     if (asJson) {
-      console.log(JSON.stringify(result, null, 2));
+      console.log(terminalSafeJson(result));
     } else {
       printTelemetry(collected.summary);
       console.log(`Saved:    ${collected.files.map((file) => join(outputDir, file)).join("\n          ")}`);
@@ -596,7 +611,7 @@ export class SandboxCommands {
       fail(errorMessage(error));
     }
     if (asJson) {
-      console.log(JSON.stringify(result, null, 2));
+      console.log(terminalSafeJson(result));
     } else if (result.candidates.length === 0) {
       console.log(
         `No sandboxes to reap (${result.scanned} ravi-task sandbox(es) seen, ${result.skipped.length} skipped).`,
@@ -671,7 +686,7 @@ export class SandboxTemplateCommands {
         onLog: asJson ? undefined : (line) => console.log(line),
       });
       if (asJson) {
-        console.log(JSON.stringify(result, null, 2));
+        console.log(terminalSafeJson(result));
       } else {
         console.log(
           `\nTemplate ready: ${result.name} (id ${result.templateId}, build ${result.buildId}, ` +

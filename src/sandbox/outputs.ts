@@ -4,16 +4,31 @@
  * Everything a run saves (daemon log, patch, task.json, traces, transcripts,
  * E2B telemetry) was produced inside the sandbox by a worker following
  * instructions it did not write, so a prompt-injected worker can shape every
- * byte of it. Three things follow: the files are private to the operator (0600
- * in 0700 directories, under a custom `--output` too), nothing is read without
- * a size cap (a sandbox cannot fill the host's disk), and nothing is printed to
- * the terminal without stripping terminal control sequences (a log line cannot
- * rewrite the screen, write the clipboard or hide text behind a hyperlink).
+ * byte of it. Four things follow: the files are private to the operator (0600
+ * in 0700 directories, under a custom `--output` too) and written without
+ * following symbolic links; nothing is read without a size cap, enforced both
+ * in the sandbox and by counting what the host actually receives (a sandbox
+ * cannot fill the host's disk or memory); nothing is printed to the terminal
+ * without stripping terminal control sequences (a log line cannot rewrite the
+ * screen, write the clipboard or hide text behind a hyperlink); and `--json`
+ * output escapes the C1 and bidi characters JSON itself leaves raw.
  */
 
-import { appendFileSync, chmodSync, existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { writeUserOnlyFile } from "../cloud-auth/secret-backends.js";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { randomBytes } from "node:crypto";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 
 const MiB = 1024 * 1024;
 /** The full daemon log read at the end of a run; the live copy is capped the same way. */
@@ -22,36 +37,131 @@ export const MAX_DAEMON_LOG = 50 * MiB;
 export const MAX_PATCH = 20 * MiB;
 /** Each Claude Code transcript, session trace and TASK.md. */
 export const MAX_TRANSCRIPT = 10 * MiB;
-/** Everything one run reads from the sandbox; files past this are not saved. */
+/** Everything one run's collection receives from the sandbox; once reached, later files are not read. */
 export const MAX_TOTAL = 200 * MiB;
 /** JSON the run parses (`ravi tasks show`, `ravi sessions list`); over this it is rejected, not truncated. */
 export const MAX_JSON = 1 * MiB;
+/** A command's stderr, kept by the sandbox wrapper (the size line comes after it). */
+export const MAX_STDERR = 64 * 1024;
+/**
+ * What a command may stream back beyond its cap before the host kills it. The wrapper
+ * sends at most cap + 1 bytes of stdout and MAX_STDERR of stderr; a sandbox that sends
+ * more is not running the wrapper as written.
+ */
+export const STREAM_MARGIN = 1 * MiB;
+/** Longest daemon log line kept in host memory while waiting for its newline; longer lines are cut. */
+export const MAX_DAEMON_LINE = 64 * 1024;
+/** Commands that are not reads (clone, agent setup, task create) may stream this much before they are killed. */
+export const MAX_COMMAND_OUTPUT = 4 * MiB;
 
 export const PRIVATE_DIR_MODE = 0o700;
 export const PRIVATE_FILE_MODE = 0o600;
+
+/** Create `dir` 0700 or check an existing one: never a symbolic link, always a directory. */
+function ensurePrivateDir(dir: string): void {
+  try {
+    mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  const stat = lstatSync(dir);
+  if (stat.isSymbolicLink()) throw new Error(`Refusing to write through a symbolic link: ${dir}`);
+  if (!stat.isDirectory()) throw new Error(`Not a directory: ${dir}`);
+  chmodSync(dir, PRIVATE_DIR_MODE);
+}
 
 /**
  * Create `dir` (and its parents) and make it owner-only. An existing directory is
  * made 0700 too: the output directory holds the repository's changes and the
  * worker's transcripts, so a custom `--output` should be a directory for the run.
+ * A symbolic link is refused, never followed; with `root`, every directory from
+ * `root` down to `dir` is checked that way, not only the last one.
  */
-export function mkdirPrivate(dir: string): void {
-  mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
-  chmodSync(dir, PRIVATE_DIR_MODE);
+export function mkdirPrivate(dir: string, root?: string): void {
+  if (root === undefined) {
+    ensurePrivateDir(dir);
+    return;
+  }
+  const rel = relative(root, dir);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`${dir} is outside ${root}`);
+  let current = root;
+  ensurePrivateDir(current);
+  for (const part of rel.split(sep).filter(Boolean)) {
+    current = join(current, part);
+    ensurePrivateDir(current);
+  }
 }
 
-/** Write a whole file, mode 0600, in a 0700 directory, replacing it atomically. */
-export function writePrivate(path: string, data: string): void {
-  mkdirPrivate(dirname(path));
-  writeUserOnlyFile(path, data);
+/** Write all of `data` to an open file descriptor. */
+function writeAll(fd: number, data: string): void {
+  const buf = Buffer.from(data);
+  for (let at = 0; at < buf.length; ) at += writeSync(fd, buf, at, buf.length - at);
 }
 
-/** Append to a file that is created 0600 when missing (the live daemon log and run.log). */
-export function appendPrivate(path: string, data: string): void {
-  const existed = existsSync(path);
-  if (!existed) mkdirPrivate(dirname(path));
-  appendFileSync(path, data, { mode: PRIVATE_FILE_MODE });
-  if (!existed) chmodSync(path, PRIVATE_FILE_MODE);
+// O_NOFOLLOW: a symbolic link planted at the path fails the open (ELOOP) instead of
+// redirecting the write; O_NONBLOCK: a planted FIFO fails instead of blocking.
+const NO_FOLLOW = constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
+function openNoFollow(path: string, flags: number): number {
+  try {
+    return openSync(path, flags | NO_FOLLOW, PRIVATE_FILE_MODE);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+      throw new Error(`Refusing to write through a symbolic link: ${path}`);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Write a whole file, mode 0600, in a 0700 directory, replacing it atomically: the
+ * data goes to a fresh temp file (O_EXCL, O_NOFOLLOW) that is renamed over `path`,
+ * so a symbolic link at `path` is replaced, not followed.
+ */
+export function writePrivate(path: string, data: string, root?: string): void {
+  const dir = dirname(path);
+  mkdirPrivate(dir, root);
+  const tmp = join(dir, `.${basename(path).slice(0, 180)}.${randomBytes(6).toString("hex")}.tmp`);
+  const fd = openNoFollow(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
+  try {
+    fchmodSync(fd, PRIVATE_FILE_MODE);
+    writeAll(fd, data);
+  } finally {
+    closeSync(fd);
+  }
+  try {
+    renameSync(tmp, path);
+  } catch (error) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // Best effort: the temp file is private and named for this write only.
+    }
+    throw error;
+  }
+}
+
+/**
+ * Append to a file that is created 0600 when missing (the live daemon log and run.log).
+ * The open uses O_NOFOLLOW: a symbolic link at `path`, dangling or not, is refused and
+ * whatever it points to is left untouched.
+ */
+export function appendPrivate(path: string, data: string, root?: string): void {
+  let existed = true;
+  try {
+    lstatSync(path);
+  } catch {
+    existed = false;
+  }
+  if (!existed) mkdirPrivate(dirname(path), root);
+  const fd = openNoFollow(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT);
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(`Not a regular file: ${path}`);
+    if (!existed) fchmodSync(fd, PRIVATE_FILE_MODE);
+    writeAll(fd, data);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -67,15 +177,19 @@ export interface CappedRead {
 
 /**
  * Read `cmd`'s stdout inside the sandbox through a temp file and `head -c cap + 1`,
- * so the host never receives more than the cap and the exit code is the command's
- * own (a pipe would report `head`'s); the subshell keeps an `exit` or `cd` in `cmd`
- * from ending or moving the wrapper. The size is reported on stderr as
- * `ravi-bytes=<n>` so an overflow marker can name it.
+ * and its stderr through another temp file and `head -c MAX_STDERR`, so a wrapper
+ * that runs as written sends at most cap + 1 + MAX_STDERR bytes and the exit code is
+ * the command's own (a pipe would report `head`'s); the subshell keeps an `exit` or
+ * `cd` in `cmd` from ending or moving the wrapper. The stdout size is reported last
+ * on stderr, on a line of its own, as `ravi-bytes=<n>`, so an overflow marker can
+ * name it. The sandbox can still ignore all of this (a replaced `head` or shell),
+ * which is why the host also counts what it receives (`STREAM_MARGIN`).
  */
 export function cappedCommand(cmd: string, cap: number): string {
   return (
-    `out=$(mktemp) && ( ${cmd} ) > "$out"; rc=$?; head -c ${cap + 1} "$out"; ` +
-    `printf 'ravi-bytes=%s\\n' "$(wc -c < "$out")" >&2; rm -f "$out"; exit $rc`
+    `out=$(mktemp) && err=$(mktemp) && ( ${cmd} ) > "$out" 2> "$err"; rc=$?; head -c ${cap + 1} "$out"; ` +
+    `head -c ${MAX_STDERR} "$err" >&2; printf '\\nravi-bytes=%s\\n' "$(wc -c < "$out")" >&2; ` +
+    `rm -f "$out" "$err"; exit $rc`
   );
 }
 
@@ -138,4 +252,20 @@ const TERMINAL_CONTROLS_RE = new RegExp(
  */
 export function stripTerminalControls(text: string): string {
   return text.replace(TERMINAL_CONTROLS_RE, "");
+}
+
+// JSON.stringify escapes C0 controls but leaves C1 controls (U+0080–U+009F, which
+// include the 8-bit CSI and OSC introducers), bidi marks, overrides and isolates,
+// and the line/paragraph separators raw. They can only occur inside JSON strings.
+const JSON_UNSAFE_RE = /[\u0080-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+/**
+ * `JSON.stringify(value, null, 2)` with the characters a terminal would act on
+ * written as `\uXXXX` escapes: the same JSON value, but printing it is inert.
+ */
+export function terminalSafeJson(value: unknown): string {
+  return JSON.stringify(value, null, 2).replace(
+    JSON_UNSAFE_RE,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
 }

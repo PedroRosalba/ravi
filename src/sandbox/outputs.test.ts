@@ -1,12 +1,24 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   MAX_DAEMON_LOG,
   MAX_JSON,
   MAX_PATCH,
+  MAX_STDERR,
   MAX_TOTAL,
   MAX_TRANSCRIPT,
   appendPrivate,
@@ -14,6 +26,7 @@ import {
   mkdirPrivate,
   readCapped,
   stripTerminalControls,
+  terminalSafeJson,
   truncateBytes,
   truncationMarker,
   writePrivate,
@@ -56,6 +69,45 @@ describe("private output files", () => {
   });
 });
 
+describe("symbolic links in the output directory", () => {
+  // Fails on e67784d6: appendPrivate followed `daemon.log -> victim` and appended the
+  // sandbox's line to the victim; a dangling `run.log` link created its target.
+  it("refuses to append through a symbolic link, dangling or not, and leaves the target untouched", () => {
+    const dir = tempDir();
+    const out = join(dir, "out");
+    mkdirSync(out, { mode: 0o700 });
+    writeFileSync(join(dir, "victim"), "orig\n");
+    symlinkSync(join(dir, "victim"), join(out, "daemon.log"));
+    symlinkSync(join(dir, "dangling-target"), join(out, "run.log"));
+    expect(() => appendPrivate(join(out, "daemon.log"), "SANDBOX LINE\n")).toThrow("symbolic link");
+    expect(() => appendPrivate(join(out, "run.log"), "X\n", out)).toThrow("symbolic link");
+    expect(readFileSync(join(dir, "victim"), "utf8")).toBe("orig\n");
+    expect(mode(join(dir, "victim"))).toBe(0o644 & ~process.umask());
+    expect(existsSync(join(dir, "dangling-target"))).toBe(false);
+  });
+
+  it("refuses a symbolic-link directory anywhere under the root and replaces a link at the file path", () => {
+    const dir = tempDir();
+    const out = join(dir, "out");
+    const elsewhere = join(dir, "elsewhere");
+    mkdirSync(out, { mode: 0o700 });
+    mkdirSync(elsewhere, { mode: 0o755 });
+    chmodSync(elsewhere, 0o755);
+    symlinkSync(elsewhere, join(out, "sessions"));
+    expect(() => mkdirPrivate(join(out, "sessions"))).toThrow("symbolic link");
+    expect(() => writePrivate(join(out, "sessions", "deep", "a.txt"), "x", out)).toThrow("symbolic link");
+    expect(mode(elsewhere)).toBe(0o755);
+    expect(existsSync(join(elsewhere, "deep"))).toBe(false);
+    // writePrivate renames over the path: a link there is replaced, never written through.
+    writeFileSync(join(dir, "victim"), "orig\n");
+    symlinkSync(join(dir, "victim"), join(out, "changes.patch"));
+    writePrivate(join(out, "changes.patch"), "diff\n", out);
+    expect(readFileSync(join(dir, "victim"), "utf8")).toBe("orig\n");
+    expect(lstatSync(join(out, "changes.patch")).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(out, "changes.patch"), "utf8")).toBe("diff\n");
+  });
+});
+
 describe("size caps", () => {
   it("has the limits the spec names", () => {
     const MiB = 1024 * 1024;
@@ -88,6 +140,25 @@ describe("size caps", () => {
     });
   });
 
+  it("caps the command's stderr in the sandbox and still ends with the size line", () => {
+    // Fails on e67784d6: stderr went to the host uncapped.
+    const flood = spawnSync(
+      "/bin/sh",
+      ["-c", cappedCommand("printf out; head -c 300000 /dev/zero | tr '\\0' e >&2", 10)],
+      {
+        encoding: "utf8",
+      },
+    );
+    expect(Buffer.byteLength(flood.stderr)).toBeLessThanOrEqual(MAX_STDERR + 64);
+    expect(flood.stderr).toMatch(/\nravi-bytes=\s*3\n$/);
+    expect(readCapped(flood.stdout, flood.stderr, 10)).toEqual({ content: "out", overflow: false, bytes: 3 });
+    // A forged size line in the command's own stderr does not win.
+    const forged = spawnSync("/bin/sh", ["-c", cappedCommand("printf abc; printf 'ravi-bytes=0' >&2", 10)], {
+      encoding: "utf8",
+    });
+    expect(readCapped(forged.stdout, forged.stderr, 10).bytes).toBe(3);
+  });
+
   it("keeps the command's exit code, not head's", () => {
     expect(sh("printf partial; exit 3", 100)).toMatchObject({ content: "partial", exit: 3 });
   });
@@ -104,6 +175,18 @@ describe("size caps", () => {
     expect(truncateBytes("aé", 2)).toBe("a");
     expect(truncateBytes("abc", 5)).toBe("abc");
     expect(truncationMarker(10, 25)).toBe("\n[ravi: output truncated at 10 bytes; the sandbox reported 25 bytes]\n");
+  });
+});
+
+describe("terminalSafeJson", () => {
+  it("escapes C1 controls, bidi overrides and isolates that JSON.stringify leaves raw", () => {
+    // Fails on e67784d6: `--json` printed U+009B (8-bit CSI) and U+202E as they came.
+    const value = { path: "a\x9b2Jb\u202ec\u2066d", n: 1 };
+    const json = terminalSafeJson(value);
+    expect(json).not.toMatch(/[\u0080-\u009f\u202a-\u202e\u2066-\u2069]/);
+    expect(json).toContain("a\\u009b2Jb\\u202ec\\u2066d");
+    expect(JSON.parse(json)).toEqual(value);
+    expect(terminalSafeJson({ ok: "ação 🚀" })).toBe(JSON.stringify({ ok: "ação 🚀" }, null, 2));
   });
 });
 

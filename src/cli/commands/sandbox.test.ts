@@ -6,7 +6,15 @@ import { join } from "node:path";
 import { withoutRaviRuntimeContextEnv } from "../../test/ravi-state.js";
 import type { ReapDeps, ReapSandboxInfo } from "../../sandbox/reap.js";
 import { ContractError } from "../agent-contract.js";
-import { executeSandboxReap, validateSandboxRunFlags, validateTaskText } from "./sandbox.js";
+import type { RunSandboxTaskResult } from "../../sandbox/e2b.js";
+import { reviewPatch } from "../../sandbox/patch-review.js";
+import {
+  executeSandboxReap,
+  formatSandboxRunSummary,
+  formatTelemetry,
+  validateSandboxRunFlags,
+  validateTaskText,
+} from "./sandbox.js";
 
 setDefaultTimeout(60_000);
 
@@ -109,6 +117,54 @@ describe("sandbox run flag validation", () => {
     for (const bad of ["http://x.example.com", "x.example.com/path", "x.example.com:443", "localhost", "*"]) {
       expect(usageError(() => validateSandboxRunFlags({ allowHost: [bad] }, true)).exitCode).toBe(2);
     }
+  });
+});
+
+describe("sandbox run text summary", () => {
+  // Fails on e67784d6 (no formatter to import): the Task line and the E2B telemetry lines
+  // were printed raw, so an id or an event name could carry terminal sequences.
+  const hostile = "\x1b]52;c;ZXZpbA==\x07\x1b[2J\x9b31m\u202e";
+  const result: RunSandboxTaskResult = {
+    sandboxId: `sbx${hostile}`,
+    taskId: `task-${hostile}`,
+    reportedStatus: "done",
+    status: "done",
+    review: reviewPatch('diff --git "a/.envrc\\nx" "b/.envrc\\nx"\nnew file mode 100644\n'),
+    kept: false,
+    outputDir: "/tmp/out",
+    files: [],
+    durationMs: 1,
+    error: `boom${hostile}`,
+    e2b: {
+      logLines: 1,
+      processes: 1,
+      failedProcesses: 0,
+      events: [`created${hostile}`],
+      killReason: `reason${hostile}`,
+      executionMs: 1000,
+      metricSamples: 0,
+      peakCpuPct: null,
+      peakMemMB: null,
+      memTotalMB: null,
+      peakDiskMB: null,
+      errors: [`err${hostile}`],
+    },
+    templateId: null,
+    templateSha: null,
+    templateNote: `note${hostile}`,
+  };
+
+  it("strips terminal controls from every line, Task and telemetry included", () => {
+    const lines = formatSandboxRunSummary(result, "ravi-runner");
+    const text = lines.join("\n");
+    expect(text).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/);
+    expect(lines).toContain("Task:     task-");
+    expect(lines.some((line) => line.startsWith("E2B:      1 processes") && line.includes("events created"))).toBe(
+      true,
+    );
+    // The patch review box still prints, its path escaped on one line.
+    expect(text).toContain("│ .envrc\\nx  [env-config]");
+    for (const line of formatTelemetry(result.e2b ?? ({} as never))) expect(line).not.toContain("\x1b");
   });
 });
 
