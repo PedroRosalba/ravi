@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { buildAddGenericPasswordLine, redactSecurityOutput } from "../security/macos-keychain.js";
 import { CloudAuthError } from "./errors.js";
 import type { CloudAuthBackendName } from "./types.js";
 import { CLOUD_AUTH_BACKENDS } from "./types.js";
@@ -177,25 +178,30 @@ function createKeychainBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBacke
     read(userId) {
       const result = runCommand("security", ["find-generic-password", "-a", userId, "-s", KEYCHAIN_SERVICE, "-w"]);
       if (result.status !== 0) return null;
-      const payload = result.stdout.trim();
+      const payload = decodeKeychainJsonPayload(result.stdout.trim());
       return payload || null;
     },
     write(userId, payload) {
-      const result = runCommand("security", [
-        "add-generic-password",
-        "-a",
-        userId,
-        "-s",
-        KEYCHAIN_SERVICE,
-        "-w",
-        payload,
-        "-U",
-      ]);
+      // Never pass the payload in argv: `security -i` reads the command from
+      // stdin and the payload travels hex-encoded (see src/security/macos-keychain.ts).
+      const command = buildAddGenericPasswordLine({
+        account: userId,
+        service: KEYCHAIN_SERVICE,
+        secret: compactJsonPayload(payload),
+      });
+      if (!command.ok) {
+        throw new CloudAuthError(
+          "CREDENTIALS_INVALID",
+          "macOS Keychain cannot store these credentials. Ravi fell back to the portable file store.",
+          { cause: new Error(command.message) },
+        );
+      }
+      const result = runCommand("security", ["-i"], { input: command.line });
       if (result.status !== 0) {
         throw new CloudAuthError(
           "CREDENTIALS_INVALID",
           "macOS Keychain is unavailable. Ravi fell back to the portable file store.",
-          { cause: new Error(redactSecurityError(result.stderr || result.stdout)) },
+          { cause: new Error(redactSecurityOutput(result.stderr || result.stdout)) },
         );
       }
     },
@@ -223,6 +229,31 @@ function defaultRunCommand(command: string, args: string[], options: { input?: s
   };
 }
 
-function redactSecurityError(value: string): string {
-  return value.replace(/(-w\s+)\S+/g, "$1[redacted]").trim();
+/**
+ * Minified JSON with every non-ASCII character escaped: shorter, so more fits
+ * in one `security -i` line, and printable, so `find-generic-password -w`
+ * returns it as text. A payload that is not JSON is stored unchanged.
+ */
+function compactJsonPayload(payload: string): string {
+  let value: unknown;
+  try {
+    value = JSON.parse(payload);
+  } catch {
+    return payload;
+  }
+  return JSON.stringify(value).replace(
+    /[\u007f-\uffff]/g,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+/**
+ * `find-generic-password -w` prints a password that is not printable ASCII as
+ * hex (an item written by an older Ravi with non-ASCII user data). Stored
+ * payloads are JSON objects, so decode only hex that decodes to one.
+ */
+function decodeKeychainJsonPayload(output: string): string {
+  if (!/^(?:[0-9a-fA-F]{2})+$/.test(output)) return output;
+  const decoded = Buffer.from(output, "hex").toString("utf8");
+  return decoded.trimStart().startsWith("{") ? decoded : output;
 }
