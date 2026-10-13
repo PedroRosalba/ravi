@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
 import { ensureSandboxSchema } from "./runs-db.js";
 import {
@@ -9,8 +10,11 @@ import {
   dbReadTunnelGateState,
   dbRecordTunnelPoll,
   dbSetListenerArmed,
+  dbGetTunnelDriftLatch,
   evaluateTunnelGate,
   TUNNEL_POLL_MAX_AGE_MS,
+  tunnelDriftLatchFilePath,
+  writeTunnelDriftLatchFile,
 } from "./tunnel-state.js";
 
 let stateDir: string;
@@ -64,5 +68,26 @@ describe("tunnel gate state", () => {
     expect(dbGetListenerArmed()).toEqual({ pid: 4242, port: 7790, at: 1 });
     dbClearListenerArmed(4242);
     expect(dbGetListenerArmed()).toBeNull();
+  });
+
+  test("the fallback latch file (~/.ravi/gateway) closes the gate without the row, keeps its first cause, and is cleared with the row", () => {
+    const path = tunnelDriftLatchFilePath();
+    expect(path).toBe(`${process.env.RAVI_STATE_DIR}/gateway/tunnel-drift.latch`);
+    dbRecordTunnelPoll(Date.now());
+    writeTunnelDriftLatchFile("config_version", 600);
+    writeTunnelDriftLatchFile("poll_failed", 700);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    const state = dbReadTunnelGateState();
+    expect(state).toEqual({ latch: { at: 600, reason: "config_version" }, lastPollAt: null });
+    expect(evaluateTunnelGate(state, Date.now())).toEqual({ open: false, reason: "drift_latched" });
+    expect(dbGetTunnelDriftLatch()).toEqual({ at: 600, reason: "config_version" });
+
+    // A file that does not parse is still a latch.
+    writeFileSync(path, "garbage");
+    expect(dbReadTunnelGateState().latch).toEqual({ at: 0, reason: "unparseable" });
+
+    dbClearTunnelDriftLatch();
+    expect(existsSync(path)).toBe(false);
+    expect(dbReadTunnelGateState().latch).toBeNull();
   });
 });

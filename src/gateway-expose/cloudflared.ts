@@ -4,17 +4,34 @@
 // (reported `verified: false`). Normative: `.ravi/specs/sandbox/tunnel-runner`.
 //
 // The download is checked against the SHA-256 recorded here BEFORE anything
-// is extracted, in a fresh directory that is removed on every outcome; the
-// binary is only renamed into place after its `--version` matched the pin, so
-// a failed install leaves nothing behind. Redirects are followed by hand and
-// only to the GitHub release hosts.
+// is extracted, in a fresh directory that is removed on every outcome. The
+// extracted executable is then checked against its own pinned SHA-256 and, on
+// darwin, against Cloudflare's Developer ID signature (`codesign --verify`
+// with a designated requirement pinning the Team ID) before it is ever run;
+// only after its `--version` matched the pin is it renamed into place, so a
+// failed install leaves nothing behind. Redirects are followed by hand and
+// only to the GitHub release hosts. Reuse and `locateCloudflared` re-check
+// the installed binary's SHA-256.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { gunzipSync } from "node:zlib";
+import { logger } from "../utils/logger.js";
 import { getRaviStateDir } from "../utils/paths.js";
+
+const log = logger.child("cloudflared");
 
 /**
  * The pinned release. Hashes copied on 2026-10-13 from the GitHub release API
@@ -25,13 +42,33 @@ import { getRaviStateDir } from "../utils/paths.js";
  */
 export const CLOUDFLARED_VERSION = "2026.9.1";
 
+/**
+ * Cloudflare's Apple Developer ID Team ID, pinned in the designated
+ * requirement `codesign --verify` checks on darwin. NOT pinned yet: a human
+ * reads it from a downloaded copy (`codesign -dv --verbose=4 cloudflared`,
+ * `TeamIdentifier=`) and sets it here (RUNBOOK §Bumping the pin). While it is
+ * null a darwin install refuses unless `RAVI_CLOUDFLARED_SKIP_CODESIGN=1`.
+ */
+export const CLOUDFLARE_DEVELOPER_TEAM_ID: string | null = null;
+export const CLOUDFLARED_SKIP_CODESIGN_ENV = "RAVI_CLOUDFLARED_SKIP_CODESIGN";
+/** Accept a darwin binary whose own SHA-256 is not pinned yet (`binarySha256: null`). */
+export const CLOUDFLARED_SKIP_BINARY_PIN_ENV = "RAVI_CLOUDFLARED_SKIP_BINARY_PIN";
+
 export type CloudflaredPlatformKey = "darwin-arm64" | "darwin-amd64" | "linux-amd64" | "linux-arm64";
 
 export interface CloudflaredAsset {
   url: string;
+  /** SHA-256 of the downloaded bytes (GitHub's asset `digest`). */
   sha256: string;
   /** `tgz`: a gzip tar holding `cloudflared`; `binary`: the executable itself. */
   archive: "tgz" | "binary";
+  /**
+   * SHA-256 of the executable itself (equal to `sha256` for a bare binary).
+   * Needs the extracted bytes, so a human computes it at bump time; `null`
+   * means not pinned yet: install and locate refuse unless
+   * `RAVI_CLOUDFLARED_SKIP_BINARY_PIN=1`.
+   */
+  binarySha256: string | null;
 }
 
 const RELEASE_BASE = `https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}`;
@@ -41,21 +78,25 @@ export const CLOUDFLARED_ASSETS: Readonly<Record<CloudflaredPlatformKey, Cloudfl
     url: `${RELEASE_BASE}/cloudflared-darwin-arm64.tgz`,
     sha256: "c27ab8fd0aa489449e3d201eb02f957ef460a13b613662928b1b23394bf1bcfe",
     archive: "tgz",
+    binarySha256: null,
   },
   "darwin-amd64": {
     url: `${RELEASE_BASE}/cloudflared-darwin-amd64.tgz`,
     sha256: "ff0d3b51d5ff70eceef89d6b32145fee985018a2174596a5dbe405e2766e2ac4",
     archive: "tgz",
+    binarySha256: null,
   },
   "linux-amd64": {
     url: `${RELEASE_BASE}/cloudflared-linux-amd64`,
     sha256: "03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc",
     archive: "binary",
+    binarySha256: "03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc",
   },
   "linux-arm64": {
     url: `${RELEASE_BASE}/cloudflared-linux-arm64`,
     sha256: "3d97437c71848bd8df68041e12436b484a661d95073ea1937f01a845ce88faa3",
     archive: "binary",
+    binarySha256: "3d97437c71848bd8df68041e12436b484a661d95073ea1937f01a845ce88faa3",
   },
 });
 
@@ -77,6 +118,10 @@ export type CloudflaredInstallErrorCode =
   | "checksum_mismatch"
   | "archive_invalid"
   | "version_mismatch"
+  | "binary_mismatch"
+  | "binary_unpinned"
+  | "codesign_failed"
+  | "codesign_unpinned"
   | "not_found";
 
 export class CloudflaredInstallError extends Error {
@@ -97,7 +142,7 @@ export function cloudflaredPlatformKey(
   if ((platform === "darwin" || platform === "linux") && cpu) return `${platform}-${cpu}`;
   throw new CloudflaredInstallError(
     "unsupported_platform",
-    `No pinned cloudflared ${CLOUDFLARED_VERSION} build for ${platform}-${arch}; supported: ${Object.keys(CLOUDFLARED_ASSETS).join(", ")}. Pass --cloudflared <path> to use your own (unverified).`,
+    `No pinned cloudflared ${CLOUDFLARED_VERSION} build for ${platform}-${arch}; supported: ${Object.keys(CLOUDFLARED_ASSETS).join(", ")}. The gateway tunnel is not available on this platform.`,
   );
 }
 
@@ -124,6 +169,12 @@ export interface InstallCloudflaredDeps {
   binDir?: string;
   /** Runs `<path> --version`; tests inject it. */
   runVersion?: (path: string) => CommandOutput;
+  /** Runs `codesign <args>` (darwin); tests inject it. */
+  runCodesign?: (args: string[]) => CommandOutput;
+  /** Tests only: the Team ID to require instead of `CLOUDFLARE_DEVELOPER_TEAM_ID`. */
+  codesignTeamId?: string | null;
+  /** Read for the `RAVI_CLOUDFLARED_SKIP_*` overrides. */
+  env?: NodeJS.ProcessEnv;
   /** Tests only: assets whose bytes they can produce. */
   assets?: Readonly<Record<CloudflaredPlatformKey, CloudflaredAsset>>;
 }
@@ -143,8 +194,13 @@ export async function installCloudflared(deps: InstallCloudflaredDeps = {}): Pro
   const binDir = deps.binDir ?? cloudflaredBinDir();
   const target = pinnedCloudflaredPath(binDir);
   const runVersion = deps.runVersion ?? defaultRunVersion;
+  const env = deps.env ?? process.env;
+  const teamId = deps.codesignTeamId === undefined ? CLOUDFLARE_DEVELOPER_TEAM_ID : deps.codesignTeamId;
+  // Placeholders refuse before anything is downloaded or run (reuse included).
+  assertPinsConfigured(asset, key, env, teamId);
 
-  if (isPrivateRegularFile(target) && versionMatches(runVersion(target))) {
+  // Reuse only a binary whose bytes still match the pin (re-checked before it is run).
+  if (isPrivateRegularFile(target) && binaryPinMatches(target, asset, key, env) && versionMatches(runVersion(target))) {
     return { path: target, version: CLOUDFLARED_VERSION, platform: key, sha256: asset.sha256, reused: true };
   }
 
@@ -162,9 +218,16 @@ export async function installCloudflared(deps: InstallCloudflaredDeps = {}): Pro
       );
     }
     const binary = asset.archive === "tgz" ? extractCloudflaredFromTgz(downloaded) : downloaded;
+    assertBinaryPin(binary, asset, key);
     const staged = join(workDir, "cloudflared");
     writeFileSync(staged, binary, { mode: INSTALL_MODE });
     chmodSync(staged, INSTALL_MODE);
+    if (key.startsWith("darwin")) {
+      assertCodesign(staged, {
+        teamId,
+        runCodesign: deps.runCodesign ?? defaultRunCodesign,
+      });
+    }
     const output = runVersion(staged);
     if (!versionMatches(output)) {
       throw new CloudflaredInstallError(
@@ -182,11 +245,30 @@ export async function installCloudflared(deps: InstallCloudflaredDeps = {}): Pro
 
 export type LocatedCloudflared =
   | { found: true; path: string; verified: true; source: "pinned"; version: string }
+  /** The pinned install, accepted with `RAVI_CLOUDFLARED_SKIP_BINARY_PIN=1` while its SHA-256 is not pinned. */
+  | { found: true; path: string; verified: false; source: "pinned"; version: string }
   | { found: true; path: string; verified: false; source: "explicit"; version: null }
-  | { found: false; reason: "not_installed" | "explicit_invalid"; path: string };
+  | {
+      found: false;
+      reason: "not_installed" | "explicit_invalid" | "binary_mismatch" | "binary_unpinned" | "unsupported_platform";
+      path: string;
+    };
 
-/** The pinned install when present and private to this user; an explicit path is accepted but never verified. */
-export function locateCloudflared(options: { explicitPath?: string; binDir?: string } = {}): LocatedCloudflared {
+export interface LocateCloudflaredOptions {
+  explicitPath?: string;
+  binDir?: string;
+  platform?: NodeJS.Platform;
+  arch?: string;
+  env?: NodeJS.ProcessEnv;
+  /** Tests only. */
+  assets?: Readonly<Record<CloudflaredPlatformKey, CloudflaredAsset>>;
+}
+
+/**
+ * The pinned install when present, private to this user and still matching
+ * its pinned SHA-256; an explicit path is accepted but never verified.
+ */
+export function locateCloudflared(options: LocateCloudflaredOptions = {}): LocatedCloudflared {
   const explicit = options.explicitPath?.trim();
   if (explicit) {
     if (!isAbsolute(explicit) || !isExecutableFile(explicit)) {
@@ -196,7 +278,119 @@ export function locateCloudflared(options: { explicitPath?: string; binDir?: str
   }
   const pinned = pinnedCloudflaredPath(options.binDir ?? cloudflaredBinDir());
   if (!isPrivateRegularFile(pinned)) return { found: false, reason: "not_installed", path: pinned };
+  let key: CloudflaredPlatformKey;
+  try {
+    key = cloudflaredPlatformKey(options.platform, options.arch);
+  } catch {
+    return { found: false, reason: "unsupported_platform", path: pinned };
+  }
+  const asset = (options.assets ?? CLOUDFLARED_ASSETS)[key];
+  if (asset.binarySha256 === null) {
+    if ((options.env ?? process.env)[CLOUDFLARED_SKIP_BINARY_PIN_ENV] !== "1") {
+      log.error("cloudflared binary sha256 not pinned yet; refusing the installed binary", { platform: key });
+      return { found: false, reason: "binary_unpinned", path: pinned };
+    }
+    log.warn(`cloudflared binary sha256 not pinned yet; accepted by ${CLOUDFLARED_SKIP_BINARY_PIN_ENV}=1`, {
+      platform: key,
+    });
+    return { found: true, path: pinned, verified: false, source: "pinned", version: CLOUDFLARED_VERSION };
+  }
+  if (fileSha256(pinned) !== asset.binarySha256) {
+    log.error("Installed cloudflared does not match its pinned sha256; refusing it", { path: pinned });
+    return { found: false, reason: "binary_mismatch", path: pinned };
+  }
   return { found: true, path: pinned, verified: true, source: "pinned", version: CLOUDFLARED_VERSION };
+}
+
+function fileSha256(path: string): string | null {
+  try {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+/** Reuse check: true when the installed bytes equal the pin (or the pin is explicitly skipped). */
+function binaryPinMatches(
+  path: string,
+  asset: CloudflaredAsset,
+  key: CloudflaredPlatformKey,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  if (asset.binarySha256 === null) return env[CLOUDFLARED_SKIP_BINARY_PIN_ENV] === "1";
+  const matches = fileSha256(path) === asset.binarySha256;
+  if (!matches) log.warn("Installed cloudflared does not match its pinned sha256; reinstalling", { platform: key });
+  return matches;
+}
+
+/**
+ * The placeholders (`binarySha256: null`, `CLOUDFLARE_DEVELOPER_TEAM_ID`
+ * null on darwin) refuse unless their override is set to `1`.
+ */
+function assertPinsConfigured(
+  asset: CloudflaredAsset,
+  key: CloudflaredPlatformKey,
+  env: NodeJS.ProcessEnv,
+  teamId: string | null,
+): void {
+  if (asset.binarySha256 === null) {
+    if (env[CLOUDFLARED_SKIP_BINARY_PIN_ENV] !== "1") {
+      log.error("cloudflared binary sha256 not pinned yet", { platform: key });
+      throw new CloudflaredInstallError(
+        "binary_unpinned",
+        `cloudflared binary sha256 not pinned yet for ${key} (RUNBOOK §Bumping the pin); set ${CLOUDFLARED_SKIP_BINARY_PIN_ENV}=1 to accept it unpinned. Nothing was installed.`,
+      );
+    }
+    log.warn(`cloudflared binary sha256 not pinned yet; skipped by ${CLOUDFLARED_SKIP_BINARY_PIN_ENV}=1`, {
+      platform: key,
+    });
+  }
+  if (key.startsWith("darwin") && teamId === null) {
+    log.error("codesign team id not pinned yet");
+    if (env[CLOUDFLARED_SKIP_CODESIGN_ENV] !== "1") {
+      throw new CloudflaredInstallError(
+        "codesign_unpinned",
+        `codesign team id not pinned yet (CLOUDFLARE_DEVELOPER_TEAM_ID, RUNBOOK §Bumping the pin); set ${CLOUDFLARED_SKIP_CODESIGN_ENV}=1 to install without the signature check. Nothing was installed.`,
+      );
+    }
+    log.warn(`cloudflared signature check skipped by ${CLOUDFLARED_SKIP_CODESIGN_ENV}=1`);
+  }
+}
+
+function assertBinaryPin(binary: Uint8Array, asset: CloudflaredAsset, key: CloudflaredPlatformKey): void {
+  if (asset.binarySha256 === null) return; // allowed by assertPinsConfigured
+  const actual = createHash("sha256").update(binary).digest("hex");
+  if (actual !== asset.binarySha256) {
+    throw new CloudflaredInstallError(
+      "binary_mismatch",
+      `cloudflared ${CLOUDFLARED_VERSION} (${key}) executable checksum mismatch: expected ${asset.binarySha256}, got ${actual}. Nothing was installed.`,
+    );
+  }
+}
+
+/** The designated requirement: an Apple-anchored Developer ID leaf issued to Cloudflare's Team ID. */
+export function cloudflaredCodesignArgs(path: string, teamId: string): string[] {
+  return ["--verify", "--strict", `-R=anchor apple generic and certificate leaf[subject.OU] = "${teamId}"`, path];
+}
+
+function assertCodesign(
+  path: string,
+  options: { teamId: string | null; runCodesign: (args: string[]) => CommandOutput },
+): void {
+  if (options.teamId === null) return; // allowed by assertPinsConfigured
+  if (!/^[A-Z0-9]{10}$/.test(options.teamId)) {
+    throw new CloudflaredInstallError(
+      "codesign_unpinned",
+      "CLOUDFLARE_DEVELOPER_TEAM_ID is not a 10-character Team ID",
+    );
+  }
+  const result = options.runCodesign(cloudflaredCodesignArgs(path, options.teamId));
+  if (result.status !== 0) {
+    throw new CloudflaredInstallError(
+      "codesign_failed",
+      `cloudflared is not signed by Cloudflare's Developer ID (${options.teamId}): codesign exit ${result.status}: ${result.stderr.trim().slice(0, 300)}. Nothing was installed.`,
+    );
+  }
 }
 
 export function versionMatches(output: CommandOutput): boolean {
@@ -327,6 +521,15 @@ function isExecutableFile(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function defaultRunCodesign(args: string[]): CommandOutput {
+  const result = spawnSync("/usr/bin/codesign", args, {
+    encoding: "utf8",
+    timeout: 30_000,
+    env: { PATH: "/usr/bin:/bin" },
+  });
+  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? result.error?.message ?? "" };
 }
 
 function defaultRunVersion(path: string): CommandOutput {

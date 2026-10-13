@@ -14,7 +14,8 @@ materialised; the only file at rest is the store's own fallback
 (`~/.ravi/gateway/tunnel/credentials.json`, `0600`) when no Keychain or
 Secret Service is selected. The runner's own environment, and therefore the
 PM2 entry `pm2 save` persists, never holds the secret, and `buildPm2Env`
-drops `TUNNEL_*` in case an operator exported one.
+drops every `TUNNEL_*` variable (by prefix: cloudflared reads all of them as
+flags, not only `TUNNEL_TOKEN`) in case an operator exported one.
 
 ### The latch and the poll timestamp live in ravi.db, not in settings
 
@@ -49,8 +50,62 @@ Console requires the host to confirm the metrics socket belongs to the
 cloudflared it launched before trusting `/config` (another local process
 could bind the port and serve a template-shaped answer). Node has no API for
 it; `lsof -iTCP@127.0.0.1:<port> -sTCP:LISTEN -Fp` (macOS, most Linux) and
-`ss -ltnp` (iproute2) do. When neither answers, ownership is unverifiable and
-that is drift: fail closed.
+`ss -ltnp` (iproute2) do. When neither exists, ownership is unverifiable and
+that is drift: fail closed. A tool that exists but is slow (a loaded host,
+`lsof` walking every fd) is not evidence of anything, and latching on it
+would need a rotate to undo a load spike; it is retried like a connection
+failure, and the 10 s staleness rule still closes everything if it never
+recovers.
+
+### One runner, and no orphaned cloudflared
+
+A second runner (a `tunnel-run` by hand beside PM2) would spawn a second
+cloudflared, overwrite `tunnel.runner`, and on exit clear the first one's
+record and close its gate; the first one then sees a foreign socket owner and
+latches. An `O_EXCL` lock file with the holder's pid makes the second one
+refuse instead; pid liveness detects a lock left by a crash. Reaping a stale
+cloudflared waits for it to die (SIGTERM, SIGKILL, bounded) because the
+first poll runs immediately: a reaped-but-not-yet-dead cloudflared still
+owns the metrics port and would read as drift. If it survives SIGKILL the
+runner exits 75 and keeps the record rather than start a second one. For the
+same reason `tunnel.runner` is cleared only once the child has exited, and
+any exception after the spawn stops the child first.
+
+### darwin only until confinement is verified
+
+Console's §Confinement requires cloudflared on Linux to run under a dedicated
+uid with nftables limiting it to the listener port. That is not implemented,
+and an unconfined cloudflared on a Linux host reaches every local service.
+The runner itself refuses there (exit 78), not only `expose`, so a
+hand-registered PM2 entry cannot bypass it.
+
+### Two independent checks on the darwin binary
+
+The pinned archive digest comes from the same GitHub release that serves the
+bytes, and the darwin release-notes hashes never match it, so on darwin the
+digest alone has no second source. The Developer ID signature is one:
+`codesign --verify --strict` with a designated requirement that pins an
+Apple-anchored leaf to Cloudflare's Team ID fails for anything Cloudflare did
+not sign, whoever served it. The executable's own SHA-256, re-checked on
+reuse and at every runner start, catches a binary swapped at rest. Neither
+value can be derived offline (the Team ID must be read from a signed binary,
+the hash needs the extracted bytes), so both are explicit `null`
+placeholders that refuse until a human pins them, with named overrides for
+a deliberate unpinned install.
+
+### A fallback latch file
+
+The latch row is written before cloudflared is stopped; if ravi.db refuses
+the write (locked, read-only, full disk) the drift would otherwise be
+forgotten on the next start. A `0600` file next to the gateway state is a
+second, independent place the runner and the listener both read first.
+
+### Monotonic staleness
+
+The 10 s staleness rule is measured by the runner itself; a wall-clock step
+(NTP, sleep/wake) would otherwise read as a stalled poller and latch. The
+persisted `last_poll_at` stays wall-clock because the listener, in another
+process, compares it with its own clock.
 
 ### cloudflared dies with its poller (as far as a process can)
 

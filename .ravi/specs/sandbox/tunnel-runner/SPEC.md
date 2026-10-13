@@ -62,21 +62,39 @@ items the spec superseded).
   `linux-arm64` (bare binary), every hash 64 lowercase hex copied from the
   release (RUNBOOK §Pinned release). Any other platform is an
   `unsupported_platform` error naming the supported ones.
+- Each platform also pins `binarySha256`, the SHA-256 of the executable
+  itself: equal to `sha256` for the bare Linux binaries; for darwin it needs
+  the extracted bytes, so it is `null` until a human pins it at bump time
+  (RUNBOOK §Bumping the pin). `CLOUDFLARE_DEVELOPER_TEAM_ID` (Cloudflare's
+  Apple Developer ID Team ID) is likewise `null` until a human reads it with
+  `codesign -dv`; it is never guessed.
+- Placeholders refuse, before any download or run (reuse included): an
+  unpinned `binarySha256` is `binary_unpinned` unless
+  `RAVI_CLOUDFLARED_SKIP_BINARY_PIN=1`; on darwin an unpinned Team ID logs
+  `codesign team id not pinned yet` and is `codesign_unpinned` unless
+  `RAVI_CLOUDFLARED_SKIP_CODESIGN=1`.
 - `installCloudflared` downloads into a fresh `0700` directory under
   `~/.ravi/bin/`, follows redirects by hand (at most 5), each hop `https` on
   `github.com`, `objects.githubusercontent.com` or
   `release-assets.githubusercontent.com` (else `redirect_refused`), caps the
   download at 96 MiB, compares the SHA-256 **before** extracting anything,
-  extracts only the regular-file member `cloudflared` of a tgz, runs the
-  staged binary's `--version` and requires `version <CLOUDFLARED_VERSION>`,
-  and only then renames it to `~/.ravi/bin/cloudflared-<version>` mode
-  `0700`. The work directory is removed on every outcome, so any failure
-  leaves nothing installed.
+  extracts only the regular-file member `cloudflared` of a tgz, compares the
+  executable with `binarySha256` (`binary_mismatch`), on darwin runs
+  `codesign --verify --strict
+  -R='anchor apple generic and certificate leaf[subject.OU] = "<TEAM_ID>"'`
+  on the staged copy (`codesign_failed`), and only then runs its `--version`,
+  requires `version <CLOUDFLARED_VERSION>`, and renames it to
+  `~/.ravi/bin/cloudflared-<version>` mode `0700`. The work directory is
+  removed on every outcome, so any failure leaves nothing installed. An
+  installed binary is reused only when its bytes still equal `binarySha256`;
+  otherwise it is downloaded and replaced, never run.
 - `locateCloudflared` returns the pinned install as `verified: true` only
   when it is a regular file (not a symlink), owned by this uid, with no
-  group/other permission bits. An explicit absolute executable path is
-  accepted and always reported `verified: false`; a relative or missing one
-  is refused.
+  group/other permission bits, and its SHA-256 equals `binarySha256` (else
+  `binary_mismatch`). With `binarySha256` null it is `binary_unpinned`, or,
+  with `RAVI_CLOUDFLARED_SKIP_BINARY_PIN=1`, found with `verified: false`.
+  An explicit absolute executable path is accepted and always reported
+  `verified: false`; a relative or missing one is refused.
 
 ### Credentials (`secret.ts`)
 
@@ -95,7 +113,8 @@ items the spec superseded).
 - No credentials file is materialised for cloudflared: the runner passes the
   JSON in `TUNNEL_CRED_CONTENTS` in **cloudflared's environment only**. The
   secret never appears in argv, in the runner's own `process.env`, in a PM2
-  entry (`buildPm2Env` drops `TUNNEL_TOKEN` and `TUNNEL_CRED_CONTENTS`), in
+  entry (`buildPm2Env` drops every `TUNNEL_*` variable, which cloudflared
+  would read as flags), in
   the config file or in a log line (cloudflared's output is forwarded with the
   secret masked).
 
@@ -120,13 +139,26 @@ items the spec superseded).
 ### Start order (`tunnel-runner.ts`)
 
 The runner refuses with exit 78 and starts nothing when the drift latch is
-set, the listener settings are incomplete or invalid, the metrics port is
-invalid, the credentials are missing/invalid/unsafe, or cloudflared is not
-installed. Otherwise, in order:
+set (the `tunnel.drift_latch` row or the fallback latch file, §Drift poll),
+the listener settings are incomplete or invalid, the platform is not darwin
+(`platform_unsupported:<platform>`: cloudflared's confinement is not verified
+anywhere else; the check takes an injected `platform`), the metrics port is
+invalid, the credentials are missing/invalid/unsafe, cloudflared is not
+installed or fails `locateCloudflared`, or another runner holds the lock.
+Otherwise, in order:
 
-1. If the previous runner recorded in `tunnel.runner` is dead and its
-   cloudflared pid is alive and named `cloudflared`, it is sent SIGTERM (a
-   reused pid with another name is left alone).
+0. Single runner: `~/.ravi/gateway/tunnel-runner.lock` is created `O_EXCL`
+   (`0600`, `{pid, token}`). A lock whose pid is alive refuses
+   (`runner_already_running:<pid>`), so a hand-run `tunnel-run` beside PM2
+   never touches the other runner's cloudflared, record or gate; a lock
+   whose pid is dead (or that does not parse) is stale and replaced. The
+   runner removes it on exit only while it still holds its token.
+1. If `tunnel.runner` records another runner (necessarily dead: the lock is
+   held) whose cloudflared pid is alive and named `cloudflared`, that pid is
+   sent SIGTERM and the runner waits up to 3 s for it to die, then SIGKILL
+   and up to 3 s more (a reused pid with another name is left alone). If it
+   is still alive the runner exits 75 (`stale_cloudflared_alive`) without
+   spawning or latching, and the record is kept.
 2. The template is written.
 3. It waits until `listener.armed` names the configured listener port and a
    live pid (the listener checks are armed before cloudflared starts). A
@@ -144,17 +176,31 @@ installed. Otherwise, in order:
   `access.required` true with the same `teamName` and the single `audTag`;
   catch-all without hostname or path serving `http_status:404`),
   `warp-routing.enabled` not true.
-- Each success writes `tunnel.last_poll_at`; the listener serves only while
-  it is at most 10 s old.
+- Before each poll the runner re-reads `listener.armed`: when it is gone,
+  names another port or a dead pid, cloudflared is stopped and the runner
+  exits 75 (`listener_unarmed`, no latch); PM2 restarts it and it waits for
+  the listener again.
+- Each success writes `tunnel.last_poll_at` (wall clock, for the listener);
+  the listener serves only while it is at most 10 s old. The runner's own
+  staleness and grace bookkeeping uses a monotonic clock
+  (`performance.now()`), so a wall-clock step is not drift.
 - Drift is: any template difference or `version` ≠ -1; an unparseable body;
   a poll error, non-200 or timeout after the first success; no success within
   the last 10 s; the metrics socket owned by any other pid, or ownership that
-  cannot be determined; an exception inside the poller. Before the first
-  success, an unreachable or not-yet-listening metrics server is retried for
-  at most 10 s, then it is drift.
+  cannot be determined because neither `lsof` nor `ss` exists; an exception
+  inside the poller. Before the first success, an unreachable or
+  not-yet-listening metrics server is retried for at most 10 s, then it is
+  drift. A socket-owner tool that exists but times out (3 s) or fails is a
+  transient poll failure at any time: retried, bounded by the 10 s grace
+  before the first success and by the 10 s staleness rule after it.
 - On drift, in order: the latch is written (`tunnel.drift_latch` `{at,
   reason}`, first cause kept, `last_poll_at` deleted), so the listener
-  refuses from its next gate read (≤ 1 s); cloudflared gets SIGTERM, then
+  refuses from its next gate read (≤ 1 s). When that write fails, the
+  runner writes the fallback latch file `~/.ravi/gateway/tunnel-drift.latch`
+  (`0600`, `{at, reason}`, first cause kept); the runner's start check and
+  the listener's gate read honour it before the database (a file that does
+  not parse is still a latch), and `dbClearTunnelDriftLatch` removes it with
+  the row. Then cloudflared gets SIGTERM, then
   SIGKILL after 5 s; the runner exits 78. PM2 is registered with
   `--stop-exit-codes 78`, and a restarted runner refuses while latched. The
   latch survives runner, daemon and host restarts; only a successful
@@ -165,9 +211,12 @@ installed. Otherwise, in order:
 - SIGTERM/SIGINT are forwarded to cloudflared once; the runner exits with
   cloudflared's exit code (128 + signal number when it died by a signal).
   cloudflared exiting on its own ends the runner with its code. On every
-  exit after a spawn, `tunnel.last_poll_at` and `tunnel.runner` are cleared,
-  closing the listener's gate until the next runner polls. A stop is not a
-  drift: no latch.
+  exit after a spawn, `tunnel.last_poll_at` is cleared, closing the
+  listener's gate until the next runner polls; `tunnel.runner` is cleared
+  only once cloudflared has exited (if it survives SIGKILL the record is kept
+  for the next runner to stop it). Any exception after the spawn (a failed
+  `tunnel.runner` write included) first stops cloudflared (SIGTERM, then
+  SIGKILL after 5 s) and then propagates. A stop is not a drift: no latch.
 - After each successful poll the runner re-reads the listener settings; when
   `gateway.listener.port`, `gateway.tunnel.hostname`, `gateway.access.aud` or
   `gateway.access.teamDomain` changed, or the settings are gone, it stops
@@ -192,4 +241,5 @@ installed. Otherwise, in order:
   Console, clearing the latch on rotate, the host report (05b).
 - Linux confinement of cloudflared (dedicated uid + nftables) and the macOS
   `sandbox-exec` spike: Console listener SPEC §Confinement; not implemented
-  here, so `expose` on Linux must refuse until it is (05b).
+  here, so the runner refuses on any platform but darwin, and `expose` on
+  Linux must refuse too until it is (05b).

@@ -24,8 +24,18 @@ export class GatewayCommands {
   @CliOnly()
   async tunnelRun() {
     const result = await runTunnel({ spawn: spawn as unknown as TunnelSpawn });
-    if (result.outcome === "refused") {
+    if (result.outcome === "refused" && result.reason.startsWith("platform_unsupported:")) {
+      console.error(
+        `ravi gateway tunnel-run: the gateway tunnel runs only on macOS until cloudflared's confinement on ${process.platform} is verified; not starting cloudflared (${result.reason}).`,
+      );
+    } else if (result.outcome === "refused" && result.reason.startsWith("runner_already_running:")) {
+      console.error(
+        `ravi gateway tunnel-run: another tunnel runner owns cloudflared (${result.reason}); stop it (pm2 stop ravi-gateway) before running one by hand.`,
+      );
+    } else if (result.outcome === "refused") {
       console.error(`ravi gateway tunnel-run: not starting cloudflared (${result.reason}).`);
+    } else if (result.outcome === "restart") {
+      console.error(`ravi gateway tunnel-run: exiting for a restart (${result.reason}).`);
     } else if (result.outcome === "drift") {
       console.error(
         `ravi gateway tunnel-run: tunnel drift (${result.reason}); cloudflared stopped and the drift latch is set until a rotate.`,

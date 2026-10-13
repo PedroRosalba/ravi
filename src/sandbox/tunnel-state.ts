@@ -15,9 +15,18 @@
 // - `tunnel.runner`: the runner pid and its cloudflared pid, so a restarted
 //   runner can stop a cloudflared its dead predecessor left behind.
 // - `listener.armed`: the daemon listener's pid and port while it is up; the
-//   runner starts cloudflared only after the listener checks are armed.
+//   runner starts cloudflared only after the listener checks are armed, and
+//   stops it when the record disappears or names another port.
+//
+// Fallback latch file `~/.ravi/gateway/tunnel-drift.latch` (`0600`): written
+// by the runner only when the `tunnel.drift_latch` write fails. Its presence
+// is a latch for the runner's start check and the listener's gate alike, and
+// `dbClearTunnelDriftLatch` removes it with the row.
 
+import { mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync } from "node:fs";
+import { join } from "node:path";
 import { executeWrite } from "../db/write-retry.js";
+import { getRaviStateDir } from "../utils/paths.js";
 import { ensureSandboxSchema } from "./runs-db.js";
 
 /** Console listener SPEC §Drift Check: no successful poll within the last 10 s is drift. */
@@ -49,6 +58,50 @@ export function evaluateTunnelGate(state: TunnelGateState, now: number): TunnelG
     return { open: false, reason: "poll_stale" };
   }
   return { open: true };
+}
+
+export const TUNNEL_DRIFT_LATCH_FILE = "tunnel-drift.latch";
+
+/** `~/.ravi/gateway/tunnel-drift.latch` (the runner's `gatewayDir`). */
+export function tunnelDriftLatchFilePath(gatewayDir: string = join(getRaviStateDir(), "gateway")): string {
+  return join(gatewayDir, TUNNEL_DRIFT_LATCH_FILE);
+}
+
+/**
+ * The fallback latch, or null when there is none. A file that exists but
+ * cannot be read or parsed is still a latch (fail closed).
+ */
+export function readTunnelDriftLatchFile(path: string = tunnelDriftLatchFilePath()): TunnelDriftLatch | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return { at: 0, reason: "unreadable" };
+  }
+  return (
+    parseJson(raw, (parsed) => {
+      const at = finiteNumber(parsed.at);
+      return at === null ? null : { at, reason: typeof parsed.reason === "string" ? parsed.reason : "unknown" };
+    }) ?? { at: 0, reason: "unparseable" }
+  );
+}
+
+/** Writes the fallback latch (`0600`, directory `0700`); an existing file keeps its first cause. */
+export function writeTunnelDriftLatchFile(reason: string, at: number, path: string = tunnelDriftLatchFilePath()): void {
+  mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+  let fd: number;
+  try {
+    fd = openSync(path, "wx", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+    throw error;
+  }
+  try {
+    writeSync(fd, JSON.stringify({ at, reason }));
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function readValue(key: string): string | null {
@@ -92,8 +145,14 @@ function parseJson<T>(value: string | null, guard: (parsed: Record<string, unkno
 const finiteNumber = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
 
-/** One read of both keys; what the listener evaluates (cached ≤ 1 s) on every request. */
-export function dbReadTunnelGateState(): TunnelGateState {
+/**
+ * One read of both keys; what the listener evaluates (cached ≤ 1 s) on every
+ * request. The fallback latch file wins over the database (and is read first,
+ * so a database that cannot be written to still closes the gate).
+ */
+export function dbReadTunnelGateState(latchFile: string = tunnelDriftLatchFilePath()): TunnelGateState {
+  const fileLatch = readTunnelDriftLatchFile(latchFile);
+  if (fileLatch) return { latch: fileLatch, lastPollAt: null };
   const db = ensureSandboxSchema();
   const rows = db
     .prepare("SELECT key, value FROM sandbox_listener_state WHERE key IN (?, ?)")
@@ -113,8 +172,8 @@ export function dbReadTunnelGateState(): TunnelGateState {
   return { latch, lastPollAt };
 }
 
-export function dbGetTunnelDriftLatch(): TunnelDriftLatch | null {
-  return dbReadTunnelGateState().latch;
+export function dbGetTunnelDriftLatch(latchFile?: string): TunnelDriftLatch | null {
+  return dbReadTunnelGateState(latchFile).latch;
 }
 
 /** Sets the latch unless one is already set (the first cause is kept). Returns the latch in force. */
@@ -141,9 +200,10 @@ export function dbLatchTunnelDrift(reason: string, at = Date.now()): TunnelDrift
   );
 }
 
-/** Only a successful rotate / re-expose (05b) calls this. */
-export function dbClearTunnelDriftLatch(): void {
+/** Only a successful rotate / re-expose (05b) calls this; it also removes the fallback latch file. */
+export function dbClearTunnelDriftLatch(latchFile: string = tunnelDriftLatchFilePath()): void {
   deleteValue(KEY_LATCH, "sandbox_listener_state.clear_drift");
+  rmSync(latchFile, { force: true });
 }
 
 export function dbRecordTunnelPoll(at = Date.now()): void {
