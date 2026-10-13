@@ -6,6 +6,7 @@ import "reflect-metadata";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { CONTRACT_EXIT_USAGE, contractFail } from "../agent-contract.js";
 import { Arg, CliOnly, Command, CommandAccess, Group, Option, Returns } from "../decorators.js";
 import { fail } from "../context.js";
 import {
@@ -13,6 +14,11 @@ import {
   DEFAULT_E2B_TEMPLATE_REF,
   DEFAULT_SANDBOX_MODEL,
   DEFAULT_SANDBOX_TIMEOUT_MIN,
+  MAX_SANDBOX_TIMEOUT_MIN,
+  SANDBOX_EGRESS_MODES,
+  SANDBOX_MODEL_AUTH_MODES,
+  type SandboxEgressMode,
+  type SandboxModelAuthMode,
   buildE2bTemplate,
   resolveE2bApiKey,
   resolveSandboxCredentials,
@@ -64,6 +70,84 @@ function parsePositiveNumber(value: string | undefined, label: string, fallback:
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) fail(`${label} must be a positive number.`);
   return parsed;
+}
+
+function failRunUsage(message: string, asJson: boolean | undefined, acceptedValues?: readonly string[]): never {
+  contractFail("sandbox run", "USAGE_ERROR", message, {
+    asJson,
+    exitCode: CONTRACT_EXIT_USAGE,
+    details: {
+      suggestedAction: "Fix the flag and re-run `ravi sandbox run`.",
+      ...(acceptedValues ? { acceptedValues: [...acceptedValues] } : {}),
+    },
+  });
+}
+
+export interface SandboxRunFlags {
+  timeoutMin?: string;
+  modelAuth?: string;
+  allowKeyInEnv?: boolean;
+  egress?: string;
+  allowHost?: string[];
+  keep?: boolean;
+}
+
+export interface ValidatedSandboxRunFlags {
+  timeoutMin: number;
+  modelAuth: SandboxModelAuthMode | undefined;
+  egress: SandboxEgressMode;
+  allowHosts: string[];
+}
+
+const HOST_RE = /^(?:\*\.)?[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
+
+/** Flag validation for `sandbox run`; every rejection is a usage error (exit 2) before any network call. */
+export function validateSandboxRunFlags(flags: SandboxRunFlags, asJson?: boolean): ValidatedSandboxRunFlags {
+  let timeoutMin = DEFAULT_SANDBOX_TIMEOUT_MIN;
+  if (flags.timeoutMin?.trim()) {
+    const raw = flags.timeoutMin.trim();
+    timeoutMin = Number(raw);
+    if (!/^\d+$/.test(raw) || timeoutMin < 1 || timeoutMin > MAX_SANDBOX_TIMEOUT_MIN) {
+      failRunUsage(`--timeout-min must be an integer from 1 to ${MAX_SANDBOX_TIMEOUT_MIN}, got ${raw}.`, asJson);
+    }
+  }
+  let modelAuth: SandboxModelAuthMode | undefined;
+  if (flags.modelAuth !== undefined) {
+    if (!(SANDBOX_MODEL_AUTH_MODES as readonly string[]).includes(flags.modelAuth)) {
+      failRunUsage(
+        `--model-auth must be one of ${SANDBOX_MODEL_AUTH_MODES.join(", ")}.`,
+        asJson,
+        SANDBOX_MODEL_AUTH_MODES,
+      );
+    }
+    modelAuth = flags.modelAuth as SandboxModelAuthMode;
+  }
+  if (modelAuth === "env" && !flags.allowKeyInEnv) {
+    failRunUsage(
+      "--model-auth env puts the real API key in the sandbox environment, where E2B logs and snapshots can see it. " +
+        "Pass --allow-key-in-env to accept that, or use header/broker mode.",
+      asJson,
+    );
+  }
+  if (modelAuth === "env" && flags.keep) {
+    failRunUsage("--keep is refused with --model-auth env: the paused snapshot would hold the API key.", asJson);
+  }
+  let egress: SandboxEgressMode = "dev-registries";
+  if (flags.egress !== undefined) {
+    if (!(SANDBOX_EGRESS_MODES as readonly string[]).includes(flags.egress)) {
+      failRunUsage(`--egress must be one of ${SANDBOX_EGRESS_MODES.join(", ")}.`, asJson, SANDBOX_EGRESS_MODES);
+    }
+    egress = flags.egress as SandboxEgressMode;
+  }
+  const allowHosts = (flags.allowHost ?? [])
+    .flatMap((entry) => entry.split(","))
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  for (const host of allowHosts) {
+    if (!HOST_RE.test(host))
+      failRunUsage(`--allow-host entries must be host names (optionally *.suffix), got ${host}.`, asJson);
+  }
+  return { timeoutMin, modelAuth, egress, allowHosts };
 }
 
 function readInstructions(task?: string, taskFile?: string): string {
@@ -163,14 +247,34 @@ export class SandboxCommands {
     model?: string,
     @Option({
       flags: "--timeout-min <minutes>",
-      description: `Task timeout in minutes (default ${DEFAULT_SANDBOX_TIMEOUT_MIN})`,
+      description: `Task timeout in whole minutes, 1 to ${MAX_SANDBOX_TIMEOUT_MIN} (default ${DEFAULT_SANDBOX_TIMEOUT_MIN})`,
     })
     timeoutMin?: string,
     @Option({
       flags: "--keep",
-      description: "Pause the sandbox instead of killing it",
+      description: "Pause the sandbox instead of killing it (egress is denied first; refused with --model-auth env)",
     })
     keep?: boolean,
+    @Option({
+      flags: "--allow-host <host...>",
+      description: "Extra hosts the worker may reach after the clone; can be repeated or comma-separated",
+    })
+    allowHost?: string[],
+    @Option({
+      flags: "--egress <mode>",
+      description: `${SANDBOX_EGRESS_MODES.join("|")}: deny-all plus package registries (default), or deny-all plus --allow-host only`,
+    })
+    egress?: string,
+    @Option({
+      flags: "--model-auth <mode>",
+      description: `${SANDBOX_MODEL_AUTH_MODES.join("|")}: broker when RAVI_SANDBOX_ANTHROPIC_BASE_URL is set, else header; env needs --allow-key-in-env`,
+    })
+    modelAuth?: string,
+    @Option({
+      flags: "--allow-key-in-env",
+      description: "Accept that --model-auth env places the real ANTHROPIC_API_KEY in the sandbox environment",
+    })
+    allowKeyInEnv?: boolean,
     @Option({
       flags: "--output <dir>",
       description: "Where to save outputs (default ~/.ravi/sandbox-runs/<id>)",
@@ -184,13 +288,13 @@ export class SandboxCommands {
     @Option({ flags: "--json", description: "Print the run summary as JSON" })
     asJson?: boolean,
   ) {
+    const flags = validateSandboxRunFlags({ timeoutMin, modelAuth, allowKeyInEnv, egress, allowHost, keep }, asJson);
     if (!repo?.trim()) fail("--repo is required.");
     const instructions = readInstructions(task, taskFile);
-    const timeout = parsePositiveNumber(timeoutMin, "--timeout-min", DEFAULT_SANDBOX_TIMEOUT_MIN);
 
     let credentials;
     try {
-      credentials = resolveSandboxCredentials();
+      credentials = resolveSandboxCredentials(process.env, flags.modelAuth);
     } catch (error) {
       fail(errorMessage(error));
     }
@@ -204,10 +308,12 @@ export class SandboxCommands {
         branch,
         template,
         model,
-        timeoutMin: timeout,
+        timeoutMin: flags.timeoutMin,
         keep,
         outputDir: output,
         credentials,
+        allowHosts: flags.allowHosts,
+        egress: flags.egress,
         onStep: asJson ? undefined : (message) => console.log(message),
         onDaemonLog: follow && !asJson ? (line) => console.log(`  daemon | ${line}`) : undefined,
       });
