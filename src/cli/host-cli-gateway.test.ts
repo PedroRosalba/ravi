@@ -132,6 +132,39 @@ describe("host CLI gateway", () => {
     expect(readdirSync(dirname(socketPath))).toEqual(["cli-gateway.sock"]);
   });
 
+  it("of gateways starting at once on a free path, exactly one starts", async () => {
+    const socketPath = join(tempDir(), "cli-gateway.sock");
+
+    const started = await Promise.all(["a", "b", "c", "d"].map((name) => startNamedGateway(socketPath, name)));
+
+    const winners = started.flatMap((handle, index) => (handle ? [{ handle, name: "abcd"[index] }] : []));
+    for (const winner of winners) handles.push(winner.handle);
+    expect(winners).toHaveLength(1);
+    expect(await whoServes(socketPath)).toBe(winners[0]!.name);
+    expect(readdirSync(dirname(socketPath))).toEqual(["cli-gateway.sock"]);
+  });
+
+  it("of gateways starting at once over a stale socket, exactly one starts", async () => {
+    const socketPath = join(tempDir(), "cli-gateway.sock");
+    await leaveStaleSocket(socketPath);
+
+    const started = await Promise.all(["a", "b", "c"].map((name) => startNamedGateway(socketPath, name)));
+
+    const winners = started.flatMap((handle, index) => (handle ? [{ handle, name: "abc"[index] }] : []));
+    for (const winner of winners) handles.push(winner.handle);
+    expect(winners).toHaveLength(1);
+    expect(await whoServes(socketPath)).toBe(winners[0]!.name);
+    expect(readdirSync(dirname(socketPath))).toEqual(["cli-gateway.sock"]);
+  });
+
+  it("a refused start leaves no temporary socket behind", async () => {
+    const socketPath = join(tempDir(), "cli-gateway.sock");
+    const first = await startNamedGateway(socketPath, "first");
+    handles.push(first!);
+    expect(await startNamedGateway(socketPath, "second")).toBeNull();
+    expect(readdirSync(dirname(socketPath))).toEqual(["cli-gateway.sock"]);
+  });
+
   it("stop() removes its own socket", async () => {
     const socketPath = join(tempDir(), "cli-gateway.sock");
     const handle = await startNamedGateway(socketPath, "only");
@@ -171,5 +204,7 @@ async function leaveStaleSocket(socketPath: string): Promise<void> {
   const kept = `${socketPath}.stale`;
   linkSync(socketPath, kept);
   await new Promise<void>((resolve) => server.close(() => resolve()));
+  // rename() between two links to the same file is a no-op that keeps both.
   renameSync(kept, socketPath);
+  if (existsSync(kept)) unlinkSync(kept);
 }
