@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCachedContactForConsoleUser, writeCachedActorBinding } from "./actor-bindings.js";
 import { CloudAuthError } from "./errors.js";
 import { getInstallationKeyPath, readOrCreateInstallationKey } from "./installation-key.js";
-import { type CommandResult, detectCloudAuthBackends, selectCloudAuthBackend } from "./secret-backends.js";
+import { createFakeSecurity } from "../test/fake-security.js";
+import { detectCloudAuthBackends, selectCloudAuthBackend } from "./secret-backends.js";
 import {
   deleteCloudCredentials,
+  deleteCloudCredentialsForUser,
   getActiveCloudAuthPointerPath,
   getActiveCloudCredentialsPath,
   getCloudAuthDir,
@@ -233,38 +235,21 @@ describe("cloud auth secret backends", () => {
 });
 
 /**
- * A fake macOS Keychain behind the injected `security` runner: understands
- * the `security -i` add line, find -w and delete. Never runs the real binary.
+ * The shared fake `security` (src/test/fake-security.ts) behind the injected
+ * runner: `security -i` writes, `find-generic-password -g`, deletes, and a
+ * `locked` switch. Never runs the real binary.
  */
 function useFakeKeychain() {
-  const items = new Map<string, string>();
+  const fake = createFakeSecurity();
   const warnings: string[] = [];
-  const key = (args: string[]) => `${args[args.indexOf("-s") + 1]}/${args[args.indexOf("-a") + 1]}`;
   setCloudAuthBackendDepsForTests({
     platform: "darwin",
     commandExists: (command) => command === "security",
     warn: (message) => warnings.push(message),
-    runCommand: (_command, args, options = {}): CommandResult => {
-      if (args[0] === "-i") {
-        const match = /^add-generic-password -U -a (\S+) -s (\S+) -X ([0-9a-f]+)\n$/.exec(options.input ?? "");
-        if (!match) return { status: 1, stdout: "", stderr: "unknown command" };
-        items.set(`${match[2]}/${match[1]}`, Buffer.from(match[3]!, "hex").toString("utf8"));
-        return { status: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "find-generic-password") {
-        const value = items.get(key(args));
-        return value === undefined
-          ? { status: 44, stdout: "", stderr: "not found" }
-          : { status: 0, stdout: value, stderr: "" };
-      }
-      if (args[0] === "delete-generic-password") {
-        return items.delete(key(args)) ? { status: 0, stdout: "", stderr: "" } : { status: 44, stdout: "", stderr: "" };
-      }
-      return { status: 1, stdout: "", stderr: "unexpected" };
-    },
+    runCommand: (_command, args, options) => fake.run(args, options),
   });
   process.env.RAVI_CLOUD_AUTH_BACKEND = "keychain";
-  return { items, warnings };
+  return { items: fake.items, warnings, fake };
 }
 
 describe("cloud auth Keychain fallback", () => {
@@ -331,6 +316,158 @@ describe("cloud auth Keychain fallback", () => {
     expect(items.has("ravi.cloud-auth/user_alice")).toBe(true);
     expect(existsSync(join(getCloudAuthUsersDir(), "user_alice", "credentials.json"))).toBe(false);
     expect(readCloudCredentials()).toEqual(small);
+  });
+
+  it("logout promotes the next user to the store that holds its credentials, not to the departing user's", () => {
+    const { fake, items } = useFakeKeychain();
+    const bobOld = makeCredentials({ user: { id: "user_bob" }, accessToken: "bob-old" });
+    const bobNew = makeCredentials({ user: { id: "user_bob" }, accessToken: "bob-new" });
+    const alice = makeCredentials({ user: { id: "user_alice" }, accessToken: "alice-access" });
+
+    writeCloudCredentials(bobOld);
+    // Bob logs in again with the Keychain locked: the write falls back to the
+    // file store and the delete of the old item fails too, so it survives.
+    fake.locked = true;
+    writeCloudCredentials(bobNew);
+    fake.locked = false;
+    expect(items.get("ravi.cloud-auth/user_bob")?.toString("utf8")).toContain("bob-old");
+    expect(existsSync(join(getCloudAuthUsersDir(), "user_bob", "credentials.json"))).toBe(true);
+    writeCloudCredentials(alice);
+    expect(readActiveCloudAuthUserId()).toBe("user_alice");
+
+    deleteCloudCredentials();
+
+    expect(readActiveCloudAuthUserId()).toBe("user_bob");
+    expect(JSON.parse(readFileSync(getActiveCloudAuthPointerPath(), "utf8"))).toMatchObject({ backend: "file" });
+    expect(readCloudCredentials()).toEqual(bobNew);
+    expect(readCloudCredentialsForUser("user_bob")).toEqual(bobNew);
+  });
+
+  it("logout promotes a user whose only copy is the fallback file (stale Keychain item already deleted)", () => {
+    const { items } = useFakeKeychain();
+    writeCloudCredentials(makeCredentials({ user: { id: "user_bob" }, accessToken: "bob-old" }));
+    const bobNew = oversized({ user: { id: "user_bob" }, accessToken: `bob-${"x".repeat(5000)}` });
+    writeCloudCredentials(bobNew);
+    expect(items.has("ravi.cloud-auth/user_bob")).toBe(false);
+    writeCloudCredentials(makeCredentials({ user: { id: "user_alice" } }));
+
+    deleteCloudCredentialsForUser("user_alice");
+
+    expect(readActiveCloudAuthUserId()).toBe("user_bob");
+    expect(readCloudCredentials()).toEqual(bobNew);
+    expect(items.has("ravi.cloud-auth/user_alice")).toBe(false);
+  });
+
+  it("logout clears a stale Keychain item left by a locked-Keychain fallback, so a per-user read is null", () => {
+    const { fake, items } = useFakeKeychain();
+    writeCloudCredentials(makeCredentials({ user: { id: "user_bob" }, accessToken: "bob-old" }));
+    fake.locked = true;
+    writeCloudCredentials(makeCredentials({ user: { id: "user_bob" }, accessToken: "bob-new" }));
+    fake.locked = false;
+    expect(items.get("ravi.cloud-auth/user_bob")?.toString("utf8")).toContain("bob-old");
+    expect(JSON.parse(readFileSync(getActiveCloudAuthPointerPath(), "utf8"))).toMatchObject({ backend: "file" });
+
+    deleteCloudCredentials();
+
+    expect(items.has("ravi.cloud-auth/user_bob")).toBe(false);
+    expect(existsSync(join(getCloudAuthUsersDir(), "user_bob"))).toBe(false);
+    expect(readCloudCredentialsForUser("user_bob")).toBeNull();
+    expect(readCloudCredentials()).toBeNull();
+    expect(readActiveCloudAuthUserId()).toBeNull();
+  });
+
+  it("deleting an inactive user clears both the fallback file copy and the stale Keychain item", () => {
+    const { fake, items } = useFakeKeychain();
+    writeCloudCredentials(makeCredentials({ user: { id: "user_bob" }, accessToken: "bob-old" }));
+    fake.locked = true;
+    writeCloudCredentials(makeCredentials({ user: { id: "user_bob" }, accessToken: "bob-new" }));
+    fake.locked = false;
+    writeCloudCredentials(makeCredentials({ user: { id: "user_alice" }, accessToken: "alice-access" }));
+    expect(readActiveCloudAuthUserId()).toBe("user_alice");
+    expect(items.has("ravi.cloud-auth/user_bob")).toBe(true);
+
+    deleteCloudCredentialsForUser("user_bob");
+
+    expect(items.has("ravi.cloud-auth/user_bob")).toBe(false);
+    expect(existsSync(join(getCloudAuthUsersDir(), "user_bob"))).toBe(false);
+    expect(readCloudCredentialsForUser("user_bob")).toBeNull();
+    expect(listCloudAuthUserIds()).not.toContain("user_bob");
+    // Alice is untouched.
+    expect(readActiveCloudAuthUserId()).toBe("user_alice");
+    expect(readCloudCredentials()?.accessToken).toBe("alice-access");
+  });
+
+  it("promoting the legacy slot removes its Keychain item and its locked-fallback file copy", () => {
+    const { fake, items } = useFakeKeychain();
+    writeCloudCredentials(makeCredentials({ user: null, accessToken: "legacy-old" }));
+    expect(items.has("ravi.cloud-auth/_legacy")).toBe(true);
+    fake.locked = true;
+    writeCloudCredentials(makeCredentials({ user: null, accessToken: "legacy-new" }));
+    fake.locked = false;
+    expect(items.has("ravi.cloud-auth/_legacy")).toBe(true);
+    expect(existsSync(join(getCloudAuthUsersDir(), "_legacy", "credentials.json"))).toBe(true);
+
+    writeCloudCredentials(makeCredentials({ user: { id: "user_alice" } }));
+
+    expect(readActiveCloudAuthUserId()).toBe("user_alice");
+    expect(items.has("ravi.cloud-auth/_legacy")).toBe(false);
+    expect(existsSync(join(getCloudAuthUsersDir(), "_legacy"))).toBe(false);
+    expect(listCloudAuthUserIds()).not.toContain("_legacy");
+  });
+
+  it("the fallback warning says when the older Keychain item could not be removed, without token material", () => {
+    const { fake, warnings } = useFakeKeychain();
+    writeCloudCredentials(makeCredentials({ user: { id: "user_bob" }, accessToken: "bob-old-secret" }));
+    fake.locked = true;
+
+    writeCloudCredentials(makeCredentials({ user: { id: "user_bob" }, accessToken: "bob-new-secret" }));
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("private file store");
+    expect(warnings[0]).toContain("older macOS Keychain item");
+    expect(warnings[0]).toContain("could not be removed");
+    expect(warnings[0]).toContain("next logout");
+    expect(warnings[0]).toContain("User interaction is not allowed");
+    expect(warnings[0]).not.toContain("secret");
+  });
+
+  it("the fallback warning does not claim a surviving item when the old one was removed", () => {
+    const { warnings } = useFakeKeychain();
+    writeCloudCredentials(makeCredentials({ user: { id: "user_alice" }, accessToken: "small" }));
+
+    writeCloudCredentials(oversized());
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).not.toContain("could not be removed");
+  });
+
+  it("logout with a locked Keychain does not throw and warns that the item survived", () => {
+    const { fake, items, warnings } = useFakeKeychain();
+    writeCloudCredentials(makeCredentials({ user: { id: "user_alice" } }));
+    fake.locked = true;
+
+    expect(() => deleteCloudCredentials()).not.toThrow();
+
+    expect(readActiveCloudAuthUserId()).toBeNull();
+    expect(items.has("ravi.cloud-auth/user_alice")).toBe(true);
+    expect(warnings.some((message) => message.includes("could not be removed") && message.includes("user_alice"))).toBe(
+      true,
+    );
+  });
+
+  it("promoting the legacy slot removes its fallback file copy too", () => {
+    const { items } = useFakeKeychain();
+    // No user id yet, and too large for Keychain: the legacy slot lands in the file store.
+    writeCloudCredentials(makeCredentials({ user: null, accessToken: `access-${"x".repeat(5000)}` }));
+    expect(readActiveCloudAuthUserId()).toBe("_legacy");
+    expect(existsSync(join(getCloudAuthUsersDir(), "_legacy", "credentials.json"))).toBe(true);
+
+    writeCloudCredentials(makeCredentials({ user: { id: "user_alice" } }));
+
+    expect(readActiveCloudAuthUserId()).toBe("user_alice");
+    expect(items.has("ravi.cloud-auth/user_alice")).toBe(true);
+    expect(existsSync(join(getCloudAuthUsersDir(), "_legacy"))).toBe(false);
+    expect(listCloudAuthUserIds()).not.toContain("_legacy");
   });
 });
 

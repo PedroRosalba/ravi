@@ -165,7 +165,16 @@ function createLibsecretBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBack
       }
     },
     delete(userId) {
-      runCommand("secret-tool", ["clear", "service", LIBSECRET_SERVICE, "account", userId]);
+      // `secret-tool clear` exits 0 when nothing matched; a non-zero status is
+      // a Secret Service failure, so the item may survive and the caller must know.
+      const result = runCommand("secret-tool", ["clear", "service", LIBSECRET_SERVICE, "account", userId]);
+      if (result.status !== 0) {
+        throw new CloudAuthError(
+          "CREDENTIALS_INVALID",
+          `The FreeDesktop Secret Service item for ${userId} could not be removed.`,
+          { cause: new Error(result.stderr || result.stdout) },
+        );
+      }
     },
   };
 }
@@ -210,9 +219,22 @@ function createKeychainBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBacke
       }
     },
     delete(userId) {
-      runCommand("security", ["delete-generic-password", "-a", userId, "-s", KEYCHAIN_SERVICE]);
+      const result = runCommand("security", ["delete-generic-password", "-a", userId, "-s", KEYCHAIN_SERVICE]);
+      if (result.status === 0 || isKeychainItemNotFound(result)) return;
+      // A locked Keychain ("User interaction is not allowed") or any other
+      // failure leaves the item in place: the caller decides what to tell the user.
+      throw new CloudAuthError("CREDENTIALS_INVALID", `The macOS Keychain item for ${userId} could not be removed.`, {
+        cause: new Error(redactSecurityOutput(result.stderr || result.stdout)),
+      });
     },
   };
+}
+
+/** `security` exits 44 (errSecItemNotFound) when there is nothing to delete; that is a successful logout. */
+const SECURITY_ITEM_NOT_FOUND_STATUS = 44;
+
+function isKeychainItemNotFound(result: CommandResult): boolean {
+  return result.status === SECURITY_ITEM_NOT_FOUND_STATUS || result.stderr.includes("could not be found");
 }
 
 function defaultCommandExists(command: string): boolean {
