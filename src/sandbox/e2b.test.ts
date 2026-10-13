@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   ALL_TRAFFIC,
   DEV_REGISTRY_HOSTS,
+  MAX_TASK_TEXT_BYTES,
   SANDBOX_PLACEHOLDER_API_KEY,
   SandboxConfigError,
   buildSandboxNetwork,
@@ -46,6 +47,19 @@ interface FakeOptions {
 }
 
 const PATCH = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n \n-a\n+b\n";
+const TASKS_CREATE_CMD =
+  'ravi tasks create --instructions "$(cat /home/user/.ravi-task/instructions.md)" --agent worker --report-to operator --json -- "$(cat /home/user/.ravi-task/title)"';
+const SECRET_PLACEHOLDER_RE = /^\$\{e2b\.secrets\.ravi-sbx-[0-9a-f]{24}-[a-z]+\}$/;
+
+/** Every transform-rule header value must be a secret-store placeholder: SandboxInfo shows rules to anyone with the E2B key. */
+function expectOnlyPlaceholders(network: SandboxNetwork | undefined): void {
+  expect(network).toBeDefined();
+  for (const rules of Object.values(network?.rules ?? {})) {
+    for (const rule of rules) {
+      for (const value of Object.values(rule.transform.headers)) expect(value).toMatch(SECRET_PLACEHOLDER_RE);
+    }
+  }
+}
 
 function fakeSandbox(options: FakeOptions = {}) {
   const commands: string[] = [];
@@ -58,7 +72,7 @@ function fakeSandbox(options: FakeOptions = {}) {
     cloneTimeoutMs: 0 as number | undefined,
     written: {} as Record<string, string>,
     tailDisconnected: false,
-    networkUpdates: [] as Array<Partial<SandboxNetwork>>,
+    networkUpdates: [] as SandboxNetwork[],
     // Order of lifecycle calls, to prove the deny-all update lands before pause.
     lifecycle: [] as string[],
     // Every secret ever stored (kept after destroy, so tests can read the values).
@@ -137,6 +151,7 @@ function fakeSandbox(options: FakeOptions = {}) {
     },
     async destroy(name: string) {
       state.destroyedSecrets.push(name);
+      state.lifecycle.push(`destroy:${name.split("-").at(-1)}`);
     },
   };
   return {
@@ -245,6 +260,13 @@ describe("buildSandboxNetwork", () => {
     expect(run.allowOut).not.toContain("gitlab.example.com");
     expect(run.allowOut).toContain("internal.example.com");
     for (const host of DEV_REGISTRY_HOSTS) expect(run.allowOut).toContain(host);
+    // GOPROXY fetches arbitrary origins on demand, so it is not in the preset; it is still allowed by name.
+    expect(DEV_REGISTRY_HOSTS).not.toContain("proxy.golang.org");
+    expect(DEV_REGISTRY_HOSTS).not.toContain("sum.golang.org");
+    expect(run.allowOut).not.toContain("proxy.golang.org");
+    expect(buildSandboxNetwork("run", { ...cfg, allowHosts: ["proxy.golang.org"] }).allowOut).toContain(
+      "proxy.golang.org",
+    );
     expect(run.rules["github.com"]).toBeUndefined();
     expect(run.rules["api.anthropic.com"]).toHaveLength(1);
     expect(run.denyOut).toEqual([ALL_TRAFFIC]);
@@ -331,9 +353,7 @@ describe("runE2bSandboxTask", () => {
     const joined = fake.commands.join("\n");
     expect(joined).not.toContain("Typo hunt");
     expect(joined).not.toContain("typo");
-    expect(fake.commands).toContain(
-      'ravi tasks create "$(cat /home/user/.ravi-task/title)" --instructions "$(cat /home/user/.ravi-task/instructions.md)" --agent worker --report-to operator --json',
-    );
+    expect(fake.commands).toContain(TASKS_CREATE_CMD);
     expect(joined).not.toContain("full-access");
     expect(fake.commands).toContain(
       "ravi agents permissions worker bootstrap --capabilities 'execute:executable:*' --execute",
@@ -388,9 +408,14 @@ describe("runE2bSandboxTask", () => {
     expect(JSON.stringify(github.state.created)).not.toContain("ghp_secret");
     expect(github.commands.join("\n")).not.toContain("ghp_secret");
     expect(Object.keys(github.state.written)).not.toContain("/home/user/.ravi-clone-credentials");
-    // Gone after the clone, together with the secret.
+    // Gone after the clone, together with the secret: destroyed right after the policy update,
+    // before the daemon starts, not at run end.
     expect(github.state.networkUpdates[0]?.rules?.["github.com"]).toBeUndefined();
     expect(github.state.destroyedSecrets).toContain(githubSecret?.[0] ?? "");
+    expect(github.state.lifecycle).toEqual(["updateNetwork", "destroy:github", "kill", "destroy:anthropic"]);
+    // Both phases hold placeholders only, never a literal credential.
+    expectOnlyPlaceholders(github.state.created?.network);
+    expectOnlyPlaceholders(github.state.networkUpdates[0]);
 
     // Not github.com: no token anywhere, and the repo host is reachable only while cloning.
     const gitlab = fakeSandbox();
@@ -452,6 +477,34 @@ describe("runE2bSandboxTask", () => {
     expect(githubCloneAuth("https://github.com/o/r.git")).toBeNull();
   });
 
+  it("with --github-auth file, clones through the credential file and stores no GitHub secret", async () => {
+    const fake = fakeSandbox();
+    await runE2bSandboxTask(
+      fake.options({ githubAuth: "file", credentials: { ...credentials, githubToken: "ghp_secret/+" } }),
+    );
+    // No GitHub rule in the clone policy and no GitHub secret in the store; the model key still goes through it.
+    expect(fake.state.created?.network.rules["github.com"]).toBeUndefined();
+    expect(Object.keys(fake.state.secrets)).toEqual([expect.stringMatching(/-anthropic$/)]);
+    expect(fake.state.written).toMatchObject({
+      "/home/user/.ravi-clone-credentials": [
+        "https://x-access-token",
+        `${encodeURIComponent("ghp_secret/+")}@github.com\n`,
+      ].join(":"),
+    });
+    const clone = fake.commands.find((cmd) => cmd.includes(" clone --depth 50 "));
+    expect(clone).toContain("credential.helper='store --file=/home/user/.ravi-clone-credentials'");
+    expect(fake.commands.join("\n")).not.toContain("ghp_secret");
+    expect(fake.state.lifecycle).toEqual(["updateNetwork", "kill", "destroy:anthropic"]);
+
+    // `header` (the default) is unchanged: rule plus secret, no file.
+    const header = fakeSandbox();
+    await runE2bSandboxTask(
+      header.options({ githubAuth: "header", credentials: { ...credentials, githubToken: "ghp_secret/+" } }),
+    );
+    expect(header.state.created?.network.rules["github.com"]).toHaveLength(1);
+    expect(Object.keys(header.state.written)).not.toContain("/home/user/.ravi-clone-credentials");
+  });
+
   it("never falls back to the env when the model key cannot be stored", async () => {
     const fake = fakeSandbox({ secretStoreFails: true });
     await expect(runE2bSandboxTask(fake.options())).rejects.toThrow("secrets api down");
@@ -467,7 +520,8 @@ describe("runE2bSandboxTask", () => {
           modelAuth: {
             mode: "broker",
             baseUrl: "https://broker.ravi.bot/v1",
-            headers: { "X-Ravi-Sandbox-Grant": "g" },
+            // What 06b must pass: a secret-store placeholder, never the grant itself.
+            headers: { "X-Ravi-Sandbox-Grant": e2bSecretPlaceholder(`ravi-sbx-${"0".repeat(24)}-grant`) },
           },
         },
         allowHosts: ["internal.example.com"],
@@ -479,12 +533,18 @@ describe("runE2bSandboxTask", () => {
     expect(created?.envs.ANTHROPIC_BASE_URL).toBe("https://broker.ravi.bot/v1");
     expect(created?.network.allowOut.sort()).toEqual(["broker.ravi.bot", "github.com"]);
     expect(created?.network.rules).toEqual({
-      "broker.ravi.bot": [{ transform: { headers: { "X-Ravi-Sandbox-Grant": "g" } } }],
+      "broker.ravi.bot": [
+        {
+          transform: { headers: { "X-Ravi-Sandbox-Grant": e2bSecretPlaceholder(`ravi-sbx-${"0".repeat(24)}-grant`) } },
+        },
+      ],
     });
     expect(broker.state.secrets).toEqual({});
     const update = broker.state.networkUpdates[0];
     expect(update?.allowOut?.sort()).toEqual(["broker.ravi.bot", "internal.example.com"]);
-    expect(update?.rules).toEqual(created?.network.rules);
+    expect(update?.rules).toEqual(created?.network.rules ?? {});
+    expectOnlyPlaceholders(created?.network);
+    expectOnlyPlaceholders(update);
 
     // env mode is the only one that puts the key itself in the sandbox, and it says so by having no rule.
     const env = fakeSandbox();
@@ -514,9 +574,9 @@ describe("runE2bSandboxTask", () => {
     expect(JSON.stringify(fake.state.created)).not.toContain("whoami");
     // The only command that mentions the task text does so through files.
     const create = fake.commands.filter((cmd) => cmd.startsWith("ravi tasks create"));
-    expect(create).toEqual([
-      'ravi tasks create "$(cat /home/user/.ravi-task/title)" --instructions "$(cat /home/user/.ravi-task/instructions.md)" --agent worker --report-to operator --json',
-    ]);
+    expect(create).toEqual([TASKS_CREATE_CMD]);
+    // The title is the last argument, after `--`, so a title that starts with `-` is not an option.
+    expect(TASKS_CREATE_CMD).toEndWith(' -- "$(cat /home/user/.ravi-task/title)"');
   });
 
   it("reports which command failed with its stderr", async () => {
@@ -606,6 +666,98 @@ describe("runE2bSandboxTask", () => {
     expect(term.state.kills).toBe(1);
   });
 
+  it("ignores a second Ctrl-C while the first one's cleanup is still running", async () => {
+    const fake = fakeSandbox();
+    let releaseKill = () => {};
+    let killCalls = 0;
+    const create = async (input: CreateSandboxInput) => {
+      const handle = await fake.create(input);
+      const quickKill = handle.kill;
+      handle.kill = async () => {
+        killCalls += 1;
+        // The first kill (from the signal handler) only resolves when the test says so.
+        if (killCalls === 1) {
+          await new Promise<void>((resolve) => {
+            releaseKill = resolve;
+          });
+        }
+        await quickKill();
+      };
+      return handle;
+    };
+    const before = process.listeners("SIGINT");
+    const exits: number[] = [];
+    const steps: string[] = [];
+    const seen: Record<string, unknown> = {};
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+    await runE2bSandboxTask(
+      fake.options({
+        createSandbox: create,
+        exit: (code) => {
+          exits.push(code);
+        },
+        onStep: (message) => steps.push(message),
+        sleep: async () => {
+          const handler = process.listeners("SIGINT").find((listener) => !before.includes(listener)) as (
+            signal: NodeJS.Signals,
+          ) => void;
+          handler("SIGINT");
+          await tick();
+          handler("SIGINT");
+          handler("SIGTERM");
+          await tick();
+          seen.exitsWhilePending = [...exits];
+          seen.handlerStillInstalled = process.listeners("SIGINT").includes(handler);
+          seen.destroyedWhilePending = [...fake.state.destroyedSecrets];
+          releaseKill();
+          await tick();
+          seen.exitsAfterKill = [...exits];
+          seen.handlersAfterKill = process.listeners("SIGINT");
+        },
+      }),
+    );
+    // Repeated signals neither removed the handler nor exited with the sandbox still up.
+    expect(seen.exitsWhilePending).toEqual([]);
+    expect(seen.handlerStillInstalled).toBe(true);
+    expect(seen.destroyedWhilePending).toEqual([]);
+    expect(steps.filter((line) => line.includes("cleanup in progress"))).toHaveLength(1);
+    // Once the kill settled: secrets destroyed, handlers removed, exit 130 for the first signal.
+    expect(seen.exitsAfterKill).toEqual([130]);
+    expect(seen.handlersAfterKill).toEqual(before);
+    expect(fake.state.destroyedSecrets).toEqual(Object.keys(fake.state.secrets));
+    expect(fake.state.destroyedSecrets).toHaveLength(1);
+    // Once from the handler, once from the normal cleanup (exit is stubbed here).
+    expect(fake.state.kills).toBe(2);
+  });
+
+  it("exits within the cleanup limit when removing a secret hangs", async () => {
+    const fake = fakeSandbox();
+    fake.secretStore.destroy = () => new Promise<void>(() => {});
+    const before = process.listeners("SIGINT");
+    const exits: number[] = [];
+    const seen: Record<string, unknown> = {};
+    await runE2bSandboxTask(
+      fake.options({
+        signalCleanupTimeoutMs: 20,
+        exit: (code) => {
+          exits.push(code);
+        },
+        sleep: async () => {
+          const handler = process.listeners("SIGINT").find((listener) => !before.includes(listener));
+          (handler as (signal: NodeJS.Signals) => void)("SIGINT");
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          seen.exitsBeforeLimit = [...exits];
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          seen.exitsAfterLimit = [...exits];
+        },
+      }),
+    );
+    expect(fake.state.killed).toBe(true);
+    expect(seen.exitsBeforeLimit).toEqual([]);
+    expect(seen.exitsAfterLimit).toEqual([130]);
+    expect(process.listeners("SIGINT")).toEqual(before);
+  });
+
   it("with --keep, denies all egress and drops every rule before pausing", async () => {
     const fake = fakeSandbox({ failOn: /ravi agents create worker/ });
     const outputDir = tempDir();
@@ -620,11 +772,13 @@ describe("runE2bSandboxTask", () => {
     expect(existsSync(join(outputDir, "daemon.log"))).toBe(true);
     expect(result.files).not.toContain("TASK.md");
     // Clone-phase update, then the lock-down right before pause.
-    expect(fake.state.lifecycle).toEqual(["updateNetwork", "updateNetwork", "pause"]);
+    expect(fake.state.lifecycle).toEqual(["updateNetwork", "updateNetwork", "pause", "destroy:anthropic"]);
     expect(fake.state.networkUpdates.at(-1)).toEqual({ allowOut: [], denyOut: [ALL_TRAFFIC], rules: {} });
     // Nothing waits for work in the paused machine.
     const pauseAt = fake.commands.findIndex((cmd) => cmd.includes("ravi daemon run"));
-    expect(fake.commands.slice(pauseAt + 1).some((cmd) => cmd.startsWith("pkill -f 'ravi daemon run'"))).toBe(true);
+    // `[r]avi` so the pattern does not match the shell running the pkill itself.
+    expect(fake.commands.slice(pauseAt + 1).some((cmd) => cmd.startsWith("pkill -f '[r]avi daemon run'"))).toBe(true);
+    expect(fake.commands.some((cmd) => cmd.includes("pkill -f 'ravi daemon run'"))).toBe(false);
     // The injected secret is gone from E2B as well.
     expect(fake.state.destroyedSecrets).toEqual(Object.keys(fake.state.secrets));
   });
@@ -652,6 +806,23 @@ describe("runE2bSandboxTask", () => {
     await runE2bSandboxTask(fake.options({ timeoutMin: 55 }));
     // The sandbox outlives the task by 5 minutes, which still fits E2B's 1 h cap.
     expect(fake.state.created?.timeoutMs).toBe(60 * 60_000);
+  });
+
+  it("rejects title and instructions over 100 KiB together before creating anything", async () => {
+    expect(MAX_TASK_TEXT_BYTES).toBe(102_400);
+    const tooBig = fakeSandbox();
+    await expect(
+      runE2bSandboxTask(tooBig.options({ title: "t", instructions: "x".repeat(MAX_TASK_TEXT_BYTES) })),
+    ).rejects.toThrow(/100 KiB/);
+    expect(tooBig.state.created).toBeNull();
+    // Exactly at the limit is fine; bytes count, not characters.
+    const atLimit = fakeSandbox();
+    await runE2bSandboxTask(atLimit.options({ title: "t", instructions: "x".repeat(MAX_TASK_TEXT_BYTES - 1) }));
+    expect(atLimit.state.created).not.toBeNull();
+    const multiByte = fakeSandbox();
+    await expect(
+      runE2bSandboxTask(multiByte.options({ title: "", instructions: "é".repeat(MAX_TASK_TEXT_BYTES / 2 + 1) })),
+    ).rejects.toThrow(SandboxConfigError);
   });
 
   it("times out when the task never reaches a terminal status", async () => {

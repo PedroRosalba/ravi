@@ -15,9 +15,12 @@ import {
   DEFAULT_SANDBOX_MODEL,
   DEFAULT_SANDBOX_TIMEOUT_MIN,
   MAX_SANDBOX_TIMEOUT_MIN,
+  MAX_TASK_TEXT_BYTES,
   SANDBOX_EGRESS_MODES,
+  SANDBOX_GITHUB_AUTH_MODES,
   SANDBOX_MODEL_AUTH_MODES,
   type SandboxEgressMode,
+  type SandboxGithubAuthMode,
   type SandboxModelAuthMode,
   buildE2bTemplate,
   resolveE2bApiKey,
@@ -89,6 +92,7 @@ export interface SandboxRunFlags {
   allowKeyInEnv?: boolean;
   egress?: string;
   allowHost?: string[];
+  githubAuth?: string;
   keep?: boolean;
 }
 
@@ -97,12 +101,21 @@ export interface ValidatedSandboxRunFlags {
   modelAuth: SandboxModelAuthMode | undefined;
   egress: SandboxEgressMode;
   allowHosts: string[];
+  githubAuth: SandboxGithubAuthMode;
 }
 
 const HOST_RE = /^(?:\*\.)?[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
 
-/** Flag validation for `sandbox run`; every rejection is a usage error (exit 2) before any network call. */
-export function validateSandboxRunFlags(flags: SandboxRunFlags, asJson?: boolean): ValidatedSandboxRunFlags {
+/**
+ * Flag validation for `sandbox run`; every rejection is a usage error (exit 2) before any
+ * network call. `env` is only read to tell an explicit `--model-auth broker` that has no
+ * broker URL apart from a configuration problem later on.
+ */
+export function validateSandboxRunFlags(
+  flags: SandboxRunFlags,
+  asJson?: boolean,
+  env: NodeJS.ProcessEnv = process.env,
+): ValidatedSandboxRunFlags {
   let timeoutMin = DEFAULT_SANDBOX_TIMEOUT_MIN;
   if (flags.timeoutMin?.trim()) {
     const raw = flags.timeoutMin.trim();
@@ -132,6 +145,23 @@ export function validateSandboxRunFlags(flags: SandboxRunFlags, asJson?: boolean
   if (modelAuth === "env" && flags.keep) {
     failRunUsage("--keep is refused with --model-auth env: the paused snapshot would hold the API key.", asJson);
   }
+  if (modelAuth === "broker" && !env.RAVI_SANDBOX_ANTHROPIC_BASE_URL?.trim()) {
+    failRunUsage(
+      "--model-auth broker needs RAVI_SANDBOX_ANTHROPIC_BASE_URL (an https URL the sandbox sends model traffic to).",
+      asJson,
+    );
+  }
+  let githubAuth: SandboxGithubAuthMode = "header";
+  if (flags.githubAuth !== undefined) {
+    if (!(SANDBOX_GITHUB_AUTH_MODES as readonly string[]).includes(flags.githubAuth)) {
+      failRunUsage(
+        `--github-auth must be one of ${SANDBOX_GITHUB_AUTH_MODES.join(", ")}.`,
+        asJson,
+        SANDBOX_GITHUB_AUTH_MODES,
+      );
+    }
+    githubAuth = flags.githubAuth as SandboxGithubAuthMode;
+  }
   let egress: SandboxEgressMode = "dev-registries";
   if (flags.egress !== undefined) {
     if (!(SANDBOX_EGRESS_MODES as readonly string[]).includes(flags.egress)) {
@@ -147,7 +177,23 @@ export function validateSandboxRunFlags(flags: SandboxRunFlags, asJson?: boolean
     if (!HOST_RE.test(host))
       failRunUsage(`--allow-host entries must be host names (optionally *.suffix), got ${host}.`, asJson);
   }
-  return { timeoutMin, modelAuth, egress, allowHosts };
+  return { timeoutMin, modelAuth, egress, allowHosts, githubAuth };
+}
+
+/**
+ * Title and instructions are written into the sandbox and expanded with `$(cat …)`;
+ * the cap keeps that well inside what a command line and E2B's file API take, and a
+ * task that needs more text should carry it in the repository instead.
+ */
+export function validateTaskText(title: string, instructions: string, asJson?: boolean): void {
+  const bytes = Buffer.byteLength(title) + Buffer.byteLength(instructions);
+  if (bytes > MAX_TASK_TEXT_BYTES) {
+    failRunUsage(
+      `--title and --task/--task-file together are ${bytes} bytes; the limit is ${MAX_TASK_TEXT_BYTES} (100 KiB). ` +
+        "Put the long material in the repository and refer to it from the task.",
+      asJson,
+    );
+  }
 }
 
 function readInstructions(task?: string, taskFile?: string): string {
@@ -276,6 +322,11 @@ export class SandboxCommands {
     })
     allowKeyInEnv?: boolean,
     @Option({
+      flags: "--github-auth <mode>",
+      description: `${SANDBOX_GITHUB_AUTH_MODES.join("|")}: how GITHUB_TOKEN reaches the clone; header (default) is a clone-phase proxy rule, file is git's credential file inside the sandbox`,
+    })
+    githubAuth?: string,
+    @Option({
       flags: "--output <dir>",
       description: "Where to save outputs (default ~/.ravi/sandbox-runs/<id>)",
     })
@@ -288,9 +339,13 @@ export class SandboxCommands {
     @Option({ flags: "--json", description: "Print the run summary as JSON" })
     asJson?: boolean,
   ) {
-    const flags = validateSandboxRunFlags({ timeoutMin, modelAuth, allowKeyInEnv, egress, allowHost, keep }, asJson);
+    const flags = validateSandboxRunFlags(
+      { timeoutMin, modelAuth, allowKeyInEnv, egress, allowHost, githubAuth, keep },
+      asJson,
+    );
     if (!repo?.trim()) fail("--repo is required.");
     const instructions = readInstructions(task, taskFile);
+    validateTaskText(title ?? "Sandbox task", instructions, asJson);
 
     let credentials;
     try {
@@ -314,6 +369,7 @@ export class SandboxCommands {
         credentials,
         allowHosts: flags.allowHosts,
         egress: flags.egress,
+        githubAuth: flags.githubAuth,
         onStep: asJson ? undefined : (message) => console.log(message),
         onDaemonLog: follow && !asJson ? (line) => console.log(`  daemon | ${line}`) : undefined,
       });
