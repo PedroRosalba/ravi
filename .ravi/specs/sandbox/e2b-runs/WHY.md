@@ -191,7 +191,10 @@ hunk bodies by their counts, reads modes with `strtoul` base 8, strips one
 path component whatever it is, and writes to a case-insensitive disk on macOS.
 Reading it any other way leaves a gap between what is reviewed and what is
 applied, and each gap was a working bypass (the 03c proof-of-concept patches,
-kept as fixtures). `package.json` is reviewed by top-level key rather than by
+kept as fixtures). The reviewer classifies every name git could write rather
+than reproducing git's name derivation (a sticky `-p0` guess, CR and timestamp
+cuts, the shorter of `---`/`+++`), because a superset cannot under-flag when
+those heuristics change (fixtures `a1`-`a4`). `package.json` is reviewed by top-level key rather than by
 a few script names, and a change whose key the hunk does not show is flagged,
 because a hunk can start deep inside `"scripts"` with no `"scripts"` line in
 view. Size caps move to where the bytes are counted, the host: each command is

@@ -216,6 +216,41 @@ describe("reviewPatch", () => {
     ]);
   });
 
+  // a1-a4 each fail on acbe50d9: git apply writes the flagged file, the review derived one other name.
+  it("classifies the -p0 name git keeps after a slash-less plain header (a1)", () => {
+    const review = reviewPatch(fixture("a1-p0.patch"));
+    expect(review.flags.map((f) => f.kind)).toEqual(["agent-config"]);
+    expect(review.suggestions).toContain("git apply --exclude=.claude/settings.json changes.patch");
+  });
+
+  it("classifies a +++ name cut at a CR (a2)", () => {
+    const review = reviewPatch(fixture("a2-cr.patch"));
+    expect(review.flags.map((f) => f.kind)).toEqual(["agent-config"]);
+    expect(review.suggestions).toContain("git apply --exclude=CLAUDE.md changes.patch");
+  });
+
+  it("classifies a +++ name with its timestamp cut (a3)", () => {
+    const review = reviewPatch(fixture("a3-ts.patch"));
+    expect(review.flags.map((f) => f.kind)).toEqual(["agent-config"]);
+    expect(review.suggestions).toContain("git apply --exclude=CLAUDE.md changes.patch");
+  });
+
+  it("classifies the --- name git keeps when the +++ name only extends it (a4)", () => {
+    const review = reviewPatch(fixture("a4-short.patch"));
+    expect(review.flags.map((f) => f.kind)).toEqual(["build"]);
+    expect(review.suggestions).toContain("git apply --exclude=Makefile changes.patch");
+  });
+
+  it("cuts a timestamp but not /dev/null into a sensitive name, and splits a header at a tab", () => {
+    const gnu =
+      "--- /dev/null\t1970-01-01 00:00:00.000000000 +0000\n+++ b/notes.txt\t2010-07-05 19:41:17\n@@ -0,0 +1 @@\n+x\n";
+    expect(reviewPatch(gnu)).toEqual({ files: 1, flags: [], suggestions: [] });
+    // A timestamp after a name holding spaces: only the timestamp is cut.
+    const spaced = "--- /dev/null\n+++ b/my dir/CLAUDE.md 2010-07-05 19:41:17.000000000 +0000\n@@ -0,0 +1 @@\n+x\n";
+    expect(kinds(spaced).map(([, kind]) => kind)).toEqual(["agent-config"]);
+    expect(kinds("diff --git a/.envrc\tb/.envrc\nnew file mode 100644\n")).toEqual([[".envrc", "env-config"]]);
+  });
+
   it("escapes glob characters in suggested --exclude values", () => {
     // Fails on e67784d6: `--exclude='.claude/[ab].md'` would also match `.claude/a.md`.
     expect(escapeGlob("a[b]*?\\c")).toBe("a\\[b\\]\\*\\?\\\\c");
@@ -283,10 +318,15 @@ describe("reviewPatch", () => {
 
   it("suggests a check and one exclude per flagged path, quoting odd names, and nothing for a clean patch", () => {
     const review = reviewPatch(added(".claude/it's.md") + added("Makefile"));
+    // The attributed name first, then every other flagged name git could write (`-p0` keeps a/ and b/).
     expect(review.suggestions).toEqual([
       "git apply --check changes.patch",
       "git apply --exclude='.claude/it'\\''s.md' changes.patch",
+      "git apply --exclude='a/.claude/it'\\''s.md' changes.patch",
+      "git apply --exclude='b/.claude/it'\\''s.md' changes.patch",
       "git apply --exclude=Makefile changes.patch",
+      "git apply --exclude=a/Makefile changes.patch",
+      "git apply --exclude=b/Makefile changes.patch",
     ]);
     expect(reviewPatch(added("src/a.ts"))).toEqual({ files: 1, flags: [], suggestions: [] });
     expect(reviewPatch("")).toEqual({ files: 0, flags: [], suggestions: [] });

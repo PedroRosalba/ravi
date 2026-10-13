@@ -305,13 +305,16 @@ attacker-authored: `git diff` (or `head`, `wc`, the shell) can print anything.
   `copy to`, mode and `index` lines count only in the extended header; hunk
   bodies are consumed by the `@@ -a,b +c,d @@` counts, so a `+++ b/x` or
   `diff --git` line inside a hunk is content; lines between files are skipped,
-  as git skips them. Names follow `-p1` (the first component is dropped
-  whatever it is). Modes are parsed like git (`strtoul` base 8, then
+  as git skips them. The path a flag is shown under follows `-p1` (the first
+  component is dropped whatever it is). Modes are parsed like git (`strtoul` base 8, then
   whitespace): `0120000` and `120000 ` are symlinks, any mode with `0o100` is
   executable, `160000` is a gitlink. Paths are matched lower-cased and with
-  `//` and `.` collapsed. Every name the file could take (header, `+++`,
-  `rename to`, `copy to`, `---` for a deletion) is classified, and the flags
-  go to the name `git apply` writes and `--exclude` matches.
+  `//` and `.` collapsed. The reviewer classifies every name git could write
+  for a file: each raw `diff --git`, `---`, `+++`, `rename to` and `copy to`
+  name as written (`-p0`) and with one component stripped, whole and cut
+  before a space, tab or CR (timestamps, CR terminators), with the union of
+  their flags shown under the best-guess path, so an ordinary `foo.txt 2010-…`
+  header also classifies `foo.txt` and the `---` name of a rename is flagged.
   Flags: `agent-config` (`.claude/**`, `.cursor/**`, `.gemini/**`,
   `.codex/**`, `.agents/**`, `.windsurf/**`, `.mcp.json`,
   `.vscode/{settings,tasks,launch}.json`, `AGENTS.md`, `CLAUDE.md`,
@@ -348,7 +351,7 @@ attacker-authored: `git diff` (or `head`, `wc`, the shell) can print anything.
   returned as `review` (`{ files, flags[], suggestions[] }`, null when no
   patch was saved), printed as a boxed warning in text mode, and suggests
   `git apply --check changes.patch` and one `git apply --exclude=<path>` per
-  flagged path, with `[`, `]`, `*`, `?` and `\` escaped for git's wildmatch
+  flagged path and per flagged candidate name (`x`, `a/x`, `b/x`), with `[`, `]`, `*`, `?` and `\` escaped for git's wildmatch
   and the word shell-quoted (`$'…'` when it holds control characters). Flags
   never change the exit code.
 

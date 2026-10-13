@@ -172,6 +172,12 @@ function readQuoted(text: string): { value: string; end: number } | null {
   return null;
 }
 
+/** The next space or tab in `text` at or after `from`, or -1. */
+function nextBlank(text: string, from: number): number {
+  const at = text.slice(from).search(/[ \t]/);
+  return at < 0 ? -1 : from + at;
+}
+
 /** `diff --git A B`: the new path after `-p1`, handling git's C-style quoting and spaces in names. */
 export function parseDiffHeader(line: string): string | null {
   const rest = line.slice("diff --git ".length);
@@ -187,8 +193,8 @@ export function parseDiffHeader(line: string): string | null {
     const second = open >= 0 ? readQuoted(rest.slice(open + 1)) : null;
     return second ? stripComponent(second.value) : null;
   }
-  // Unquoted: git splits where both halves name the same path once their first component is gone.
-  for (let at = rest.indexOf(" "); at >= 0; at = rest.indexOf(" ", at + 1)) {
+  // Unquoted: git splits (at a space or a tab) where both halves name the same path once their first component is gone.
+  for (let at = rest.search(/[ \t]/); at >= 0; at = nextBlank(rest, at + 1)) {
     const a = stripComponent(rest.slice(0, at));
     const b = stripComponent(rest.slice(at + 1));
     if (rest.slice(0, at).includes("/") && rest.slice(at + 1).includes("/") && a === b && b) return b;
@@ -196,6 +202,40 @@ export function parseDiffHeader(line: string): string | null {
   // Different paths (a rename): a guess, used for flags only; `rename to` / `+++` name the file.
   const last = rest.lastIndexOf(" b/");
   return last >= 0 ? rest.slice(last + 3) : null;
+}
+
+/**
+ * `diff --git A B`: both names as written (no component stripped), for classification.
+ * Unquoted names are split wherever the halves name the same file as written (`-p0`)
+ * or after one component (`-p1`), at a space or a tab like git; a rename's two
+ * different names are split at the last ` b/`.
+ */
+export function diffHeaderNames(line: string): string[] {
+  const rest = line.slice("diff --git ".length);
+  if (rest.startsWith('"')) {
+    const first = readQuoted(rest);
+    if (!first) return [rest];
+    const tail = rest.slice(first.end).replace(/^[ \t]/, "");
+    const second = tail.startsWith('"') ? readQuoted(tail)?.value : tail;
+    return second ? [first.value, second] : [first.value];
+  }
+  if (rest.endsWith('"')) {
+    const open = Math.max(rest.lastIndexOf(' "'), rest.lastIndexOf('\t"'));
+    const second = open >= 0 ? readQuoted(rest.slice(open + 1)) : null;
+    return second ? [rest.slice(0, open), second.value] : [rest];
+  }
+  const names: string[] = [];
+  for (let at = 0; at < rest.length; at++) {
+    if (rest[at] !== " " && rest[at] !== "\t") continue;
+    const a = rest.slice(0, at);
+    const b = rest.slice(at + 1);
+    if (a === b || (a.includes("/") && b.includes("/") && stripComponent(a) === stripComponent(b))) names.push(a, b);
+  }
+  if (names.length === 0) {
+    const last = rest.lastIndexOf(" b/");
+    if (last >= 0) names.push(rest.slice(0, last), rest.slice(last + 1));
+  }
+  return names;
 }
 
 /** Undo git's C-style quoting; octal escapes are UTF-8 bytes. */
@@ -231,6 +271,45 @@ function nameFrom(value: string, prefixed: boolean): string | null {
   return prefixed ? stripComponent(raw) : raw;
 }
 
+/** A `---`/`+++`/`rename to`/`copy to` value as written: unquoted when quoted, null for `/dev/null`. */
+function rawName(value: string): string | null {
+  if (/^\/dev\/null(?:\s|$)/.test(value)) return null;
+  return value.startsWith('"') ? (readQuoted(value)?.value ?? value) : value;
+}
+
+const WHITESPACE = new Set([" ", "\t", "\r", "\v", "\f"]);
+
+/**
+ * Every name `git apply` could derive from one raw name: as written (`-p0`, which git
+ * keeps for the rest of the patch once it guesses it from a slash-less plain header)
+ * and with one component stripped (`-p1`), each whole and cut before whitespace (git
+ * ends a name at a CR or tab and strips a timestamp after a space). Cuts are made at
+ * the first space, tab and CR and at the last few whitespace runs (a timestamp after
+ * a name that itself holds spaces), so a long hostile line stays linear.
+ */
+export function candidateNames(raw: string): string[] {
+  const cuts = new Set<number>([raw.length]);
+  for (const char of [" ", "\t", "\r"]) {
+    const at = raw.indexOf(char);
+    if (at >= 0) cuts.add(at);
+  }
+  let runs = 0;
+  for (let at = raw.length - 1; at >= 0 && runs < 8; at--) {
+    if (WHITESPACE.has(raw[at]) && (at === 0 || !WHITESPACE.has(raw[at - 1]))) {
+      cuts.add(at);
+      runs += 1;
+    }
+  }
+  const names = new Set<string>();
+  for (const at of cuts) {
+    const form = raw.slice(0, at);
+    for (const name of [form, stripComponent(form)]) {
+      if (name.trim() !== "" && name !== "/dev/null") names.add(name);
+    }
+  }
+  return [...names];
+}
+
 /**
  * A mode as `git apply` reads it (`strtoul(…, 8)`, then whitespace): octal digits,
  * leading zeros and trailing whitespace allowed. Null when git would refuse it.
@@ -258,6 +337,8 @@ interface Hunk {
 interface FileRecord {
   /** The `diff --git` line's new name (a guess when its two names differ). */
   headerName: string | null;
+  /** Raw `diff --git`, `---`, `+++`, `rename to`, `copy to` names, nothing stripped or cut. */
+  rawNames: string[];
   minus: string | null;
   plus: string | null;
   plusIsNull: boolean;
@@ -272,9 +353,10 @@ interface FileRecord {
   hunks: Hunk[];
 }
 
-function newRecord(headerName: string | null): FileRecord {
+function newRecord(headerName: string | null, rawNames: string[]): FileRecord {
   return {
     headerName,
+    rawNames,
     minus: null,
     plus: null,
     plusIsNull: false,
@@ -289,11 +371,16 @@ function newRecord(headerName: string | null): FileRecord {
 }
 
 type Flagger = (path: string, kind: PatchFlagKind, reason: string) => void;
+/** Adds a name to the `--exclude` suggestions. */
+type Excluder = (name: string) => void;
 
 export function reviewPatch(patch: string): PatchReview {
   const flags: PatchFlag[] = [];
   const flagged = new Set<string>();
+  const excludes = new Set<string>();
+  const exclude: Excluder = (name) => excludes.add(name);
   const flag: Flagger = (path, kind, reason) => {
+    exclude(path);
     const key = `${path}\0${kind}`;
     if (flagged.has(key)) return;
     flagged.add(key);
@@ -315,10 +402,10 @@ export function reviewPatch(patch: string): PatchReview {
     oldLeft = match[2] === undefined ? 1 : Number(match[2]);
     newLeft = match[4] === undefined ? 1 : Number(match[4]);
   };
-  const startFile = (headerName: string | null) => {
-    if (file) reviewFile(file, flag);
+  const startFile = (headerName: string | null, rawNames: string[]) => {
+    if (file) reviewFile(file, flag, exclude);
     files += 1;
-    file = newRecord(headerName);
+    file = newRecord(headerName, rawNames);
     hunk = null;
     mode = "header";
     return file;
@@ -377,28 +464,30 @@ export function reviewPatch(patch: string): PatchReview {
     }
     // Between files: a `diff --git` line, or a plain `---` line followed by `+++`, starts one.
     if (line.startsWith("diff --git ")) {
-      startFile(parseDiffHeader(line));
+      startFile(parseDiffHeader(line), diffHeaderNames(line));
     } else if (line.startsWith("--- ") && (lines[i + 1] ?? "").startsWith("+++ ")) {
-      const record = startFile(null);
+      const record = startFile(null, []);
       readHeaderLine(record, line);
       readHeaderLine(record, lines[i + 1]);
       i += 1;
     }
   }
-  if (file) reviewFile(file, flag);
+  if (file) reviewFile(file, flag, exclude);
 
-  const paths = [...new Set(flags.map((f) => f.path))];
   const suggestions =
-    paths.length === 0
+    excludes.size === 0
       ? []
       : [
           "git apply --check changes.patch",
-          ...paths.map((p) => `git apply --exclude=${shellWord(escapeGlob(p))} changes.patch`),
+          ...[...excludes].map((p) => `git apply --exclude=${shellWord(escapeGlob(p))} changes.patch`),
         ];
   return { files, flags, suggestions };
 }
 
 function readHeaderLine(file: FileRecord, line: string): void {
+  const value = /^(?:--- |\+\+\+ |rename to |rename new |copy to )/.exec(line);
+  const raw = value ? rawName(line.slice(value[0].length)) : null;
+  if (raw !== null) file.rawNames.push(raw);
   if (line.startsWith("--- ")) {
     file.minus = nameFrom(line.slice(4), true);
     if (file.minus === null) file.newFile = true;
@@ -421,16 +510,25 @@ function readHeaderLine(file: FileRecord, line: string): void {
 }
 
 /** Flag one file: by every name git could give it, by mode, and by its hunks. */
-function reviewFile(file: FileRecord, flag: Flagger): void {
+function reviewFile(file: FileRecord, flag: Flagger, exclude: Excluder): void {
   const deleted = file.plusIsNull;
-  // The name `git apply` writes to, and matches `--exclude` against.
+  // The best guess at the name `git apply` writes to; flags are attributed to it.
   const path = file.renameTo ?? file.copyTo ?? file.plus ?? file.headerName ?? file.minus;
   if (path === null) return;
-  // git refuses a patch whose names disagree, so every candidate is flagged under the one it uses.
-  const names = [path, file.renameTo, file.copyTo, file.plus, file.headerName, deleted ? file.minus : null];
+  // git's own name derivation (sticky `-p0` guess, CR and tab terminators, timestamps,
+  // the shorter of `---`/`+++`) is not modelled: every name it could write is classified,
+  // flags are their union, and each flagged name is suggested as an `--exclude`.
+  const names = new Set<string>();
+  for (const name of [path, file.renameTo, file.copyTo, file.plus, file.headerName, file.minus]) {
+    if (name !== null) names.add(name);
+  }
+  for (const raw of file.rawNames) for (const name of candidateNames(raw)) names.add(name);
   for (const name of names) {
-    const byName = name === null ? null : classifyPath(name);
-    if (byName) flag(path, byName.kind, byName.reason);
+    const byName = classifyPath(name);
+    if (byName) {
+      flag(path, byName.kind, byName.reason);
+      exclude(name);
+    }
   }
 
   const modes = [...file.modes];
@@ -462,7 +560,7 @@ function reviewFile(file: FileRecord, flag: Flagger): void {
     }
   }
 
-  if (segmentsOf(path).at(-1) === "package.json" && !deleted) {
+  if ([...names].some((name) => segmentsOf(name).at(-1) === "package.json") && !deleted) {
     for (const finding of reviewPackageJson(file.hunks)) flag(path, finding.kind, finding.reason);
   }
 }
