@@ -14,6 +14,14 @@
  * and the rest runs as a second command. `buildAddGenericPasswordLine` refuses
  * to build a line over `SECURITY_INTERACTIVE_MAX_LINE_BYTES` (kept below that
  * limit), so callers fail instead of storing a truncated secret.
+ *
+ * Hex doubles the size, so a secret over ~1.95 KB does not fit. When it is
+ * printable ASCII it goes as a double-quoted `-w "<secret>"` instead (~3.9 KB):
+ * the interactive tokenizer treats only whitespace, quotes and backslash
+ * specially, and inside double quotes `\"` and `\\` are the only escapes
+ * needed (verified on macOS 26: `"a\"b c"` stores `a"b c`, `"a\\b"` stores
+ * `a\b`). A secret with control characters or non-ASCII text cannot be quoted
+ * safely and is only ever sent as hex.
  */
 
 import { spawnSync } from "node:child_process";
@@ -23,6 +31,8 @@ export const SECURITY_INTERACTIVE_MAX_LINE_BYTES = 4000;
 
 /** Account and service names are passed bare, so they must not need quoting. */
 const SAFE_TOKEN = /^[A-Za-z0-9._:@/+-]+$/;
+/** Printable ASCII only: safe inside a double-quoted `security -i` token once `"` and `\` are escaped. */
+const QUOTABLE = /^[\x20-\x7e]*$/;
 
 export interface SecurityCommandResult {
   status: number | null;
@@ -57,22 +67,44 @@ export function buildAddGenericPasswordLine(input: {
       message: "Keychain account and service names may only use letters, digits and . _ : @ / + -",
     };
   }
-  const hex = Buffer.from(input.secret, "utf8").toString("hex");
-  const line = `add-generic-password -U -a ${input.account} -s ${input.service} -X ${hex}\n`;
-  const bytes = Buffer.byteLength(line, "utf8");
-  if (bytes > SECURITY_INTERACTIVE_MAX_LINE_BYTES) {
-    return {
-      ok: false,
-      reason: "too_long",
-      message: `The secret is too large for a macOS Keychain write through \`security -i\` (${bytes} of ${SECURITY_INTERACTIVE_MAX_LINE_BYTES} bytes per line).`,
-    };
+  const prefix = `add-generic-password -U -a ${input.account} -s ${input.service}`;
+  const hexLine = `${prefix} -X ${Buffer.from(input.secret, "utf8").toString("hex")}\n`;
+  if (Buffer.byteLength(hexLine, "utf8") <= SECURITY_INTERACTIVE_MAX_LINE_BYTES) return { ok: true, line: hexLine };
+  if (QUOTABLE.test(input.secret)) {
+    const quotedLine = `${prefix} -w "${input.secret.replace(/["\\]/g, (char) => `\\${char}`)}"\n`;
+    if (Buffer.byteLength(quotedLine, "utf8") <= SECURITY_INTERACTIVE_MAX_LINE_BYTES)
+      return { ok: true, line: quotedLine };
   }
-  return { ok: true, line };
+  return {
+    ok: false,
+    reason: "too_long",
+    message: `The secret is too large for a macOS Keychain write through \`security -i\`, which reads at most ${SECURITY_INTERACTIVE_MAX_LINE_BYTES} bytes per command line (about 1.9 KB of secret, or 3.9 KB of printable ASCII).`,
+  };
 }
 
-/** Strip any secret material (`-w <value>`, `-X <hex>`, long hex runs) from `security` output. */
+/**
+ * Undo `find-generic-password -w` hex output. `security` prints a password as
+ * text when every byte is printable ASCII and as hex otherwise. Hex output is
+ * decoded only when the bytes are not all printable (otherwise `security`
+ * would have printed them as text) and are valid UTF-8 (Ravi stores text).
+ * A printable secret that looks like hex, such as `7b2261223a317d` or
+ * `deadbeef`, comes back unchanged.
+ */
+export function decodeSecurityPasswordOutput(output: string): string {
+  if (!/^(?:[0-9a-fA-F]{2})+$/.test(output)) return output;
+  const bytes = Buffer.from(output, "hex");
+  if (bytes.every((byte) => byte >= 0x20 && byte < 0x7f)) return output;
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return output;
+  }
+}
+
+/** Strip any secret material (`-w <value>`, `-w "<quoted>"`, `-X <hex>`, long hex runs) from `security` output. */
 export function redactSecurityOutput(value: string): string {
   return value
+    .replace(/(-w\s+)"(?:[^"\\]|\\.)*"?/g, "$1[redacted]")
     .replace(/(-[wX]\s+)\S+/g, "$1[redacted]")
     .replace(/[0-9a-fA-F]{16,}/g, "[redacted]")
     .trim();

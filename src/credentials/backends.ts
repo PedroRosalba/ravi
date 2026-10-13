@@ -1,5 +1,6 @@
 import {
   buildAddGenericPasswordLine,
+  decodeSecurityPasswordOutput,
   redactSecurityOutput,
   runSecurityCommand,
   type SecurityCommandRunner,
@@ -95,7 +96,9 @@ function writeKeychainSecret(provider: string, connection: string, secret: strin
 
 function readKeychainSecret(secretRef: string): string {
   const { service, account } = parseKeychainRef(secretRef);
-  return runSecurity(["find-generic-password", "-a", account, "-s", service, "-w"]).trim();
+  return decodeSecurityPasswordOutput(
+    runSecurity(["find-generic-password", "-a", account, "-s", service, "-w"]).trim(),
+  );
 }
 
 function deleteKeychainSecret(secretRef: string): boolean {

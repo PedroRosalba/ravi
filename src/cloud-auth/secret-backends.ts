@@ -1,7 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { buildAddGenericPasswordLine, redactSecurityOutput } from "../security/macos-keychain.js";
+import {
+  buildAddGenericPasswordLine,
+  decodeSecurityPasswordOutput,
+  redactSecurityOutput,
+} from "../security/macos-keychain.js";
 import { CloudAuthError } from "./errors.js";
 import type { CloudAuthBackendName } from "./types.js";
 import { CLOUD_AUTH_BACKENDS } from "./types.js";
@@ -178,7 +182,7 @@ function createKeychainBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBacke
     read(userId) {
       const result = runCommand("security", ["find-generic-password", "-a", userId, "-s", KEYCHAIN_SERVICE, "-w"]);
       if (result.status !== 0) return null;
-      const payload = decodeKeychainJsonPayload(result.stdout.trim());
+      const payload = decodeSecurityPasswordOutput(result.stdout.trim());
       return payload || null;
     },
     write(userId, payload) {
@@ -245,15 +249,4 @@ function compactJsonPayload(payload: string): string {
     /[\u007f-\uffff]/g,
     (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
-}
-
-/**
- * `find-generic-password -w` prints a password that is not printable ASCII as
- * hex (an item written by an older Ravi with non-ASCII user data). Stored
- * payloads are JSON objects, so decode only hex that decodes to one.
- */
-function decodeKeychainJsonPayload(output: string): string {
-  if (!/^(?:[0-9a-fA-F]{2})+$/.test(output)) return output;
-  const decoded = Buffer.from(output, "hex").toString("utf8");
-  return decoded.trimStart().startsWith("{") ? decoded : output;
 }

@@ -135,16 +135,22 @@ describe("credential broker Keychain backend", () => {
       calls.push({ args: [...args], ...(options.input !== undefined ? { input: options.input } : {}) });
       const key = (a: string[]) => `${a[a.indexOf("-s") + 1]}/${a[a.indexOf("-a") + 1]}`;
       if (args[0] === "-i") {
-        const match = /^add-generic-password -U -a (\S+) -s (\S+) -X ([0-9a-f]+)\n$/.exec(options.input ?? "");
-        if (!match) return { status: 1, stdout: "", stderr: "unknown command" };
-        items.set(`${match[2]}/${match[1]}`, Buffer.from(match[3]!, "hex").toString("utf8"));
+        const input = options.input ?? "";
+        const hex = /^add-generic-password -U -a (\S+) -s (\S+) -X ([0-9a-f]+)\n$/.exec(input);
+        const quoted = /^add-generic-password -U -a (\S+) -s (\S+) -w "((?:[^"\\]|\\.)*)"\n$/.exec(input);
+        if (hex) items.set(`${hex[2]}/${hex[1]}`, Buffer.from(hex[3]!, "hex").toString("utf8"));
+        else if (quoted) items.set(`${quoted[2]}/${quoted[1]}`, quoted[3]!.replace(/\\(.)/g, "$1"));
+        else return { status: 1, stdout: "", stderr: "unknown command" };
         return { status: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "find-generic-password") {
         const value = items.get(key(args));
-        return value === undefined
-          ? { status: 44, stdout: "", stderr: "The specified item could not be found in the keychain." }
-          : { status: 0, stdout: `${value}\n`, stderr: "" };
+        if (value === undefined) {
+          return { status: 44, stdout: "", stderr: "The specified item could not be found in the keychain." };
+        }
+        // Like `security -w`: printable ASCII as text, anything else as hex.
+        const printable = /^[\x20-\x7e]*$/.test(value);
+        return { status: 0, stdout: `${printable ? value : Buffer.from(value).toString("hex")}\n`, stderr: "" };
       }
       if (args[0] === "delete-generic-password") {
         return items.delete(key(args))
@@ -180,6 +186,28 @@ describe("credential broker Keychain backend", () => {
     expect(await readSecret(ref)).toBe("s3cr3t");
     expect(await deleteSecret(ref)).toBe(true);
     expect(await deleteSecret(ref)).toBe(false);
+  });
+
+  it("stores a ~3.5 KB printable secret (service-account JSON) through the quoted form", async () => {
+    const { calls } = fakeSecurity();
+    const secret = JSON.stringify({
+      type: "service_account",
+      private_key: `-----BEGIN PRIVATE KEY-----\n${"M".repeat(3200)}\n-----END PRIVATE KEY-----\n`,
+      client_email: "bot@project.iam.gserviceaccount.com",
+    });
+
+    const ref = await writeSecret({ backend: "keychain", provider: "gcp", connection: "main", secret });
+
+    expect(calls[0]!.args).toEqual(["-i"]);
+    expect(calls[0]!.input).toContain(' -w "{\\"type\\":');
+    expect(Buffer.byteLength(calls[0]!.input!)).toBeLessThanOrEqual(SECURITY_INTERACTIVE_MAX_LINE_BYTES);
+    expect(await readSecret(ref)).toBe(secret);
+  });
+
+  it("reads back a non-ASCII secret that `security -w` prints as hex", async () => {
+    fakeSecurity();
+    const ref = await writeSecret({ backend: "keychain", provider: "slack", connection: "rbbt", secret: "senha-ç✓" });
+    expect(await readSecret(ref)).toBe("senha-ç✓");
   });
 
   it("refuses a secret too large for one `security -i` line instead of truncating it", async () => {

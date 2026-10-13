@@ -23,9 +23,11 @@ function fakeKeychain(options: { failWrites?: boolean } = {}) {
         return { status: 1, stdout: "", stderr: "security: SecKeychainItemCreateFromContent: -25308" };
       const lines = (opts.input ?? "").split("\n").filter(Boolean);
       for (const line of lines) {
-        const match = /^add-generic-password -U -a (\S+) -s (\S+) -X ([0-9a-f]+)$/.exec(line);
-        if (!match) return { status: 1, stdout: "", stderr: `unknown command "${line.slice(0, 20)}"` };
-        items.set(`${match[2]}/${match[1]}`, Buffer.from(match[3]!, "hex"));
+        const hex = /^add-generic-password -U -a (\S+) -s (\S+) -X ([0-9a-f]+)$/.exec(line);
+        const quoted = /^add-generic-password -U -a (\S+) -s (\S+) -w "((?:[^"\\]|\\.)*)"$/.exec(line);
+        if (hex) items.set(`${hex[2]}/${hex[1]}`, Buffer.from(hex[3]!, "hex"));
+        else if (quoted) items.set(`${quoted[2]}/${quoted[1]}`, Buffer.from(quoted[3]!.replace(/\\(.)/g, "$1")));
+        else return { status: 1, stdout: "", stderr: `unknown command "${line.slice(0, 20)}"` };
       }
       return { status: 0, stdout: "", stderr: "" };
     }
@@ -98,6 +100,17 @@ describe("cloud-auth Keychain backend", () => {
     items.set("ravi.cloud-auth/user_123", Buffer.from(legacy, "utf8"));
 
     expect(backend.read("user_123")).toBe(legacy);
+  });
+
+  it("stores a ~3 KB payload (too long for hex) through the quoted form and reads it back", () => {
+    const { backend, calls } = fakeKeychain();
+    const payload = JSON.stringify({ accessToken: `eyJ${"a".repeat(2800)}`, user: { name: 'Zoë "Z" \\o/' } }, null, 2);
+
+    backend.write("user_123", payload);
+
+    expect(calls[0]!.args).toEqual(["-i"]);
+    expect(calls[0]!.input).toContain(' -w "{\\"accessToken\\":');
+    expect(JSON.parse(backend.read("user_123")!)).toEqual(JSON.parse(payload));
   });
 
   it("refuses a payload too large for one `security -i` line without running security", () => {
