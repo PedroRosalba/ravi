@@ -155,3 +155,24 @@ the field because the CLI redacts `reason` as free text. The dry-run says
 "nothing was killed" rather than "nothing was written" because that is what
 the operator is about to do. See ADR 0002, "03b decisions and review
 follow-ups".
+
+### Outputs as untrusted data (ADR 0002 #9)
+
+The sandbox is where a prompt-injected worker has full control, and the run
+then copies its words onto the operator's disk and terminal. Three channels
+matter. Disk: a worker can print without end, so every read is capped inside
+the sandbox, before the bytes cross the network, and the host still knows the
+real size for the marker. The patch is the one file that is all or nothing,
+because a truncated patch applies partially and silently. Terminal: a log line
+can clear the screen, overwrite a line with `\r`, put a command in the
+clipboard (OSC 52), hide a URL behind text (OSC 8) or reverse text with a bidi
+override, so printed copies are cleaned while saved files stay faithful for
+forensics. Decisions: the status is the one value the run acts on, so it is
+parsed through a schema into a closed set and anything else is `invalid`,
+never coerced; `reportedStatus` names it honestly and `status` stays for
+existing scripts. The patch review warns rather than blocks because exit codes
+are a contract (`agent-contract.ts`) and path heuristics have false positives;
+it targets the files that run code on the operator's machine when the patch is
+applied or the repo is next opened by an agent, editor, shell or package
+manager. Private modes follow from the content: the patch and transcripts can
+hold the repository's secrets. See ADR 0002, "03c decisions".

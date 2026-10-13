@@ -219,6 +219,64 @@ reaches a place E2B records (command logs, sandbox info, snapshots).
   the confirmation metadata every `--execute` brake declares
   (`src/cli/confirmation-policy.test.ts`).
 
+### Outputs (everything returned from the sandbox is untrusted data)
+
+The worker follows instructions it did not write and may be prompt-injected,
+so every byte read back from the sandbox (task status, `task.json`, the patch,
+the daemon log, traces, transcripts, session names, command stderr) is data
+from an untrusted machine.
+
+- Files: the output directory, a custom `--output` included, is created or
+  made `0700`; every file in it, `e2b/` telemetry included, is written `0600`
+  through `writePrivate` (atomic, `writeUserOnlyFile`) or `appendPrivate`
+  (`src/sandbox/outputs.ts`). No output write uses `writeFileSync` or
+  `appendFileSync` directly.
+- Size: every read goes through `cappedCommand` (`head -c <cap+1>` inside the
+  sandbox, the command run in a subshell so its exit code is kept, the full
+  size reported on stderr as `ravi-bytes=<n>`). Caps: daemon log 50 MiB (the
+  live copy too), `changes.patch` 20 MiB, each transcript, trace and
+  `TASK.md` 10 MiB, JSON the run parses 1 MiB, 200 MiB for the run's reads
+  in total (later files are skipped with a step line). Text over its cap is cut
+  on a character boundary and ends with
+  `[ravi: output truncated at <cap> bytes; the sandbox reported <n> bytes]`.
+- All or nothing: a patch over its cap is not saved in part; the run writes
+  `changes.patch.TOO_LARGE.txt` with the size instead, and no `review.json`.
+  `task.json` over 1 MiB gets the same treatment and is never parsed;
+  `ravi sessions list` over 1 MiB is rejected.
+- Status: `ravi tasks show --json` is parsed with a zod schema; only a
+  `TaskStatus` (`open`, `dispatched`, `in_progress`, `blocked`, `done`,
+  `failed`) counts, anything else (escape sequences included, or JSON over
+  1 MiB) ends polling as `invalid`. The result carries `reportedStatus`
+  (unverified) and the same value in `status` for older scripts; the text
+  output says "reported by the sandbox, unverified". The exit code is 0 only
+  for `done` (`sandboxRunExitCode`).
+- Names: session names and transcript paths become file names through
+  `safeFileName`, so `../../x` is saved as `sessions/x.*`; transcript paths
+  must start with the Claude projects directory.
+- Terminal: `onStep` and `onDaemonLog` lines, the `Error:` line and the patch
+  review box are printed through `stripTerminalControls` (CSI, OSC incl.
+  OSC 52 clipboard and OSC 8 hyperlinks, BEL- or ST-terminated, DCS/PM/APC
+  strings, other C0 except `\n` and `\t`, DEL, C1 `U+0080`–`U+009F`, bidi
+  overrides `U+202A`–`U+202E` and isolates `U+2066`–`U+2069`). Saved files
+  keep the raw bytes, still redacted. `--json` output is JSON-escaped.
+- Patch review (`src/sandbox/patch-review.ts`, ADR 0002 #9): `changes.patch`
+  is read (headers, `new file mode`/`new mode`, `rename to`, `Binary files` /
+  `GIT binary patch`, symlink mode `120000`, `package.json` hunks) and never
+  applied. Flags: `agent-config` (`.claude/**`, `.mcp.json`, `.cursor/**`,
+  `.vscode/{settings,tasks,launch}.json`, `AGENTS.md`, `CLAUDE.md`,
+  `GEMINI.md`), `env-config` (`.envrc`, `.env*`, `.npmrc`, `bunfig.toml`,
+  `.tool-versions`), `hooks-ci` (`.husky/**`, `.githooks/**`, `lefthook.yml`,
+  `.pre-commit-config.yaml`, `.github/workflows/**`, `.gitlab-ci.yml`,
+  `.circleci/**`, `.devcontainer/**`), `build` (`Makefile`, `flake.nix`,
+  `package.json` hunks inside `"scripts"` or touching `preinstall`/`install`/
+  `postinstall`/`prepare`), `executable` (new or changed to `100755`),
+  `symlink`, `binary`, `path-escape` (`..`, a leading `/`, or a symlink whose
+  target has either). The review is saved as `review.json` (`0600`), returned
+  as `review` (`{ files, flags[], suggestions[] }`, null when no patch was
+  saved), printed as a boxed warning in text mode, and suggests
+  `git apply --check changes.patch` and one `git apply --exclude=<path>` per
+  flagged path. Flags never change the exit code.
+
 ## Validation
 
 ```bash
@@ -257,3 +315,9 @@ See `CHECKS.md`.
 - A paused run's saved E2B logs show the placeholder key
   (`sk-ant-api03-ravi-sandbox-placeholder`) in clear; `redactTelemetry` leaves
   exactly that value readable so a log does not look like a key leak.
+- A pipe (`cmd | head -c`) would report `head`'s exit code and `{ cmd; }`
+  would let an `exit` in `cmd` end the wrapper; `cappedCommand` writes to a
+  temp file from a subshell instead.
+- The patch review reads `package.json` hunks only: a hunk deep inside a long
+  `"scripts"` block whose context does not show the `"scripts"` key is not
+  flagged. The review is a reading aid, not a gate; read the patch.

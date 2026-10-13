@@ -201,3 +201,43 @@ through the recording fake builder there, and the reaper through the fake
   (`bun test src/cli/execute-consumers.test.ts`); `sandbox reap` declares
   `requiresConfirmation: true` and reads its `--execute` flag
   (`bun run test:agent-contract`, confirmation-policy suite).
+
+### Outputs
+
+- `writePrivate`/`appendPrivate` create `0600` files in `0700` directories under
+  a nested custom `--output`, and make an existing `0755` `--output` `0700`
+  (`bun test src/sandbox/outputs.test.ts`, "private output files"); a whole run
+  under `custom/out` leaves only `0600` files and `0700` directories, and the
+  `e2b/` telemetry files are `0600` too (`e2b.test.ts` "writes every output
+  0600 …", `observe.test.ts` "collectE2bTelemetry").
+- The caps are 50/20/10/200/1 MiB; `cappedCommand` run by `/bin/sh` returns at
+  most cap + 1 bytes and the real size, keeps the command's own exit code
+  (`exit 3`), and `readCapped` takes the wrapper's last `ravi-bytes=` line, not
+  a lookalike ("size caps").
+- A patch over 20 MiB writes only `changes.patch.TOO_LARGE.txt` with its byte
+  count, no `review.json`, `review: null`; a daemon log over 50 MiB ends with
+  the truncation marker naming the reported size ("saves no part of a patch
+  over 20 MiB", "cuts the daemon log at 50 MiB").
+- `stripTerminalControls` removes OSC 52 (BEL and ST), OSC 8 keeping the link
+  text, CSI `2J`/`H`/colours in 7-bit and C1 form, `\r`, other C0/C1, DCS and
+  lone escapes, RTL override and isolates, and keeps `\n`, `\t` and Unicode
+  text ("stripTerminalControls" suite); daemon lines reach `onDaemonLog`
+  without them while `daemon.log` keeps the raw (redacted) bytes ("prints
+  daemon lines without terminal controls").
+- A sandbox status of `"\x1b[31mdone"` is `invalid`, `reportedStatus` and
+  `status` both say so, and `sandboxRunExitCode` is 1 (0 for `done`); a
+  `task.json` over 1 MiB is not saved or parsed, the run is `invalid`; session
+  names `../../x` and `/etc/passwd` are saved as `sessions/x.*` and
+  `sessions/etc_passwd.*`, inside the output directory (`e2b.test.ts`,
+  "untrusted outputs" suite).
+- Patch review: every path class above is flagged and ordinary files
+  (`.vscode/extensions.json`, `.github/CODEOWNERS`) are not; a `package.json`
+  change to `version` only is not flagged, a change inside `"scripts"` and an
+  added `postinstall` are; a rename into `.github/workflows` is flagged; a
+  symlink to `/etc/passwd` or `../../.ssh/id_rsa` is `symlink` + `path-escape`;
+  new and changed executables and both binary forms are flagged; quoted
+  headers decode as UTF-8; suggestions quote odd names; the boxed warning has
+  no escape left (`bun test src/sandbox/patch-review.test.ts`). In a run the
+  review lands in `review.json` (`0600`) and `result.review`, no command
+  contains `git apply`, and the exit code still follows the status
+  ("reviews the patch into review.json …").

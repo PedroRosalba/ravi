@@ -107,6 +107,36 @@ ravi sandbox reap --all-hosts         # plan across every host's ravi-task sandb
 - A kill that fails is reported in `failed` and the exit code is 1; re-run, or
   kill it in the E2B dashboard.
 
+## Reading a run's outputs
+
+Everything under `~/.ravi/sandbox-runs/<sandbox-id>/` came from a machine the
+worker controlled. Treat it like a pull request from a stranger.
+
+- `Status: done (reported by the sandbox, unverified)` means the sandbox said
+  so; `invalid` means it answered something that is not a task status (exit 1).
+  Judge the work by the patch, not the status.
+- Before `git apply`, read the `Patch review` box (or `review.json`, or
+  `review` in `--json`). For each flagged path, either read that part of the
+  patch or leave it out:
+
+  ```bash
+  git apply --check changes.patch
+  git apply --exclude=.github/workflows/ci.yml --exclude=.claude/settings.json changes.patch
+  ```
+
+  An empty review is not a clearance: it reads paths and `package.json` hunks,
+  not what the code does.
+- `changes.patch.TOO_LARGE.txt` instead of a patch: the diff was over 20 MiB
+  and nothing was saved. Re-run with a narrower task, or resume a `--keep`
+  sandbox in the dashboard and look at the repo there.
+- A file ending in `[ravi: output truncated at …]` was cut at its cap; the
+  marker gives the size the sandbox reported.
+- Open logs and transcripts in a pager or editor that does not interpret
+  escape sequences (`less` without `-r`, `cat -v`); the files keep the raw
+  bytes, only the terminal copy printed during the run was cleaned.
+- Do not loosen permissions on the directory: it holds the repository's
+  changes and the worker's full transcripts (`0700`/`0600`).
+
 ## Debugging a failed run
 
 `~/.ravi/sandbox-runs/<sandbox-id>/run.log` has the step timeline, including
