@@ -986,7 +986,7 @@ function projectHomeError(op: string, result: RemoteDispatchResult): ContractErr
       `HOME refused the command: ${envelope.code} (status ${result.status}, from ${envelope.source}).${requestIdSuffix(requestId)}`,
       exitCode,
       {
-        retryable: HOME_RETRYABLE_STATUSES.has(result.status),
+        retryable: HOME_RETRYABLE_STATUSES.has(result.status) && !HOME_NON_RETRYABLE_CODES.has(envelope.code),
         status: result.status,
         homeCode: envelope.code,
         source: envelope.source,
@@ -1023,6 +1023,8 @@ function homeErrorExitCode(status: number, code: string): 1 | 2 | 3 {
 }
 
 const HOME_RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
+/** Gate codes on a retryable status that the same request will hit again. */
+const HOME_NON_RETRYABLE_CODES = new Set(["response_too_large"]);
 
 const HOME_SUGGESTED_ACTIONS: Record<string, string> = {
   grant_missing: `Run inside a connected sandbox run; the egress proxy adds the grant (or set ${SANDBOX_GRANT_ENV} when the run allows it)`,
@@ -1039,6 +1041,8 @@ const HOME_SUGGESTED_ACTIONS: Record<string, string> = {
   gate_unavailable: "The HOME Gate is unavailable; retry later",
   gateway_misconfigured: "The HOME Gate is misconfigured; report the request id to HOME's operator",
   payload_too_large: "Send a smaller request (shorter text or fewer fields)",
+  response_too_large:
+    "HOME's answer exceeded the Gate's 4 MiB limit; ask for less (for example a narrower `tasks show`)",
   not_found: `Check ${HOME_GATEWAY_URL_ENV} and that HOME serves this command`,
   method_not_allowed: `Check ${HOME_GATEWAY_URL_ENV}; HOME commands are sent as POST`,
 };

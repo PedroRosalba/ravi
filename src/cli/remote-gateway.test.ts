@@ -1197,6 +1197,7 @@ describe("home gateway (ravi home)", () => {
       ["gate_unavailable", 503],
       ["gateway_misconfigured", 502],
       ["payload_too_large", 413],
+      ["response_too_large", 502],
       ["not_found", 404],
       ["method_not_allowed", 405],
     ] as const) {
@@ -1204,6 +1205,14 @@ describe("home gateway (ravi home)", () => {
       expect(error?.code).toBe(`HOME_${code.toUpperCase()}`);
       expect(error?.details.suggestedAction).not.toBe("Inspect HOME's audit for this request id");
     }
+  });
+
+  it("does not mark a Gate response_too_large as retryable", () => {
+    const tooLarge = homeError("tasks show", 502, { error: { code: "response_too_large", requestId } });
+    expect(tooLarge?.code).toBe("HOME_RESPONSE_TOO_LARGE");
+    expect(tooLarge?.details.retryable).toBe(false);
+    const unavailable = homeError("tasks show", 502, { error: { code: "gateway_misconfigured", requestId } });
+    expect(unavailable?.details.retryable).toBe(true);
   });
 
   it("refuses a HOME gateway on the same origin as RAVI_GATEWAY_URL", () => {

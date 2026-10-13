@@ -120,10 +120,13 @@ identity never leave it and HOME sees only what the run's grant allows.
   request id in the message. Exit 1 for `grant_header_invalid` (the request
   carried two grants or a malformed one: the input is not at fault), else exit
   2 for status 400 and 413, exit 3 for `command_not_allowed`, exit 1
-  otherwise; 429, 502, 503 and 504 are retryable. `grant_missing`,
+  otherwise; 429, 502, 503 and 504 are retryable, except
+  `response_too_large` (the Gate's 4 MiB bound on HOME's answer, which the
+  same request hits again). `grant_missing`,
   `grant_invalid`, `grant_revoked`, `grant_header_invalid`,
   `command_not_allowed`, `task_not_allowed`, `resource_forbidden`,
-  `body_invalid`, `argument_invalid`, `payload_too_large`, `not_found`,
+  `body_invalid`, `argument_invalid`, `payload_too_large`,
+  `response_too_large`, `not_found`,
   `method_not_allowed`, `rate_limited`, `gate_unavailable`,
   `gateway_misconfigured` and `daemon_offline` carry a specific
   `suggestedAction`; `grant_header_invalid` says to unset
