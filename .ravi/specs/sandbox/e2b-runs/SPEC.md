@@ -222,23 +222,41 @@ reaches a place E2B records (command logs, sandbox info, snapshots).
 ### Outputs (everything returned from the sandbox is untrusted data)
 
 The worker follows instructions it did not write and may be prompt-injected,
-so every byte read back from the sandbox (task status, `task.json`, the patch,
-the daemon log, traces, transcripts, session names, command stderr) is data
-from an untrusted machine.
+so every byte read back from the sandbox (task status, task id, `task.json`,
+the patch, the daemon log, traces, transcripts, session names, command
+stderr) is data from an untrusted machine. The worker also owns the clone's
+`.git/config` and every binary it can write to, so `changes.patch` is
+attacker-authored: `git diff` (or `head`, `wc`, the shell) can print anything.
 
 - Files: the output directory, a custom `--output` included, is created or
   made `0700`; every file in it, `e2b/` telemetry included, is written `0600`
-  through `writePrivate` (atomic, `writeUserOnlyFile`) or `appendPrivate`
-  (`src/sandbox/outputs.ts`). No output write uses `writeFileSync` or
-  `appendFileSync` directly.
-- Size: every read goes through `cappedCommand` (`head -c <cap+1>` inside the
-  sandbox, the command run in a subshell so its exit code is kept, the full
-  size reported on stderr as `ravi-bytes=<n>`). Caps: daemon log 50 MiB (the
-  live copy too), `changes.patch` 20 MiB, each transcript, trace and
-  `TASK.md` 10 MiB, JSON the run parses 1 MiB, 200 MiB for the run's reads
-  in total (later files are skipped with a step line). Text over its cap is cut
-  on a character boundary and ends with
+  through `writePrivate` (a fresh `O_EXCL|O_NOFOLLOW` temp file renamed over
+  the path, so a link there is replaced, not followed) or `appendPrivate`
+  (`O_NOFOLLOW|O_NONBLOCK` open: a symbolic link, dangling or not, or a FIFO is
+  refused and its target left untouched) (`src/sandbox/outputs.ts`).
+  `mkdirPrivate` refuses a directory that is a symbolic link; the run passes
+  the output directory as `root`, so every directory from there down is
+  checked. No output write uses `writeFileSync` or `appendFileSync` directly.
+- Size, inside the sandbox: every read goes through `cappedCommand` (stdout to
+  a temp file and `head -c <cap+1>`, stderr to another temp file and
+  `head -c 65536`, the command in a subshell so its exit code is kept, then the
+  stdout size on a line of its own as `ravi-bytes=<n>`, last on stderr).
+  Caps: daemon log 50 MiB (the live copy too), `changes.patch` 20 MiB, each
+  transcript, trace and `TASK.md` 10 MiB, JSON the run parses 1 MiB. Text over
+  its cap is cut on a character boundary and ends with
   `[ravi: output truncated at <cap> bytes; the sandbox reported <n> bytes]`.
+- Size, on the host: the wrapper only holds if the sandbox runs it as written,
+  so every command runs as a background handle whose `onStdout`/`onStderr`
+  bytes are counted as they arrive. A capped read that streams more than
+  cap + 1 MiB (`STREAM_MARGIN`), or any other command more than 4 MiB, is
+  disconnected and killed and fails with `sent more than <limit>`; the host
+  therefore holds at most that limit plus one SDK event per command. The live
+  daemon tail holds a line without its newline up to 64 Ki characters (the
+  rest of that line is dropped, the kept part ends with
+  `[ravi: line cut at 65536 characters]`) and is disconnected once 50 MiB have
+  arrived. Collection stops reading once it has received 200 MiB (`MAX_TOTAL`,
+  counted in received bytes, not saved bytes); the file that crosses it is not
+  saved and later files are not read (one step line).
 - All or nothing: a patch over its cap is not saved in part; the run writes
   `changes.patch.TOO_LARGE.txt` with the size instead, and no `review.json`.
   `task.json` over 1 MiB gets the same treatment and is never parsed;
@@ -250,32 +268,89 @@ from an untrusted machine.
   (unverified) and the same value in `status` for older scripts; the text
   output says "reported by the sandbox, unverified". The exit code is 0 only
   for `done` (`sandboxRunExitCode`).
-- Names: session names and transcript paths become file names through
-  `safeFileName`, so `../../x` is saved as `sessions/x.*`; transcript paths
-  must start with the Claude projects directory.
-- Terminal: `onStep` and `onDaemonLog` lines, the `Error:` line and the patch
-  review box are printed through `stripTerminalControls` (CSI, OSC incl.
+- Task id: the id `ravi tasks create` returns must match `TASK_ID_RE`
+  (`task-` and 8 lower-case hex digits, the format `dbCreateTask` makes) before
+  it is used in a command, a path or a printed line; anything else fails the
+  run (`error`, `taskId: null`).
+- Names: session names and transcript path segments become file names through
+  `safeFileName`: a plain lower-case name of at most 120 bytes is kept; any
+  other is cleaned, cut to 120 bytes and suffixed `~<10 hex of sha256>` (before
+  a short extension), so `a b` and `a_b`, or `Worker` and `worker`, never share
+  a file and `../../x` is saved as `sessions/x~<hash>.*`. Transcript paths must
+  start with the Claude projects directory.
+- Collection never aborts on a sandbox-chosen name: each file write is
+  isolated (a name clash, a too-long name, a full disk becomes a
+  `Could not save <name>: …` step line and collection goes on), and a failure
+  of collection as a whole is added to `error`; the run still kills the
+  sandbox and returns, so the status lines and the patch review box print.
+- Terminal: `onStep` and `onDaemonLog` lines and every line of the `sandbox
+  run` text summary (`formatSandboxRunSummary`: `Task:`, `Sandbox:`,
+  `Template`, `Error:`, the E2B telemetry lines of `formatTelemetry`, the patch
+  review box) are printed through `stripTerminalControls` (CSI, OSC incl.
   OSC 52 clipboard and OSC 8 hyperlinks, BEL- or ST-terminated, DCS/PM/APC
   strings, other C0 except `\n` and `\t`, DEL, C1 `U+0080`–`U+009F`, bidi
-  overrides `U+202A`–`U+202E` and isolates `U+2066`–`U+2069`). Saved files
-  keep the raw bytes, still redacted. `--json` output is JSON-escaped.
+  overrides `U+202A`–`U+202E` and isolates `U+2066`–`U+2069`); paths in the
+  review box and its suggestions show any control character left (`\n`,
+  `\t`, C1, bidi) as an escape. Saved files keep the raw bytes, still
+  redacted.
+- `--json` (`run`, `logs`, `reap`, `template build`) prints `terminalSafeJson`:
+  `JSON.stringify` escapes C0 controls, and C1 controls, bidi marks
+  (`U+061C`, `U+200E`, `U+200F`), overrides, isolates and `U+2028`/`U+2029`
+  are written as `\uXXXX` too. The JSON value is unchanged: a consumer that
+  decodes it and prints a string raw gets the raw characters back.
 - Patch review (`src/sandbox/patch-review.ts`, ADR 0002 #9): `changes.patch`
-  is read (headers, `new file mode`/`new mode`, `rename to`, `Binary files` /
-  `GIT binary patch`, symlink mode `120000`, `package.json` hunks) and never
-  applied. Flags: `agent-config` (`.claude/**`, `.mcp.json`, `.cursor/**`,
+  is read the way `git apply` reads it and never applied. A file starts at a
+  `diff --git` line or, between files, at a `--- `/`+++ ` pair with no
+  `diff --git` (a plain unified diff); `---`, `+++`, `rename to`/`rename new`,
+  `copy to`, mode and `index` lines count only in the extended header; hunk
+  bodies are consumed by the `@@ -a,b +c,d @@` counts, so a `+++ b/x` or
+  `diff --git` line inside a hunk is content; lines between files are skipped,
+  as git skips them. Names follow `-p1` (the first component is dropped
+  whatever it is). Modes are parsed like git (`strtoul` base 8, then
+  whitespace): `0120000` and `120000 ` are symlinks, any mode with `0o100` is
+  executable, `160000` is a gitlink. Paths are matched lower-cased and with
+  `//` and `.` collapsed. Every name the file could take (header, `+++`,
+  `rename to`, `copy to`, `---` for a deletion) is classified, and the flags
+  go to the name `git apply` writes and `--exclude` matches.
+  Flags: `agent-config` (`.claude/**`, `.cursor/**`, `.gemini/**`,
+  `.codex/**`, `.agents/**`, `.windsurf/**`, `.mcp.json`,
   `.vscode/{settings,tasks,launch}.json`, `AGENTS.md`, `CLAUDE.md`,
-  `GEMINI.md`), `env-config` (`.envrc`, `.env*`, `.npmrc`, `bunfig.toml`,
-  `.tool-versions`), `hooks-ci` (`.husky/**`, `.githooks/**`, `lefthook.yml`,
-  `.pre-commit-config.yaml`, `.github/workflows/**`, `.gitlab-ci.yml`,
-  `.circleci/**`, `.devcontainer/**`), `build` (`Makefile`, `flake.nix`,
-  `package.json` hunks inside `"scripts"` or touching `preinstall`/`install`/
-  `postinstall`/`prepare`), `executable` (new or changed to `100755`),
-  `symlink`, `binary`, `path-escape` (`..`, a leading `/`, or a symlink whose
-  target has either). The review is saved as `review.json` (`0600`), returned
-  as `review` (`{ files, flags[], suggestions[] }`, null when no patch was
-  saved), printed as a boxed warning in text mode, and suggests
+  `CLAUDE.local.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`,
+  `.github/copilot-instructions.md`), `env-config` (`.envrc`, `.env*`,
+  `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `bunfig.toml`, `.tool-versions`,
+  `.mise.toml`, `mise.toml`), `hooks-ci` (`.husky/**`, `.githooks/**`,
+  `lefthook.y{a,}ml`, `.pre-commit-config.yaml`, `.lintstagedrc*`,
+  `lint-staged.config.*`, `.simple-git-hooks.*`, `.github/workflows/**`,
+  `.gitlab-ci.yml`, `.circleci/**`, `.devcontainer/**`), `build` (`Makefile`,
+  `GNUmakefile`, `flake.nix`, `build.rs`, `conftest.py`, `justfile`,
+  `Taskfile.y{a,}ml`, `.pnpmfile.{c,m}js`), `dependency` (lockfiles:
+  `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`,
+  `bun.lock{,b}`, `deno.lock`, `Cargo.lock`, `poetry.lock`, `uv.lock`,
+  `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `go.sum`), `git-config`
+  (`.gitattributes`, `.gitmodules`, gitlinks), `executable`, `symlink`,
+  `binary`, `path-escape` (`..`, a leading `/`, or a symlink whose target has
+  either). `package.json` hunks are tokenised as JSON (escapes decoded) on
+  each side; every changed key or value is placed under its top-level key,
+  known when the hunk starts at line 1 or its context opens `"scripts"`,
+  `"dependencies"` or `"devDependencies"` in the container. Flagged:
+  `scripts`, `bin`, `directories`, `config`, `gypfile` (`build`);
+  `lint-staged`, `simple-git-hooks`, `husky`, `pre-commit` (`hooks-ci`);
+  `trustedDependencies`, `overrides`, `resolutions`, `pnpm`,
+  `patchedDependencies`, `packageManager`, `workspaces`, a dependency added to
+  any `*dependencies` section, a dependency spec that is not a registry
+  version, range or tag (`git+…`, `github:`, URLs, `file:`, `link:`, `npm:`,
+  paths, tarballs) and a restructured dependency section (`dependency`); a
+  changed token whose top-level key the hunk does not show is
+  `package-json-unknown-section` (`build` when it is a lifecycle script name
+  such as `postinstall`). Only a registry-version change to an existing
+  dependency or a change to another top-level key (`version`,
+  `description` …) passes. The review is saved as `review.json` (`0600`),
+  returned as `review` (`{ files, flags[], suggestions[] }`, null when no
+  patch was saved), printed as a boxed warning in text mode, and suggests
   `git apply --check changes.patch` and one `git apply --exclude=<path>` per
-  flagged path. Flags never change the exit code.
+  flagged path, with `[`, `]`, `*`, `?` and `\` escaped for git's wildmatch
+  and the word shell-quoted (`$'…'` when it holds control characters). Flags
+  never change the exit code.
 
 ## Validation
 

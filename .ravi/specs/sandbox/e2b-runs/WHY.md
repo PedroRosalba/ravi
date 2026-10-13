@@ -176,3 +176,34 @@ it targets the files that run code on the operator's machine when the patch is
 applied or the repo is next opened by an agent, editor, shell or package
 manager. Private modes follow from the content: the patch and transcripts can
 hold the repository's secrets. See ADR 0002, "03c decisions".
+
+### An attacker-authored patch, and caps that hold against an active sandbox
+
+The first review of these outputs assumed the sandbox was passive: that
+`git diff` writes the patch the way git normally does and that the shell
+wrapper around each read runs as written. Neither holds. The worker owns the
+clone's `.git/config` (`diff.external`, `diff.noprefix`) and can replace any
+binary on its path, so `changes.patch` is whatever the worker wants it to say,
+and `head -c` may not be `head`. The patch review therefore reads the file the
+way the program that acts on it does: `git apply` starts a file at a plain
+`---`/`+++` pair, believes headers only in the extended-header area, consumes
+hunk bodies by their counts, reads modes with `strtoul` base 8, strips one
+path component whatever it is, and writes to a case-insensitive disk on macOS.
+Reading it any other way leaves a gap between what is reviewed and what is
+applied, and each gap was a working bypass (the 03c proof-of-concept patches,
+kept as fixtures). `package.json` is reviewed by top-level key rather than by
+a few script names, and a change whose key the hunk does not show is flagged,
+because a hunk can start deep inside `"scripts"` with no `"scripts"` line in
+view. Size caps move to where the bytes are counted, the host: each command is
+a handle whose streamed bytes are counted and which is killed past its cap
+plus a margin, the live tail stops at its cap and never holds an unbounded
+line, and the run total counts what arrived rather than what was saved. The
+host can still receive one SDK event past a limit, which is why the spec
+states the bound as limit plus one event instead of "never more than the cap".
+Collection isolates each write and the run always returns, because a
+sandbox-chosen name that breaks one write must not cost the operator the
+status and the review. Writes refuse symbolic links, the task id is checked
+against the format Ravi makes before it reaches a command line, and `--json`
+escapes the characters JSON leaves raw, for the same reason as the terminal
+cleaning: the data is the sandbox's, the terminal and the disk are the
+operator's. See ADR 0002, "03c review follow-ups".
