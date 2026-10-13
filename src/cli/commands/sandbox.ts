@@ -34,6 +34,7 @@ import {
   type ReapDeps,
   type ReapResult,
   e2bReapDeps,
+  killCandidates,
   reapSandboxes,
 } from "../../sandbox/reap.js";
 import { getRaviStateDir } from "../../utils/paths.js";
@@ -63,7 +64,9 @@ const sandboxRunReturnSchema = z.object({
   durationMs: z.number(),
   error: z.string().nullable(),
   e2b: e2bTelemetrySummarySchema.nullable(),
+  templateId: z.string().nullable(),
   templateSha: z.string().nullable(),
+  templateNote: z.string(),
 });
 const sandboxReapReturnSchema = z.object({
   hostId: z.string(),
@@ -280,19 +283,10 @@ export async function executeSandboxReap(flags: SandboxReapFlags, hostId: string
         })),
         skipped: plan.skipped.length,
       },
-      { asJson: flags.asJson },
+      { asJson: flags.asJson, effect: { past: "killed", verb: "kill" } },
     );
   }
-  const result: ReapResult = { ...plan, executed: true };
-  for (const candidate of plan.candidates) {
-    try {
-      await deps.kill(candidate.sandboxId);
-      result.killed.push(candidate.sandboxId);
-    } catch (error) {
-      result.failed.push({ sandboxId: candidate.sandboxId, error: errorMessage(error) });
-    }
-  }
-  return result;
+  return killCandidates(plan, deps);
 }
 
 function readInstructions(task?: string, taskFile?: string): string {
@@ -482,11 +476,8 @@ export class SandboxCommands {
       console.log(`\nStatus:   ${result.status}`);
       if (result.taskId) console.log(`Task:     ${result.taskId}`);
       console.log(`Sandbox:  ${result.sandboxId}${result.kept ? " (paused)" : ""}`);
-      console.log(
-        result.templateSha
-          ? `Template: ${template ?? DEFAULT_E2B_TEMPLATE} @ ravi ${result.templateSha}`
-          : `Template: ${template ?? DEFAULT_E2B_TEMPLATE} (warning: no build record; run \`ravi sandbox template build\` to pin a commit)`,
-      );
+      // Same text as run.log: the commit only when E2B's template id is the one this host recorded.
+      console.log(`Template ${template ?? DEFAULT_E2B_TEMPLATE}: ${result.templateNote}`);
       console.log(`Outputs:  ${result.outputDir}`);
       if (result.error) console.log(`Error:    ${result.error}`);
       if (result.e2b) printTelemetry(result.e2b);

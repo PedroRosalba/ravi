@@ -139,7 +139,7 @@ describe("sandbox reap", () => {
       },
     ];
   }
-  function fakeDeps(items = fleet()) {
+  function fakeDeps(items = fleet(), options: { killFails?: string[] } = {}) {
     const state = { queries: [] as Record<string, string>[], killed: [] as string[] };
     const deps: ReapDeps = {
       async list(metadata) {
@@ -147,6 +147,7 @@ describe("sandbox reap", () => {
         return items.filter((info) => Object.entries(metadata).every(([k, v]) => info.metadata[k] === v));
       },
       async kill(sandboxId) {
+        if (options.killFails?.includes(sandboxId)) throw new Error(`E2B refused ${sandboxId}`);
         state.killed.push(sandboxId);
       },
       now: () => NOW,
@@ -169,6 +170,9 @@ describe("sandbox reap", () => {
     const error = await contractError(() => executeSandboxReap({ asJson: true }, HOST, fake.deps));
     expect(error.exitCode).toBe(3);
     expect(error.code).toBe("WRITE_REQUIRES_EXECUTE");
+    // The brake names the effect: a kill, not a write.
+    expect(error.message).toBe("Dry-run: nothing was killed. Re-run with --execute to kill.");
+    expect(error.details.suggestedAction).toBe("Re-run 'sandbox reap' adding --execute to kill");
     const plan = error.details.plan as { kill: Array<{ sandboxId: string; cause: string }> };
     expect(plan).toMatchObject({ hostId: HOST, allHosts: false, olderThanMin: 65, skipped: 1 });
     expect(plan.kill.map(({ sandboxId, cause }) => [sandboxId, cause])).toEqual([
@@ -188,6 +192,16 @@ describe("sandbox reap", () => {
     expect(fake.state.killed).toEqual(["sbx-paused", "sbx-dead"]);
     expect(fake.state.killed).not.toContain("sbx-live");
     expect(fake.state.killed).not.toContain("sbx-elsewhere");
+  });
+
+  it("with --execute, a failed kill is reported and the rest are still killed (shared kill loop)", async () => {
+    const fake = fakeDeps(fleet(), { killFails: ["sbx-paused"] });
+    const result = await executeSandboxReap({ execute: true, asJson: true }, HOST, fake.deps);
+    expect(result.executed).toBe(true);
+    expect(result.killed).toEqual(["sbx-dead"]);
+    expect(result.failed).toEqual([{ sandboxId: "sbx-paused", error: "E2B refused sbx-paused" }]);
+    expect(result.candidates.map((c) => c.sandboxId)).toEqual(["sbx-paused", "sbx-dead"]);
+    expect(fake.state.killed).toEqual(["sbx-dead"]);
   });
 
   it("reaches other hosts' sandboxes only with --all-hosts", async () => {

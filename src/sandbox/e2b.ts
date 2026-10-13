@@ -515,12 +515,18 @@ export async function buildE2bTemplate(options: BuildE2bTemplateOptions): Promis
     )
     // The clone layer may be served from E2B's cache; the next step fetches the exact
     // commit and fails unless HEAD is that SHA, so a stale layer cannot leak through.
+    // The build step re-checks HEAD for the same reason.
     .gitClone(RAVI_REPO, TEMPLATE_RAVI_DIR, { branch: refIsSha ? "dev" : ref, depth: 50 })
     .runCmd(
       `cd ${TEMPLATE_RAVI_DIR} && git fetch --depth 1 origin ${sha} && git checkout --detach ${sha} && ` +
         `test "$(git rev-parse HEAD)" = ${sha}`,
     )
-    .runCmd(`cd ${TEMPLATE_RAVI_DIR} && bun install --frozen-lockfile && bun run build`)
+    // The SHA is in this command string too, so the build layer's cache key changes with
+    // the commit whatever E2B keys the previous layer on, and a cached build of another
+    // checkout cannot be reused.
+    .runCmd(
+      `cd ${TEMPLATE_RAVI_DIR} && test "$(git rev-parse HEAD)" = ${sha} && bun install --frozen-lockfile && bun run build`,
+    )
     .runCmd("mkdir -p /home/user/.ravi/jetstream /home/user/work")
     .setStartCmd("nats-server -js -sd /home/user/.ravi/jetstream -a 127.0.0.1 -p 4222", deps.waitForPort(4222));
 
@@ -573,6 +579,8 @@ export interface SandboxHandle {
   };
   /** Replaces the whole egress policy: a missing field is cleared on the server, so every field is required here. */
   updateNetwork(network: SandboxNetwork): Promise<unknown>;
+  /** What E2B says about the sandbox; `templateId` is the template it actually booted from. */
+  getInfo(): Promise<{ templateId: string }>;
   kill(): Promise<unknown>;
   pause(): Promise<unknown>;
 }
@@ -639,8 +647,52 @@ export interface RunSandboxTaskResult {
   error: string | null;
   /** What E2B recorded about the sandbox (null when it could not be fetched). */
   e2b: E2bTelemetrySummary | null;
-  /** Ravi commit baked into the template, from its build record; null when the template was never recorded here. */
+  /** Template id the sandbox booted from, as E2B reports it (null when `getInfo` failed or the run ended before it). */
+  templateId: string | null;
+  /**
+   * Ravi commit baked into the template, from this host's build record; null when there is
+   * no record or the sandbox's template id is not the one the record names.
+   */
   templateSha: string | null;
+  /** The template line of run.log, after `Template <name>: `; the CLI prints the same text. */
+  templateNote: string;
+}
+
+/**
+ * What a run can say about its template. The record is "last built from this host", not
+ * a fact about the sandbox: only when E2B's template id for the sandbox is the recorded
+ * one does the record's commit describe the machine. A template rebuilt elsewhere (same
+ * name, another id) is reported as such and `templateSha` stays null.
+ */
+export function describeTemplate(
+  record: E2bTemplateRecord | null,
+  templateId: string | null,
+  infoError?: string,
+): { templateSha: string | null; templateNote: string } {
+  if (!record) {
+    const seen = templateId ? `id ${templateId}, ` : "";
+    return {
+      templateSha: null,
+      templateNote: `${seen}no build record on this host (warning: run \`ravi sandbox template build\` to pin a commit)`,
+    };
+  }
+  if (templateId === null) {
+    return {
+      templateSha: null,
+      templateNote:
+        `id could not be read${infoError ? ` (${infoError})` : ""}; this host's record ` +
+        `(${record.templateId}, ravi ${record.sha}) is unverified`,
+    };
+  }
+  if (templateId !== record.templateId) {
+    return {
+      templateSha: null,
+      templateNote:
+        `id ${templateId} does not match this host's record (${record.templateId}, ravi ${record.sha}) ` +
+        "— rebuilt elsewhere?",
+    };
+  }
+  return { templateSha: record.sha, templateNote: `ravi ${record.sha} (built ${record.builtAt} on this host)` };
 }
 
 /** File name for a session or transcript path, safe on any filesystem. */
@@ -718,7 +770,6 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
   const template = options.template ?? DEFAULT_E2B_TEMPLATE;
   const templateRecord =
     options.templateRecord === undefined ? readE2bTemplateRecord(template) : options.templateRecord;
-  const templateSha = templateRecord?.sha ?? null;
   const timeoutMs = timeoutMin * 60_000;
   const runId = randomBytes(12).toString("hex");
 
@@ -858,9 +909,7 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
     process.off("SIGTERM", onSignal);
   };
 
-  if (templateRecord) {
-    step(`Template ${template}: ravi ${templateRecord.sha} (${templateRecord.ref}, built ${templateRecord.builtAt})`);
-  } else {
+  if (!templateRecord) {
     step(
       `Warning: no build record for template ${template} in ${sandboxTemplatesPath()}; ` +
         "which Ravi commit it holds is unknown. `ravi sandbox template build` records one.",
@@ -906,10 +955,21 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
       durationMs: now() - startedAt,
       error: `${pendingSignal} received during sandbox creation`,
       e2b: null,
-      templateSha,
+      templateId: null,
+      ...describeTemplate(templateRecord, null, "aborted before the sandbox was inspected"),
     };
   }
   step(`Sandbox ${sandbox.sandboxId} is up`);
+  // The record says what this host built last; E2B says what the sandbox booted from.
+  let templateId: string | null = null;
+  let infoError: string | undefined;
+  try {
+    templateId = (await sandbox.getInfo()).templateId ?? null;
+  } catch (err) {
+    infoError = err instanceof Error ? err.message : String(err);
+  }
+  const { templateSha, templateNote } = describeTemplate(templateRecord, templateId, infoError);
+  step(`Template ${template}: ${templateNote}`);
 
   const outputDir = options.outputDir ?? join(getRaviStateDir(), "sandbox-runs", sandbox.sandboxId);
   const files: string[] = [];
@@ -1223,6 +1283,8 @@ export async function runE2bSandboxTask(options: RunSandboxTaskOptions): Promise
     durationMs: now() - startedAt,
     error,
     e2b,
+    templateId,
     templateSha,
+    templateNote,
   };
 }

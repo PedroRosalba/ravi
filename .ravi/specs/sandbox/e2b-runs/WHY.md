@@ -121,8 +121,19 @@ prove the checkout with `rev-parse`. Bun and nats-server used to arrive through
 URLs (or the path to them) controls the template; downloading the pinned
 release archive and checking it against a digest copied by hand from the
 publisher's checksum file closes that. The record file exists so that a run
-can report the commit without asking E2B, and it is 0600 because it names the
-template ids of this account.
+can report the commit without a second build, and it is 0600 because it names
+the template ids of this account. The record only describes what this host
+built last, though: the same template name can be rebuilt from another host
+or the dashboard, so the run asks E2B which template id the sandbox booted
+from and claims the commit only when it is the recorded one. The build layer
+re-checks the SHA for the same reason the checkout step does: its command
+string then changes with the commit, so a cached build of another checkout
+cannot be served whatever E2B keys the layer cache on. A 40-hex `--ref` is
+taken as is because resolving it would prove nothing useful (GitHub serves any
+commit in the repository network); it is the operator's choice, documented as
+such. These decisions and the review follow-ups behind them are recorded in
+`.agent/context/adr/0002-autonomous-decisions-ravi-stack.md`, section "03b
+decisions and review follow-ups".
 
 ### Reaper that dry-runs and never crosses hosts by default
 
@@ -133,5 +144,14 @@ to someone else's live run, so scope is narrow by construction: this host's
 `ravi-task` sandboxes, with the metadata filter repeated client-side because
 the server-side semantics are an open check. The pid test only makes sense for
 sandboxes created here, and `--all-hosts` therefore falls back to the two
-causes that need no local knowledge, paused and overdue. `cause` rather than
-`reason` names the field because the CLI redacts `reason` as free text.
+causes that need no local knowledge, paused and overdue. A paused sandbox of
+this host is a candidate even when it was kept on purpose, because the reaper
+cannot tell the two apart and the dry-run plan is where the operator does. The
+pid test refuses anything that is not a positive integer before `process.kill`
+sees it, since pid 0 and negative pids address process groups and would read
+as alive. One kill loop (`killCandidates`) serves the library and the CLI so
+the brake and the kill cannot drift apart. `cause` rather than `reason` names
+the field because the CLI redacts `reason` as free text. The dry-run says
+"nothing was killed" rather than "nothing was written" because that is what
+the operator is about to do. See ADR 0002, "03b decisions and review
+follow-ups".

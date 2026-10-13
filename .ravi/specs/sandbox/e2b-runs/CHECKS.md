@@ -117,8 +117,10 @@ through the recording fake builder there, and the reaper through the fake
   `RAVI_REPO` at `/home/user/ravi` with `{ branch: <ref>, depth: 50 }`; the
   checkout step is exactly
   `cd /home/user/ravi && git fetch --depth 1 origin <sha> && git checkout --detach <sha> && test "$(git rev-parse HEAD)" = <sha>`
-  and sits after the clone and before `bun run build` ("resolves the ref on
-  the host, checks out that SHA …").
+  and sits after the clone and before `bun run build`; the build step is
+  exactly
+  `cd /home/user/ravi && test "$(git rev-parse HEAD)" = <sha> && bun install --frozen-lockfile && bun run build`
+  ("resolves the ref on the host, checks out that SHA …").
 - No command matches `| bash` or `| sh` and none mentions `bun.sh/install`;
   each archive's `sha256sum -c` line precedes its `unzip`/`tar` step; both
   download steps run as root and the Ravi build does not; `Template.build`
@@ -138,9 +140,15 @@ through the recording fake builder there, and the reaper through the fake
 - `pickLsRemoteSha` prefers `refs/heads/<ref>`, then `refs/tags/<ref>^{}`,
   then `refs/tags/<ref>`, ignores malformed lines and returns null for a
   prefix match ("picks the branch, then the peeled tag").
-- A run with a record writes `Template <name>: ravi <sha> (<ref>, built <builtAt>)`
-  to run.log and sets `templateSha`; without one it writes the warning and
-  `templateSha` is null; a corrupt file or a record without a 40-hex `sha`
+- A run whose sandbox reports the recorded `templateId` writes
+  `Template <name>: ravi <sha> (built <builtAt> on this host)` to run.log and
+  sets `templateSha`, `templateId` and `templateNote`; one whose sandbox
+  reports another id writes
+  `Template <name>: id <id> does not match this host's record (<recorded id>, ravi <sha>) — rebuilt elsewhere?`
+  and `templateSha` is null; one whose `getInfo` fails reports the record as
+  unverified with `templateSha` and `templateId` null; without a record it
+  writes the warning before create, then `id <id>, no build record on this host …`,
+  and `templateSha` is null; a corrupt file or a record without a 40-hex `sha`
   reads as missing ("template record in a run" suite, "runs the task to done").
 - Created sandboxes carry `ravi_pid: String(process.pid)` next to `purpose`,
   `ravi_run` and `ravi_host` ("runs the task to done").
@@ -158,7 +166,14 @@ through the recording fake builder there, and the reaper through the fake
   pid are `live` ("flags paused, overdue and dead-pid sandboxes").
 - A dead pid on another host's sandbox is not a cause; the same host's paused
   sandbox is ("never reads another host's pid as a local process").
-  `processIsAlive(process.pid)` is true and an impossible pid is false.
+  `processIsAlive(process.pid)` is true and 2^31-1 (above every platform's
+  pid range) is false; 0, -1, `-process.pid`, 1.5, NaN and Infinity are false
+  without reaching `process.kill` ("never passes a non-positive or fractional
+  pid").
+- `killCandidates(plan, deps)` kills exactly `plan.candidates`, records a
+  failed kill and continues, leaves the plan object untouched and ignores
+  anything outside the candidates ("killCandidates kills exactly the plan's
+  candidates").
 - `reapSandboxes` without `execute` lists candidates and calls no kill; with
   `execute` it kills exactly the candidates, records a failed kill in `failed`
   and continues; `sbx-live`, another host's sandbox, a forged
@@ -171,8 +186,11 @@ through the recording fake builder there, and the reaper through the fake
 - `olderThanMin` 29 flags a 30-minute sandbox and 30 does not; 0, -1, 1.5 and
   NaN reject before listing ("honours olderThanMin").
 - CLI: `executeSandboxReap` without `--execute` throws `WRITE_REQUIRES_EXECUTE`
-  with exit 3 and a plan `{ hostId, allHosts, olderThanMin, kill: [{ sandboxId, cause, … }], skipped }`
-  and no kill; `--execute` kills the matches of this host only; `--all-hosts`
+  with exit 3, the message `Dry-run: nothing was killed. Re-run with --execute to kill.`
+  and a plan `{ hostId, allHosts, olderThanMin, kill: [{ sandboxId, cause, … }], skipped }`
+  and no kill; `--execute` kills the matches of this host only, through
+  `killCandidates`, and a kill E2B refuses lands in `failed` while the others
+  are still killed ("with --execute, a failed kill is reported"); `--all-hosts`
   drops the host filter; no candidate returns the empty plan; `--older-than`
   `0|abc|1.5|-3` is a `USAGE_ERROR` (exit 2) before any listing and `" 10 "`
   is accepted (`bun test src/cli/commands/sandbox.test.ts`, "sandbox reap"

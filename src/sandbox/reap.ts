@@ -81,7 +81,13 @@ export interface ReapResult {
   failed: Array<{ sandboxId: string; error: string }>;
 }
 
+/**
+ * Whether a process with this pid exists here. Only a positive integer is ever passed to
+ * `process.kill`: pid 0 is "this process group" and a negative pid is a whole group (or,
+ * for -1, every process), which signal 0 would report as alive.
+ */
 export function processIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -179,7 +185,17 @@ export async function reapSandboxes(options: ReapOptions, deps: ReapDeps): Promi
     failed: [],
   };
   if (!options.execute) return result;
-  for (const candidate of selected.candidates) {
+  return killCandidates(result, deps);
+}
+
+/**
+ * The one kill loop, shared by `reapSandboxes({ execute: true })` and the CLI's
+ * `executeSandboxReap`: kills every candidate of `plan`, continues past a failed kill and
+ * reports it in `failed`. Nothing outside `plan.candidates` is ever passed to `kill`.
+ */
+export async function killCandidates(plan: ReapResult, deps: Pick<ReapDeps, "kill">): Promise<ReapResult> {
+  const result: ReapResult = { ...plan, executed: true, killed: [], failed: [] };
+  for (const candidate of plan.candidates) {
     try {
       await deps.kill(candidate.sandboxId);
       result.killed.push(candidate.sandboxId);

@@ -23,6 +23,7 @@ import {
   TEMPLATE_BUN_VERSION,
   type TemplateBuilderLike,
   buildE2bTemplate,
+  describeTemplate,
   buildSandboxNetwork,
   describeCommandError,
   e2bSecretPlaceholder,
@@ -56,6 +57,9 @@ interface FakeOptions {
   failWith?: unknown;
   /** Secret names whose `put` fails (true: all of them). */
   secretStoreFails?: boolean | RegExp;
+  /** What `getInfo` reports as the sandbox's template id (default `tpl_1`, the id the fake build records). */
+  templateId?: string;
+  getInfoFails?: boolean;
 }
 
 const PATCH = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n \n-a\n+b\n";
@@ -144,6 +148,10 @@ function fakeSandbox(options: FakeOptions = {}) {
     async updateNetwork(network) {
       state.networkUpdates.push(network);
       state.lifecycle.push("updateNetwork");
+    },
+    async getInfo() {
+      if (options.getInfoFails) throw new Error("info api down");
+      return { templateId: options.templateId ?? "tpl_1" };
     },
     async kill() {
       state.killed = true;
@@ -344,11 +352,16 @@ describe("runE2bSandboxTask", () => {
       // The reaper tells an orphan from a live run by this pid.
       ravi_pid: String(process.pid),
     });
-    // No record was passed and none exists in the isolated state dir: the run says so.
+    // No record was passed and none exists in the isolated state dir: the run says so,
+    // and still reports the template id E2B booted the sandbox from.
     expect(result.templateSha).toBeNull();
-    expect(readFileSync(join(outputDir, "run.log"), "utf8")).toContain(
-      "Warning: no build record for template ravi-runner",
+    expect(result.templateId).toBe("tpl_1");
+    expect(result.templateNote).toBe(
+      "id tpl_1, no build record on this host (warning: run `ravi sandbox template build` to pin a commit)",
     );
+    const runLog = readFileSync(join(outputDir, "run.log"), "utf8");
+    expect(runLog).toContain("Warning: no build record for template ravi-runner");
+    expect(runLog).toContain(`Template ravi-runner: ${result.templateNote}`);
     expect(fake.state.created?.network).toMatchObject({
       allowPublicTraffic: false,
       denyOut: [ALL_TRAFFIC],
@@ -1042,6 +1055,11 @@ describe("buildE2bTemplate", () => {
     expect(checkout).toBe(
       `cd /home/user/ravi && git fetch --depth 1 origin ${SHA} && git checkout --detach ${SHA} && test "$(git rev-parse HEAD)" = ${SHA}`,
     );
+    // The build layer's command string carries the SHA too, so its cache entry cannot
+    // outlive a ref change whatever E2B keys the layer on.
+    expect(fake.commands().find((cmd) => cmd.includes("bun run build"))).toBe(
+      `cd /home/user/ravi && test "$(git rev-parse HEAD)" = ${SHA} && bun install --frozen-lockfile && bun run build`,
+    );
     // The checkout comes after the clone and before the build.
     const kinds = fake.steps.map((step) => (step.kind === "runCmd" ? step.commands.join(";") : step.kind));
     const cloneAt = kinds.indexOf("gitClone");
@@ -1172,24 +1190,59 @@ describe("buildE2bTemplate", () => {
 });
 
 describe("template record in a run", () => {
-  it("writes the template commit to run.log and the result when a record exists", async () => {
+  const record: E2bTemplateRecord = {
+    name: "ravi-runner",
+    templateId: "tpl_1",
+    buildId: "bld_1",
+    ref: "dev",
+    sha: SHA,
+    bunVersion: TEMPLATE_BUN_VERSION,
+    natsVersion: NATS_VERSION,
+    builtAt: "2023-11-14T22:13:20.000Z",
+  };
+
+  it("writes the template commit to run.log and the result when E2B's template id is the recorded one", async () => {
     const fake = fakeSandbox();
     const outputDir = tempDir();
-    const record: E2bTemplateRecord = {
-      name: "ravi-runner",
-      templateId: "tpl_1",
-      buildId: "bld_1",
-      ref: "dev",
-      sha: SHA,
-      bunVersion: TEMPLATE_BUN_VERSION,
-      natsVersion: NATS_VERSION,
-      builtAt: "2023-11-14T22:13:20.000Z",
-    };
     const result = await runE2bSandboxTask(fake.options({ outputDir, templateRecord: record }));
     expect(result.templateSha).toBe(SHA);
+    expect(result.templateId).toBe("tpl_1");
+    const note = `ravi ${SHA} (built 2023-11-14T22:13:20.000Z on this host)`;
+    expect(result.templateNote).toBe(note);
     const log = readFileSync(join(outputDir, "run.log"), "utf8");
-    expect(log).toContain(`Template ravi-runner: ravi ${SHA} (dev, built 2023-11-14T22:13:20.000Z)`);
+    expect(log).toContain(`Template ravi-runner: ${note}`);
     expect(log).not.toContain("Warning: no build record");
+  });
+
+  it("reports a template id that is not the recorded one and claims no commit for it", async () => {
+    // Same name, another id: the template was rebuilt elsewhere and the record says nothing about this sandbox.
+    const fake = fakeSandbox({ templateId: "tpl_elsewhere" });
+    const outputDir = tempDir();
+    const result = await runE2bSandboxTask(fake.options({ outputDir, templateRecord: record }));
+    expect(result.templateSha).toBeNull();
+    expect(result.templateId).toBe("tpl_elsewhere");
+    expect(result.templateNote).toBe(
+      `id tpl_elsewhere does not match this host's record (tpl_1, ravi ${SHA}) — rebuilt elsewhere?`,
+    );
+    const log = readFileSync(join(outputDir, "run.log"), "utf8");
+    expect(log).toContain(`Template ravi-runner: ${result.templateNote}`);
+    expect(log).not.toContain("on this host)");
+    expect(result.status).toBe("done");
+
+    // When E2B cannot say which template the sandbox booted from, the record is unverified, not trusted.
+    const blind = fakeSandbox({ getInfoFails: true });
+    const unverified = await runE2bSandboxTask(blind.options({ templateRecord: record }));
+    expect(unverified.templateSha).toBeNull();
+    expect(unverified.templateId).toBeNull();
+    expect(unverified.templateNote).toBe(
+      `id could not be read (info api down); this host's record (tpl_1, ravi ${SHA}) is unverified`,
+    );
+    expect(unverified.status).toBe("done");
+    expect(describeTemplate(record, "tpl_1")).toEqual({
+      templateSha: SHA,
+      templateNote: `ravi ${SHA} (built 2023-11-14T22:13:20.000Z on this host)`,
+    });
+    expect(describeTemplate(null, null).templateSha).toBeNull();
   });
 
   it("reads the record file written by the build and ignores a corrupt or SHA-less one", async () => {

@@ -4,6 +4,7 @@ import {
   DEFAULT_REAP_OLDER_THAN_MIN,
   type ReapDeps,
   type ReapSandboxInfo,
+  killCandidates,
   listRaviTaskSandboxes,
   processIsAlive,
   reapSandboxes,
@@ -128,8 +129,15 @@ describe("selectReapCandidates", () => {
 
   it("checks liveness with signal 0 and treats EPERM as alive", () => {
     expect(processIsAlive(process.pid)).toBe(true);
-    // No process can have this pid on any supported platform.
-    expect(processIsAlive(2 ** 22 - 1)).toBe(false);
+    // Linux pid_max is at most 2^22 and macOS stops at 99998, so no process has this pid.
+    expect(processIsAlive(2 ** 31 - 1)).toBe(false);
+  });
+
+  it("never passes a non-positive or fractional pid to process.kill", () => {
+    // kill(0, 0) would test this process group and kill(-1, 0) every process: both would say "alive".
+    for (const pid of [0, -1, -process.pid, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(processIsAlive(pid)).toBe(false);
+    }
   });
 });
 
@@ -195,6 +203,25 @@ describe("reapSandboxes", () => {
     const running = await reapSandboxes({ hostId: HOST, allHosts: true, execute: true }, forgedRunning.deps);
     expect(running.killed).toEqual([]);
     expect(running.skipped).toEqual([{ sandboxId: "sbx-forged-running", cause: "live" }]);
+  });
+
+  it("killCandidates kills exactly the plan's candidates and is the loop execute uses", async () => {
+    const fake = fakeE2b(fleet(), { killFails: ["sbx-overdue"] });
+    fake.state.livePids.add(100);
+    const plan = await reapSandboxes({ hostId: HOST }, fake.deps);
+    const result = await killCandidates(plan, fake.deps);
+    expect(result.executed).toBe(true);
+    expect(result.killed).toEqual(["sbx-dead", "sbx-paused"]);
+    expect(result.failed).toEqual([{ sandboxId: "sbx-overdue", error: "kill failed for sbx-overdue" }]);
+    expect(fake.state.killed).toEqual(["sbx-dead", "sbx-paused"]);
+    expect(result.candidates).toEqual(plan.candidates);
+    // The plan itself is left as it was: a dry-run result never gains a kill list.
+    expect(plan).toMatchObject({ executed: false, killed: [], failed: [] });
+    // Nothing outside the candidates reaches kill, whatever else is in the result.
+    const spoofed = { ...plan, skipped: [{ sandboxId: "sbx-live", cause: "live" as const }] };
+    const again = fakeE2b(fleet());
+    await killCandidates(spoofed, again.deps);
+    expect(again.state.killed).toEqual(["sbx-dead", "sbx-paused", "sbx-overdue"]);
   });
 
   it("honours olderThanMin and rejects a bad one before listing", async () => {

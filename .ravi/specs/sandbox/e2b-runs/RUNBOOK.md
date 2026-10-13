@@ -52,9 +52,19 @@ ravi sandbox template build --ref <40-hex sha>   # a commit; needs no resolution
   (a SHA that was force-pushed away) or at a `sha256sum` line when a download
   does not match its pinned digest. A digest mismatch is a stop, not a retry:
   check the publisher's checksum file before changing anything.
-- The result and `~/.ravi/sandbox-templates.json` (0600) hold the commit;
-  `sandbox run` prints it as `Template: <name> @ ravi <sha>` and warns when the
-  template was built elsewhere or before this record existed.
+- A 40-hex `--ref` is taken as the commit without resolution or any check that
+  it is on a branch: GitHub serves any commit in the repository network (forks
+  included), so the operator passing it is trusting that commit. Prefer a
+  branch or tag unless the exact commit is the point.
+- The result and `~/.ravi/sandbox-templates.json` (0600) hold the commit. The
+  record is what this host built last, not what a sandbox booted from, so
+  `sandbox run` asks E2B for the sandbox's template id and prints
+  `Template <name>: ravi <sha> (built <ts> on this host)` only when that id is
+  the recorded one. Otherwise it prints
+  `Template <name>: id <id> does not match this host's record (<recorded id>, ravi <sha>) — rebuilt elsewhere?`
+  (the template of that name was rebuilt from another host or the dashboard)
+  and the JSON `templateSha` is null; rebuild from this host to pin it again.
+  With no record at all it warns before creating the sandbox.
 
 ### Checksum provenance
 
@@ -65,7 +75,7 @@ copy the one line, and update this table.
 
 | Constant | Archive | Source file | Fetched |
 |---|---|---|---|
-| `TEMPLATE_BUN_LINUX_X64_SHA256` = `8611ba935af886f05a6f38740a15160326c15e5d5d07adef966130b4493607ed` | `bun-linux-x64.zip` (bun v1.3.11) | <https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/SHASUMS256.txt> | 2026-10-13 (matches the copy at `.tools/bun-1.3.11/SHASUMS256.txt` fetched 2026-10-12) |
+| `TEMPLATE_BUN_LINUX_X64_SHA256` = `8611ba935af886f05a6f38740a15160326c15e5d5d07adef966130b4493607ed` | `bun-linux-x64.zip` (bun v1.3.11) | <https://github.com/oven-sh/bun/releases/download/bun-v1.3.11/SHASUMS256.txt> | 2026-10-13 |
 | `NATS_LINUX_AMD64_SHA256` = `397a6deffb5533e160de0cca322bc3dcaec7fb7282d66a3dfa87a9c183152ad1` | `nats-server-v2.11.8-linux-amd64.tar.gz` | <https://github.com/nats-io/nats-server/releases/download/v2.11.8/SHA256SUMS> | 2026-10-13 |
 
 Bun 1.3.11 is the CI version (`.github/workflows/ci.yml`); keep the two in step.
@@ -82,6 +92,11 @@ ravi sandbox reap --all-hosts         # plan across every host's ravi-task sandb
 - Run it after a host crash, a forgotten `--keep`, or when the E2B dashboard
   shows ravi-task sandboxes with no run behind them. The plan lists each
   candidate with its cause (`paused`, `overdue`, `dead-pid`) and age.
+- Every paused sandbox of this host is a candidate, including one you paused
+  with `--keep` on purpose and still want to inspect: the reaper cannot tell a
+  forgotten pause from a deliberate one. Read the plan (the default dry-run,
+  exit 3) before adding `--execute`, and inspect or snapshot the kept sandbox
+  first.
 - A sandbox a live `sandbox run` owns is skipped as `live` as long as its
   `ravi_pid` is alive and it is younger than `--older-than`; do not lower
   `--older-than` below the longest `--timeout-min` in use plus five minutes.
