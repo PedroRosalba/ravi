@@ -12,8 +12,24 @@
  * allowlist is UX: the Gate and the HOME listener enforce it.
  */
 
-import { CONTRACT_EXIT_POLICY, ContractError } from "./agent-contract.js";
-import { HOME_GATEWAY_URL_ENV, SANDBOX_GRANT_ENV } from "./remote-gateway.js";
+import { stripTerminalControls, terminalSafeJson } from "../sandbox/outputs.js";
+import {
+  CONTRACT_EXIT_POLICY,
+  ContractError,
+  type ContractErrorDetails,
+  renderContractError,
+} from "./agent-contract.js";
+import { getContext } from "./context.js";
+import {
+  HOME_GATEWAY_URL_ENV,
+  knownSandboxGrant,
+  mapJsonStrings,
+  type RemoteDispatchResult,
+  SANDBOX_GRANT_ENV,
+  scrubHomeContractError,
+  scrubHomeGrant,
+  scrubHomeGrantText,
+} from "./remote-gateway.js";
 
 export const HOME_INVOCATION_TOKEN = "home";
 export const HOME_COMMANDS_ENV = "RAVI_HOME_COMMANDS";
@@ -134,4 +150,59 @@ export function homeHelp(env: NodeJS.ProcessEnv = process.env): { text: string; 
     "A command outside the list exits 3 here; HOME enforces the list on its own.",
   ].join("\n");
   return { text, json: { success: true, commands, gatewayConfigured } };
+}
+
+function stripTerminalControlsDeep(value: unknown): unknown {
+  return mapJsonStrings(value, stripTerminalControls);
+}
+
+/**
+ * Render a home-mode error. The grant is scrubbed; text mode strips C0 (but
+ * `\n` and `\t`), C1 and bidi controls, `--json` writes them as `\uXXXX`.
+ */
+export function renderHomeContractError(
+  error: ContractError,
+  asJson: boolean,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const scrubbed = scrubHomeContractError(error, knownSandboxGrant(env));
+  if (asJson) {
+    if (getContext({ localOnly: true })?.suppressCliOutput === true) return;
+    console.log(terminalSafeJson(scrubbed.envelope()));
+    return;
+  }
+  renderContractError(
+    new ContractError(
+      scrubbed.op,
+      scrubbed.code,
+      stripTerminalControls(scrubbed.message),
+      scrubbed.exitCode,
+      stripTerminalControlsDeep(scrubbed.details) as ContractErrorDetails,
+    ),
+    false,
+  );
+}
+
+/**
+ * The printable form of a 2xx HOME answer: grant scrubbed, JSON pretty-printed,
+ * terminal controls stripped in text mode and escaped as `\uXXXX` with `--json`.
+ * A HOME answer is never written as raw bytes.
+ */
+export function formatHomeOutput(
+  result: RemoteDispatchResult,
+  asJson: boolean,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (result.body.length === 0) return "";
+  const grant = knownSandboxGrant(env);
+  if (result.contentType?.includes("json")) {
+    try {
+      const value = scrubHomeGrant(JSON.parse(result.body), grant);
+      return `${asJson ? terminalSafeJson(value) : JSON.stringify(stripTerminalControlsDeep(value), null, 2)}\n`;
+    } catch {
+      // Not JSON after all: printed as text below.
+    }
+  }
+  const text = stripTerminalControls(scrubHomeGrantText(result.body, grant));
+  return text.endsWith("\n") ? text : `${text}\n`;
 }

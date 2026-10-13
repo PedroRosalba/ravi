@@ -46,6 +46,7 @@ import { cloudContractCatalogCopy, commandOperation } from "./cloud-error-contra
 import { localMediaSendCatalogCopy } from "./media-send-auth.js";
 import { isSafeLocalPayloadMessage } from "./payload-error-message.js";
 import { projectPublicIssues, sanitizePublicValue } from "./redaction.js";
+import { stripTerminalControls } from "../sandbox/outputs.js";
 
 export { CALLER_CWD_HEADER } from "./caller-cwd.js";
 
@@ -130,6 +131,10 @@ export const SANDBOX_GRANT_HEADER = "X-Ravi-Sandbox-Grant";
 export const HOME_REQUEST_ID_HEADER = "X-Ravi-Request-Id";
 /** Above the Gate's 30 s upstream timeout, so the Gate's own answer arrives first. */
 export const HOME_GATEWAY_DEFAULT_TIMEOUT_MS = 35_000;
+/** The most a HOME response may carry; beyond it the read is aborted (`HOME_RESPONSE_TOO_LARGE`). */
+export const HOME_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
+/** What every HOME output shows in place of the sandbox grant. */
+export const HOME_GRANT_PLACEHOLDER = "[grant]";
 const SANDBOX_GRANT_MAX_LENGTH = 8192;
 const COMPACT_JWS_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const HOME_ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
@@ -169,7 +174,29 @@ export function getHomeGatewayConfig(env: NodeJS.ProcessEnv = process.env, op = 
     throw invalidHomeGatewayError(op, "must not carry credentials");
   if (raw.includes("?") || raw.includes("#")) throw invalidHomeGatewayError(op, "must not carry a query or fragment");
   if (!parsed.hostname) throw invalidHomeGatewayError(op, "has no host");
+  if (sameOriginAsRemoteGateway(parsed, env)) {
+    throw new ContractError(
+      op,
+      "HOME_GATEWAY_CONFLICT",
+      `${HOME_GATEWAY_URL_ENV} and ${REMOTE_GATEWAY_URL_ENV} share an origin; nothing was sent.`,
+      CONTRACT_EXIT_USAGE,
+      {
+        suggestedAction: `Point ${REMOTE_GATEWAY_URL_ENV} at this sandbox's own gateway (or unset it); ${HOME_GATEWAY_URL_ENV} is the HOME Gate only`,
+      },
+    );
+  }
   return { url: `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`, source: "home", auth: "sandbox-grant" };
+}
+
+/** The context-key gateway and the HOME Gate must never be the same origin. */
+function sameOriginAsRemoteGateway(home: URL, env: NodeJS.ProcessEnv): boolean {
+  const raw = env[REMOTE_GATEWAY_URL_ENV]?.trim();
+  if (!raw) return false;
+  try {
+    return new URL(raw).origin === home.origin;
+  } catch {
+    return false;
+  }
 }
 
 function invalidHomeGatewayError(op: string, why: string): ContractError {
@@ -196,6 +223,72 @@ export function readSandboxGrantFallback(env: NodeJS.ProcessEnv, op: string): st
     );
   }
   return grant;
+}
+
+/** The `RAVI_SANDBOX_GRANT` value that would be sent, or null; never throws. */
+export function knownSandboxGrant(env: NodeJS.ProcessEnv = process.env): string | null {
+  const grant = env[SANDBOX_GRANT_ENV]?.trim();
+  if (!grant || grant.length > SANDBOX_GRANT_MAX_LENGTH || !COMPACT_JWS_PATTERN.test(grant)) return null;
+  return grant;
+}
+
+/**
+ * A compact JWS whose header and payload are base64url JSON objects (`eyJ…`):
+ * the shape of a Console grant, scrubbed even when the egress proxy injected it
+ * and the CLI never saw the value.
+ */
+const JWS_SHAPED_PATTERN = /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+
+/** Replace the known grant and any JWS-shaped token in `text` with `[grant]`. */
+export function scrubHomeGrantText(text: string, grant: string | null): string {
+  const known = grant ? text.split(grant).join(HOME_GRANT_PLACEHOLDER) : text;
+  return known.replace(JWS_SHAPED_PATTERN, HOME_GRANT_PLACEHOLDER);
+}
+
+/** `fn` over every string (keys included) of a JSON-like value. */
+export function mapJsonStrings(value: unknown, fn: (text: string) => string): unknown {
+  if (typeof value === "string") return fn(value);
+  if (Array.isArray(value)) return value.map((item) => mapJsonStrings(item, fn));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) out[fn(key)] = mapJsonStrings(item, fn);
+    return out;
+  }
+  return value;
+}
+
+/** `scrubHomeGrantText` over every string (keys included) of a JSON-like value. */
+export function scrubHomeGrant(value: unknown, grant: string | null): unknown {
+  return mapJsonStrings(value, (text) => scrubHomeGrantText(text, grant));
+}
+
+/** The same error with the grant scrubbed from its message and details. */
+export function scrubHomeContractError(error: ContractError, grant: string | null): ContractError {
+  return new ContractError(
+    error.op,
+    error.code,
+    scrubHomeGrantText(error.message, grant),
+    error.exitCode,
+    scrubHomeGrant(error.details, grant) as ContractErrorDetails,
+  );
+}
+
+/**
+ * A HOME error body with the grant scrubbed and terminal controls stripped from
+ * every string before the projection reads it.
+ */
+function scrubHomeResult(result: RemoteDispatchResult, grant: string | null): RemoteDispatchResult {
+  const clean = (text: string) => stripTerminalControls(scrubHomeGrantText(text, grant));
+  let body: string;
+  try {
+    body = result.contentType?.includes("json")
+      ? JSON.stringify(mapJsonStrings(JSON.parse(result.body), clean))
+      : clean(result.body);
+  } catch {
+    body = clean(result.body);
+  }
+  const { bodyBytes: _bytes, ...rest } = result;
+  return { ...rest, body };
 }
 
 export function getRemoteGatewayConfig(env: NodeJS.ProcessEnv = process.env, op = "cli"): RemoteGatewayConfig | null {
@@ -778,12 +871,72 @@ async function dispatchHome(input: RemoteDispatchInput, path: string): Promise<R
       credentials: "omit",
       signal: controller.signal,
     });
-    const result = await remoteResultFromResponse(response);
-    const requestId = response.headers.get(HOME_REQUEST_ID_HEADER);
-    return { ...result, requestId: requestId && HOME_REQUEST_ID_PATTERN.test(requestId) ? requestId : null };
+    const rawRequestId = response.headers.get(HOME_REQUEST_ID_HEADER);
+    const requestId = rawRequestId && HOME_REQUEST_ID_PATTERN.test(rawRequestId) ? rawRequestId : null;
+    const bytes = await readBoundedHomeBody(response, controller, op, requestId);
+    return {
+      status: response.status,
+      ok: response.ok,
+      body: new TextDecoder().decode(bytes),
+      contentType: response.headers.get("content-type"),
+      requestId,
+    };
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * Read at most `HOME_RESPONSE_MAX_BYTES` of a HOME response. A larger declared
+ * length or body aborts the request and fails `HOME_RESPONSE_TOO_LARGE`
+ * without keeping what was read.
+ */
+async function readBoundedHomeBody(
+  response: Response,
+  controller: AbortController,
+  op: string,
+  requestId: string | null,
+): Promise<Uint8Array> {
+  const tooLarge = () => {
+    controller.abort();
+    return new ContractError(
+      op,
+      "HOME_RESPONSE_TOO_LARGE",
+      `HOME answered with more than ${HOME_RESPONSE_MAX_BYTES / (1024 * 1024)} MiB; the response was discarded.${requestIdSuffix(requestId)}`,
+      1,
+      {
+        status: response.status,
+        requestId,
+        suggestedAction: "Check the HOME gateway; a task command answer is never this large",
+      },
+    );
+  };
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > HOME_RESPONSE_MAX_BYTES) {
+    await response.body?.cancel().catch(() => {});
+    throw tooLarge();
+  }
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > HOME_RESPONSE_MAX_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw tooLarge();
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 /**
@@ -791,10 +944,22 @@ async function dispatchHome(input: RemoteDispatchInput, path: string): Promise<R
  * listener `{error:{code,requestId,source:"ravi-listener"}}`; both become
  * `HOME_<CODE>` with the request id in the message. A complete contract
  * envelope relayed from the daemon's dispatcher keeps the remote projection.
- * Nothing else from the body is shown.
+ * Nothing else from the body is shown. The grant (`RAVI_SANDBOX_GRANT` from
+ * `env`, and any JWS-shaped token) is scrubbed from the body before projection
+ * and from the error after it.
  */
-export function homeGatewayErrorToContractError(op: string, result: RemoteDispatchResult): ContractError | null {
+export function homeGatewayErrorToContractError(
+  op: string,
+  result: RemoteDispatchResult,
+  env: NodeJS.ProcessEnv = process.env,
+): ContractError | null {
   if (result.ok) return null;
+  const grant = knownSandboxGrant(env);
+  const error = projectHomeError(op, scrubHomeResult(result, grant));
+  return error && scrubHomeContractError(error, grant);
+}
+
+function projectHomeError(op: string, result: RemoteDispatchResult): ContractError | null {
   const headerRequestId = result.requestId ?? null;
   if (result.status >= 300 && result.status < 400) {
     return new ContractError(
@@ -845,8 +1010,13 @@ export function homeGatewayErrorToContractError(op: string, result: RemoteDispat
   );
 }
 
-/** Bad input is a usage error (2), a command outside the grant is a policy block (3), the rest fail (1). */
+/**
+ * Bad input is a usage error (2), a command outside the grant is a policy block
+ * (3), the rest fail (1). `grant_header_invalid` is a 400 the caller cannot fix
+ * by changing its input, so it fails (1).
+ */
 function homeErrorExitCode(status: number, code: string): 1 | 2 | 3 {
+  if (code === "grant_header_invalid") return 1;
   if (status === 400 || status === 413) return CONTRACT_EXIT_USAGE;
   if (code === "command_not_allowed") return 3;
   return 1;
@@ -858,6 +1028,7 @@ const HOME_SUGGESTED_ACTIONS: Record<string, string> = {
   grant_missing: `Run inside a connected sandbox run; the egress proxy adds the grant (or set ${SANDBOX_GRANT_ENV} when the run allows it)`,
   grant_invalid: "Start a new connected run; this run's grant is not accepted",
   grant_revoked: "This run was revoked or has expired; start a new connected run",
+  grant_header_invalid: `HOME received more than one grant (or a malformed one). When the egress proxy injects ${SANDBOX_GRANT_HEADER}, unset ${SANDBOX_GRANT_ENV} and retry`,
   command_not_allowed: "Use one of the commands listed by `ravi home --help`",
   task_not_allowed: "Use the HOME task id given to this run",
   resource_forbidden: "Use the HOME task id given to this run",
@@ -865,6 +1036,11 @@ const HOME_SUGGESTED_ACTIONS: Record<string, string> = {
   argument_invalid: "Inspect `ravi home <group> <command> --help` and retry with valid input",
   rate_limited: "Wait and retry",
   daemon_offline: "HOME is offline; retry later",
+  gate_unavailable: "The HOME Gate is unavailable; retry later",
+  gateway_misconfigured: "The HOME Gate is misconfigured; report the request id to HOME's operator",
+  payload_too_large: "Send a smaller request (shorter text or fewer fields)",
+  not_found: `Check ${HOME_GATEWAY_URL_ENV} and that HOME serves this command`,
+  method_not_allowed: `Check ${HOME_GATEWAY_URL_ENV}; HOME commands are sent as POST`,
 };
 
 function requestIdSuffix(requestId: string | null): string {

@@ -57,5 +57,31 @@ in `src/cli/home-mode.test.ts` point at an unreachable `https://127.0.0.1:1`.
   `HOME_GATEWAY_REDIRECT` (`remote-gateway.test.ts`).
 - `ravi home --help` exits 0 and never prints the gateway URL value
   (`home-mode.test.ts`).
+- With `RAVI_SANDBOX_GRANT` set to a JWS-shaped grant or to `abc.def.ghi`, a
+  relayed 400 contract envelope echoing it in the message, an issue or a
+  suggestion never shows it, and the issue reads `bad [grant]`; a JWS-shaped
+  token the CLI never saw is scrubbed too (`remote-gateway.test.ts`). A 200
+  echoing the grant in a value and a key prints `grant=[grant]` in text and
+  `--json` mode, and a relayed envelope echoing it renders `[grant]` at the
+  process level (`registry.test.ts`).
+- A 200 whose JSON note is `\x1b]0;pwned\x07\x1b[2J…\x9b31m\u202e…` prints,
+  in text mode, JSON without any C0 (but `\n`/`\t`), C1 or bidi override
+  character and without `pwned`; with `--json` the same value round-trips
+  with `\u009b` and `\u202e` escaped; the reviewer's raw-control body prints
+  `{"ok":true,"note":""}`; a text/plain body is stripped; an error issue with
+  an OSC sequence prints without `pwned` (`registry.test.ts`).
+- An endless streamed body is cut at 4 MiB with `HOME_RESPONSE_TOO_LARGE`
+  exit 1, the stream cancelled and the fetch aborted; a `content-length` over
+  the bound fails before reading; a body of exactly 4 MiB is accepted
+  (`remote-gateway.test.ts`); at the process level the error prints and no
+  body byte does (`registry.test.ts`).
+- Gate `grant_header_invalid` (400) gives `HOME_GRANT_HEADER_INVALID` exit 1
+  with advice to unset `RAVI_SANDBOX_GRANT`; `gate_unavailable`,
+  `gateway_misconfigured`, `payload_too_large`, `not_found` and
+  `method_not_allowed` each carry a specific suggested action
+  (`remote-gateway.test.ts`).
+- `RAVI_GATEWAY_URL` on the HOME origin gives `HOME_GATEWAY_CONFLICT` exit 2
+  without the host in the message and sends nothing; another port is another
+  origin and is accepted (`remote-gateway.test.ts`, `registry.test.ts`).
 - `sdk openapi check --against openapi.json` passes unchanged: no decorated
   group was added.

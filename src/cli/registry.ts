@@ -36,7 +36,13 @@ import {
   dispatchRemoteCodexBashHook,
   isCodexBashHookCommand,
 } from "./codex-hook-transport.js";
-import { getCliInvocationTarget, homeCommandNotAllowedError, isHomeCommand } from "./home-mode.js";
+import {
+  formatHomeOutput,
+  getCliInvocationTarget,
+  homeCommandNotAllowedError,
+  isHomeCommand,
+  renderHomeContractError,
+} from "./home-mode.js";
 import {
   dispatchRemote,
   getHomeGatewayConfig,
@@ -258,7 +264,7 @@ function registerCommand(
         homeConfig = getHomeGatewayConfig(process.env, op);
       } catch (error) {
         if (!(error instanceof ContractError)) throw error;
-        renderContractError(error, input.json === true);
+        renderHomeContractError(error, input.json === true);
         process.exit(error.exitCode);
       }
       await dispatchRemoteCommand({
@@ -483,7 +489,8 @@ async function dispatchRemoteCommand(input: DispatchRemoteCommandInput): Promise
               retryable: true,
               suggestedAction: "Check gateway availability and retry",
             });
-    renderContractError(error, input.input.json === true);
+    if (home) renderHomeContractError(error, input.input.json === true);
+    else renderContractError(error, input.input.json === true);
     process.exit(error.exitCode);
   }
 
@@ -491,8 +498,14 @@ async function dispatchRemoteCommand(input: DispatchRemoteCommandInput): Promise
     ? homeGatewayErrorToContractError(op, result)
     : remoteGatewayErrorToContractError(op, result);
   if (remoteError) {
-    renderContractError(remoteError, input.input.json === true);
+    if (home) renderHomeContractError(remoteError, input.input.json === true);
+    else renderContractError(remoteError, input.input.json === true);
     process.exit(remoteError.exitCode);
+  }
+  if (home) {
+    const output = formatHomeOutput(result, input.input.json === true);
+    if (output.length > 0) process.stdout.write(output);
+    return;
   }
   printRemoteResponse(result);
   if (!result.ok) {

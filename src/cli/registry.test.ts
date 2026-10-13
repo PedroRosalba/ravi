@@ -582,6 +582,7 @@ async function runHome(
   const originalLog = console.log;
   const originalError = console.error;
   const originalExit = process.exit;
+  const originalWrite = process.stdout.write;
   const result: HomeRunResult = { requests: [], exitCodes: [], output: "" };
   const lines: string[] = [];
   const exitSignal = new Error("home exit signal");
@@ -602,6 +603,10 @@ async function runHome(
   }) as typeof fetch;
   console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
   console.error = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    lines.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+    return true;
+  }) as typeof process.stdout.write;
   process.exit = ((code?: number) => {
     result.exitCodes.push(code);
     throw exitSignal;
@@ -616,6 +621,7 @@ async function runHome(
     globalThis.fetch = originalFetch;
     console.log = originalLog;
     console.error = originalError;
+    process.stdout.write = originalWrite;
     process.exit = originalExit;
     for (const [key, value] of previous) {
       if (value === undefined) delete process.env[key];
@@ -713,6 +719,138 @@ describe("ravi home transport", () => {
     expect(run.output).toContain(HOME_REQUEST_ID);
     expect(run.output).not.toContain("SENTINEL_GRANT_SIG");
     expect(run.output).not.toContain("detail");
+  });
+
+  it("scrubs the grant from a 2xx body, in text and --json output", async () => {
+    for (const json of [false, true]) {
+      const run = await runHome(
+        ["tasks", "report", "task-1", ...(json ? ["--json"] : [])],
+        { RAVI_HOME_GATEWAY_URL: HOME_URL, RAVI_SANDBOX_GRANT: HOME_GRANT_SENTINEL },
+        () => Response.json({ ok: true, echo: `grant=${HOME_GRANT_SENTINEL}`, [HOME_GRANT_SENTINEL]: 1 }),
+      );
+      expect(run.exitCodes).toEqual([]);
+      expect(run.output).not.toContain("SENTINEL_GRANT_SIG");
+      expect(run.output).toContain("grant=[grant]");
+    }
+  });
+
+  it("scrubs the grant from a relayed contract envelope in text mode", async () => {
+    const run = await runHome(
+      ["tasks", "report", "task-1"],
+      { RAVI_HOME_GATEWAY_URL: HOME_URL, RAVI_SANDBOX_GRANT: HOME_GRANT_SENTINEL },
+      () =>
+        Response.json(
+          {
+            success: false,
+            op: "tasks report",
+            exitCode: 2,
+            outcome: "usage_error",
+            error: {
+              code: "PAYLOAD_INVALID",
+              message: `bad ${HOME_GRANT_SENTINEL}`,
+              retryable: false,
+              issues: [{ path: ["taskId"], code: "invalid", message: `bad ${HOME_GRANT_SENTINEL}` }],
+              suggestions: [HOME_GRANT_SENTINEL],
+            },
+          },
+          { status: 400 },
+        ),
+    );
+    expect(run.exitCodes).toEqual([2]);
+    expect(run.output).not.toContain("SENTINEL_GRANT_SIG");
+    expect(run.output).toContain("[grant]");
+  });
+
+  it("strips terminal controls from a 2xx body in text mode and escapes them with --json", async () => {
+    const hostile = "\u001b]0;pwned\u0007\u001b[2Jok\u009b31m\u202etxt\u202c\tend";
+    const respond = () =>
+      new Response(JSON.stringify({ ok: true, note: hostile }), { headers: { "content-type": "application/json" } });
+
+    const text = await runHome(["tasks", "report", "task-1"], { RAVI_HOME_GATEWAY_URL: HOME_URL }, respond);
+    expect(text.exitCodes).toEqual([]);
+    expect(text.output).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
+    expect(text.output).not.toContain("pwned");
+    expect(text.output).not.toContain("\\u001b");
+    expect(JSON.parse(text.output)).toEqual({ ok: true, note: "oktxt\tend" });
+
+    const json = await runHome(["tasks", "report", "task-1", "--json"], { RAVI_HOME_GATEWAY_URL: HOME_URL }, respond);
+    expect(json.output).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
+    expect(json.output).toContain("\\u009b");
+    expect(json.output).toContain("\\u202e");
+    expect(JSON.parse(json.output)).toEqual({ ok: true, note: hostile });
+
+    // The reviewer's fake Gate: raw controls inside a JSON-typed body, which
+    // is then not JSON and prints as stripped text.
+    const raw = await runHome(
+      ["tasks", "report", "task-1"],
+      { RAVI_HOME_GATEWAY_URL: HOME_URL },
+      () =>
+        new Response('{"ok":true,"note":"\u001b]0;pwned\u0007\u001b[2J"}', {
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    expect(raw.output).toBe('{"ok":true,"note":""}\n');
+
+    const plain = await runHome(
+      ["tasks", "report", "task-1"],
+      { RAVI_HOME_GATEWAY_URL: HOME_URL },
+      () => new Response(`done${hostile}`, { headers: { "content-type": "text/plain" } }),
+    );
+    expect(plain.output).toBe("doneoktxt\tend\n");
+  });
+
+  it("strips terminal controls from a HOME error in text mode", async () => {
+    const run = await runHome(["tasks", "report", "task-1"], { RAVI_HOME_GATEWAY_URL: HOME_URL }, () =>
+      Response.json(
+        {
+          success: false,
+          op: "tasks report",
+          exitCode: 2,
+          outcome: "usage_error",
+          error: {
+            code: "PAYLOAD_INVALID",
+            message: "x",
+            retryable: false,
+            issues: [{ path: ["taskId"], code: "invalid", message: "bad\u001b]0;pwned\u0007\u001b[2J\u202eid" }],
+          },
+        },
+        { status: 400 },
+      ),
+    );
+    expect(run.exitCodes).toEqual([2]);
+    expect(run.output).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
+    expect(run.output).not.toContain("pwned");
+  });
+
+  it("fails HOME_RESPONSE_TOO_LARGE with exit 1 on an endless body", async () => {
+    const chunk = new Uint8Array(256 * 1024).fill(0x61);
+    const run = await runHome(
+      ["tasks", "report", "task-1", "--json"],
+      { RAVI_HOME_GATEWAY_URL: HOME_URL },
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.enqueue(chunk);
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+    );
+    expect(run.exitCodes).toEqual([1]);
+    expect(run.output).toContain("HOME_RESPONSE_TOO_LARGE");
+    expect(run.output).not.toContain("aaaa");
+  });
+
+  it("refuses home mode when RAVI_GATEWAY_URL shares the HOME origin, with exit 2", async () => {
+    const run = await runHome(["tasks", "report", "task-1"], {
+      RAVI_HOME_GATEWAY_URL: HOME_URL,
+      RAVI_GATEWAY_URL: "https://gw.example.test",
+      RAVI_CONTEXT_KEY: "rctx_remote_only",
+    });
+    expect(run.exitCodes).toEqual([2]);
+    expect(run.requests).toEqual([]);
+    expect(run.output).toContain("share an origin");
   });
 
   it("keeps the local transport when the invocation target is not home", async () => {

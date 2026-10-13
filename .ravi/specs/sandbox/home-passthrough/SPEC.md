@@ -61,8 +61,10 @@ identity never leave it and HOME sees only what the run's grant allows.
   with no user or password, no `?` and no `#`. Missing gives
   `HOME_GATEWAY_REQUIRED` (exit 1); `http:` or `unix:` gives
   `HOME_GATEWAY_INSECURE` (exit 2); credentials, query, fragment or an
-  unparsable value give `HOME_GATEWAY_INVALID` (exit 2). No error echoes the
-  value.
+  unparsable value give `HOME_GATEWAY_INVALID` (exit 2). When
+  `RAVI_GATEWAY_URL` parses to the same origin as `RAVI_HOME_GATEWAY_URL`,
+  home mode is refused with `HOME_GATEWAY_CONFLICT` (exit 2) before any
+  request. No error echoes the value.
 
 ### Command allowlist
 
@@ -99,17 +101,33 @@ identity never leave it and HOME sees only what the run's grant allows.
 - Redirects are not followed (`redirect: "manual"`); a 3xx answer is
   `HOME_GATEWAY_REDIRECT` (exit 1). The client timeout is 35 s, above the
   Gate's 30 s upstream timeout.
+- A response is read up to 4 MiB (`HOME_RESPONSE_MAX_BYTES`). A larger
+  `content-length` or body aborts the request and fails
+  `HOME_RESPONSE_TOO_LARGE` (exit 1); nothing of the body is printed.
 
 ### Responses
 
-- Success: the body is printed as for any remote command.
+- Success: a JSON body is pretty-printed, any other body is printed as text;
+  never as raw bytes. In text mode every C0 control except `\n` and `\t`,
+  every C1 control and the bidi overrides and isolates
+  (U+202A–U+202E, U+2066–U+2069) are stripped (`stripTerminalControls`), from
+  JSON string values and keys too. With `--json` the output stays JSON and
+  those characters are written as `\uXXXX` escapes (`terminalSafeJson`).
 - A Gate envelope `{error:{code,requestId}}` or a listener envelope
   `{error:{code,requestId,source:"ravi-listener"}}` (code
   `^[a-z][a-z0-9_]{0,63}$`) becomes `HOME_<CODE>` with `status`, `homeCode`,
   `source` (`gate` or `ravi-listener`) and `requestId` in the details and the
-  request id in the message. Exit 2 for status 400 and 413, exit 3 for
-  `command_not_allowed`, exit 1 otherwise; 429, 502, 503 and 504 are
-  retryable.
+  request id in the message. Exit 1 for `grant_header_invalid` (the request
+  carried two grants or a malformed one: the input is not at fault), else exit
+  2 for status 400 and 413, exit 3 for `command_not_allowed`, exit 1
+  otherwise; 429, 502, 503 and 504 are retryable. `grant_missing`,
+  `grant_invalid`, `grant_revoked`, `grant_header_invalid`,
+  `command_not_allowed`, `task_not_allowed`, `resource_forbidden`,
+  `body_invalid`, `argument_invalid`, `payload_too_large`, `not_found`,
+  `method_not_allowed`, `rate_limited`, `gate_unavailable`,
+  `gateway_misconfigured` and `daemon_offline` carry a specific
+  `suggestedAction`; `grant_header_invalid` says to unset
+  `RAVI_SANDBOX_GRANT` when the egress proxy injects the header.
 - The request id is shown only when it is a UUID, from the body or else from
   the `X-Ravi-Request-Id` response header.
 - A complete contract envelope relayed from HOME's dispatcher keeps the remote
@@ -118,8 +136,17 @@ identity never leave it and HOME sees only what the run's grant allows.
   is `HOME_GATEWAY_FAILED`; a transport failure is `HOME_GATEWAY_UNREACHABLE`
   (exit 1). No other field of the body, and never the transport error's
   message, is printed.
+- Errors render like successes: terminal controls stripped in text mode
+  (also from the error body before it is projected), escaped as `\uXXXX` with
+  `--json`.
 - The grant value MUST NOT appear in any output, error, log or audit, and
-  never in argv.
+  never in argv. Every home output, 2xx bodies and relayed contract envelopes
+  included (message, issues, suggestions, keys), shows `[grant]` in place of
+  the `RAVI_SANDBOX_GRANT` value when it is set, and in place of any compact
+  JWS whose header and payload are base64url JSON (`eyJ….eyJ….…`), which
+  covers a grant the egress proxy injected without the CLI seeing it. A grant
+  of another shape that only the proxy knows cannot be recognized by the
+  CLI; the Gate and the listener never echo it.
 
 ### Contract surface
 
@@ -137,8 +164,9 @@ See `CHECKS.md`.
 
 - When the egress proxy injects the grant and `RAVI_SANDBOX_GRANT` is also
   set, the Gate may receive two grant headers and answer 400
-  `grant_header_invalid`; whether E2B's transform replaces or appends is an
-  open live check (RUNBOOK).
+  `grant_header_invalid` (exit 1, advice to unset `RAVI_SANDBOX_GRANT`);
+  whether E2B's transform replaces or appends is an open live check
+  (RUNBOOK).
 - The static allowlist is a copy of Console's and the HOME listener's; the
   three must change together.
 - `ravi home` inside a sandbox started without `--connected` has no
