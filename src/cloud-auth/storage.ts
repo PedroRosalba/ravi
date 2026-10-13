@@ -68,7 +68,7 @@ export function readCloudCredentialsForUser(
   env: NodeJS.ProcessEnv = process.env,
 ): CloudCredentials | null {
   migrateLegacyCloudAuthStore(env);
-  const backend = resolveBackend(env);
+  const backend = resolveUserBackend(sanitizeUserId(userId), env);
   const raw = backend.read(sanitizeUserId(userId));
   if (raw == null) return null;
   return parseStoredCredentials(raw, getCloudUserCredentialsPath(getCloudAuthUsersDir(env), sanitizeUserId(userId)));
@@ -88,11 +88,24 @@ export function writeCloudCredentials(credentials: CloudCredentials, env: NodeJS
       const fileBackend = resolveBackend({ ...env, [CLOUD_AUTH_BACKEND_ENV]: "file" }, "file");
       fileBackend.write(userId, `${JSON.stringify(credentials, null, 2)}\n`);
       writePointer({ version: 1, activeUserId: userId, backend: "file" }, env);
+      // An item from an earlier optional-backend write must not outlive this
+      // one: reads follow the file store now, and stale tokens are still tokens.
+      try {
+        backend.delete(userId);
+      } catch {
+        // Best-effort; the pointer already sends reads to the file store.
+      }
+      warnFileStoreFallback(backend.name, userId, error, env);
       maybeDeletePromotedLegacy(userId, previousActive, env);
       removeLegacyCredentialsFile(env);
       return;
     }
     throw error;
+  }
+  if (backend.name !== "file") {
+    // A file copy from an earlier fallback is stale now; reads of a user who is
+    // not active prefer the file store when one exists.
+    rmSync(getCloudUserCredentialsPath(getCloudAuthUsersDir(env), userId), { force: true });
   }
 
   writePointer({ version: 1, activeUserId: userId, backend: backend.name }, env);
@@ -105,7 +118,7 @@ export function deleteCloudCredentials(env: NodeJS.ProcessEnv = process.env): vo
   const pointer = readPointer(env);
   const activeUserId = pointer?.activeUserId;
   if (activeUserId) {
-    resolveBackend(env).delete(sanitizeUserId(activeUserId));
+    deleteStoredCredentials(sanitizeUserId(activeUserId), env);
   }
   rmSync(getCloudCredentialsPath(env), { force: true });
 
@@ -127,7 +140,7 @@ export function deleteCloudCredentials(env: NodeJS.ProcessEnv = process.env): vo
 export function deleteCloudCredentialsForUser(userId: string, env: NodeJS.ProcessEnv = process.env): void {
   migrateLegacyCloudAuthStore(env);
   const sanitized = sanitizeUserId(userId);
-  resolveBackend(env).delete(sanitized);
+  deleteStoredCredentials(sanitized, env);
   const pointer = readPointer(env);
   if (pointer?.activeUserId === sanitized) {
     const remaining = listCloudAuthUserIds(env);
@@ -234,13 +247,71 @@ function removeLegacyCredentialsFile(env: NodeJS.ProcessEnv): void {
   rmSync(getCloudCredentialsPath(env), { force: true });
 }
 
+type CloudAuthBackendTestDeps = Pick<CloudAuthBackendDeps, "platform" | "commandExists" | "runCommand"> & {
+  warn?: (message: string) => void;
+};
+
+let backendTestDeps: CloudAuthBackendTestDeps | null = null;
+let warnedFileStoreFallback = false;
+
+/** Fake the platform and the `security`/`secret-tool` runner in tests; no argument restores the real ones. */
+export function setCloudAuthBackendDepsForTests(deps?: CloudAuthBackendTestDeps): void {
+  backendTestDeps = deps ?? null;
+  warnedFileStoreFallback = false;
+}
+
 function resolveBackend(env: NodeJS.ProcessEnv, forceName?: CloudAuthBackendName): CloudAuthSecretBackend {
   const deps: CloudAuthBackendDeps = {
     env: forceName ? { ...env, [CLOUD_AUTH_BACKEND_ENV]: forceName } : env,
     usersDir: getCloudAuthUsersDir(env),
-    platform: process.platform,
+    platform: backendTestDeps?.platform ?? process.platform,
+    ...(backendTestDeps?.commandExists ? { commandExists: backendTestDeps.commandExists } : {}),
+    ...(backendTestDeps?.runCommand ? { runCommand: backendTestDeps.runCommand } : {}),
   };
   return selectCloudAuthBackend(deps);
+}
+
+/**
+ * The store that holds `userId`'s credentials: the backend the active pointer
+ * recorded at the last write (a failed Keychain write falls back to the file
+ * store), the file store when it holds a copy, else the configured backend.
+ */
+function resolveUserBackend(userId: string, env: NodeJS.ProcessEnv): CloudAuthSecretBackend {
+  const pointer = readPointer(env);
+  if (pointer?.activeUserId === userId) return resolveBackend(env, pointer.backend);
+  if (existsSync(getCloudUserCredentialsPath(getCloudAuthUsersDir(env), userId))) return resolveBackend(env, "file");
+  return resolveBackend(env);
+}
+
+function deleteStoredCredentials(userId: string, env: NodeJS.ProcessEnv): void {
+  const backend = resolveUserBackend(userId, env);
+  backend.delete(userId);
+  if (backend.name !== "file") {
+    rmSync(getCloudUserCredentialsPath(getCloudAuthUsersDir(env), userId), { force: true });
+  }
+}
+
+const BACKEND_LABELS: Record<CloudAuthBackendName, string> = {
+  file: "the file store",
+  keychain: "macOS Keychain",
+  libsecret: "the Secret Service",
+};
+
+function warnFileStoreFallback(
+  backend: CloudAuthBackendName,
+  userId: string,
+  error: unknown,
+  env: NodeJS.ProcessEnv,
+): void {
+  if (warnedFileStoreFallback) return;
+  warnedFileStoreFallback = true;
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : "";
+  const path = getCloudUserCredentialsPath(getCloudAuthUsersDir(env), userId);
+  const message =
+    `Ravi Cloud credentials were saved to the private file store (${path}, mode 0600) because ` +
+    `${BACKEND_LABELS[backend]} could not store them${cause ? `: ${cause}` : "."}`;
+  if (backendTestDeps?.warn) backendTestDeps.warn(message);
+  else process.stderr.write(`warning: ${message}\n`);
 }
 
 function ensureStoreDirs(env: NodeJS.ProcessEnv): void {

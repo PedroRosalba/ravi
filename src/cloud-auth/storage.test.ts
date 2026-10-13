@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { resolveCachedContactForConsoleUser, writeCachedActorBinding } from "./actor-bindings.js";
 import { CloudAuthError } from "./errors.js";
 import { getInstallationKeyPath, readOrCreateInstallationKey } from "./installation-key.js";
-import { detectCloudAuthBackends, selectCloudAuthBackend } from "./secret-backends.js";
+import { type CommandResult, detectCloudAuthBackends, selectCloudAuthBackend } from "./secret-backends.js";
 import {
   deleteCloudCredentials,
   getActiveCloudAuthPointerPath,
@@ -18,6 +18,7 @@ import {
   readActiveCloudAuthUserId,
   readCloudCredentials,
   readCloudCredentialsForUser,
+  setCloudAuthBackendDepsForTests,
   shouldPersistHydratedIdentity,
   toSafeCloudAuthSession,
   writeCloudCredentials,
@@ -33,6 +34,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setCloudAuthBackendDepsForTests();
   delete process.env.RAVI_STATE_DIR;
   delete process.env.RAVI_CLOUD_AUTH_BACKEND;
   if (stateDir) rmSync(stateDir, { recursive: true, force: true });
@@ -227,6 +229,108 @@ describe("cloud auth secret backends", () => {
       commandExists: (command) => command === "secret-tool",
     });
     expect(backend.name).toBe("libsecret");
+  });
+});
+
+/**
+ * A fake macOS Keychain behind the injected `security` runner: understands
+ * the `security -i` add line, find -w and delete. Never runs the real binary.
+ */
+function useFakeKeychain() {
+  const items = new Map<string, string>();
+  const warnings: string[] = [];
+  const key = (args: string[]) => `${args[args.indexOf("-s") + 1]}/${args[args.indexOf("-a") + 1]}`;
+  setCloudAuthBackendDepsForTests({
+    platform: "darwin",
+    commandExists: (command) => command === "security",
+    warn: (message) => warnings.push(message),
+    runCommand: (_command, args, options = {}): CommandResult => {
+      if (args[0] === "-i") {
+        const match = /^add-generic-password -U -a (\S+) -s (\S+) -X ([0-9a-f]+)\n$/.exec(options.input ?? "");
+        if (!match) return { status: 1, stdout: "", stderr: "unknown command" };
+        items.set(`${match[2]}/${match[1]}`, Buffer.from(match[3]!, "hex").toString("utf8"));
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "find-generic-password") {
+        const value = items.get(key(args));
+        return value === undefined
+          ? { status: 44, stdout: "", stderr: "not found" }
+          : { status: 0, stdout: value, stderr: "" };
+      }
+      if (args[0] === "delete-generic-password") {
+        return items.delete(key(args)) ? { status: 0, stdout: "", stderr: "" } : { status: 44, stdout: "", stderr: "" };
+      }
+      return { status: 1, stdout: "", stderr: "unexpected" };
+    },
+  });
+  process.env.RAVI_CLOUD_AUTH_BACKEND = "keychain";
+  return { items, warnings };
+}
+
+describe("cloud auth Keychain fallback", () => {
+  const oversized = (overrides: Partial<CloudCredentials> = {}) =>
+    makeCredentials({ user: { id: "user_alice" }, accessToken: `access-${"x".repeat(5000)}`, ...overrides });
+
+  it("stores and reads through Keychain when the payload fits", () => {
+    const { items } = useFakeKeychain();
+    const credentials = makeCredentials({ user: { id: "user_alice" } });
+
+    writeCloudCredentials(credentials);
+
+    expect(items.has("ravi.cloud-auth/user_alice")).toBe(true);
+    expect(existsSync(join(getCloudAuthUsersDir(), "user_alice", "credentials.json"))).toBe(false);
+    expect(readCloudCredentials()).toEqual(credentials);
+  });
+
+  it("reads the file store after a Keychain write falls back, not a stale Keychain item", () => {
+    const { items } = useFakeKeychain();
+    // An older Ravi stored these in Keychain (argv write).
+    writeCloudCredentials(makeCredentials({ user: { id: "user_alice" }, accessToken: "stale-access" }));
+    expect(items.has("ravi.cloud-auth/user_alice")).toBe(true);
+    const fresh = oversized();
+
+    writeCloudCredentials(fresh);
+
+    expect(readCloudCredentials()).toEqual(fresh);
+    expect(readCloudCredentialsForUser("user_alice")).toEqual(fresh);
+    expect(statSync(join(getCloudAuthUsersDir(), "user_alice", "credentials.json")).mode & 0o777).toBe(0o600);
+    // The stale Keychain item is removed.
+    expect(items.has("ravi.cloud-auth/user_alice")).toBe(false);
+  });
+
+  it("warns once that the credentials went to the 0600 file store, without token material", () => {
+    const { warnings } = useFakeKeychain();
+
+    writeCloudCredentials(oversized());
+    writeCloudCredentials(oversized({ refreshToken: "refresh-2" }));
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("private file store");
+    expect(warnings[0]).toContain("0600");
+    expect(warnings[0]).toContain("too large");
+    expect(warnings[0]).not.toContain("access-x");
+  });
+
+  it("logout removes a fallback file copy", () => {
+    useFakeKeychain();
+    writeCloudCredentials(oversized());
+
+    deleteCloudCredentials();
+
+    expect(readCloudCredentials()).toBeNull();
+    expect(existsSync(join(getCloudAuthUsersDir(), "user_alice", "credentials.json"))).toBe(false);
+  });
+
+  it("a later Keychain write replaces the fallback file copy", () => {
+    const { items } = useFakeKeychain();
+    writeCloudCredentials(oversized());
+    const small = makeCredentials({ user: { id: "user_alice" }, accessToken: "small-access" });
+
+    writeCloudCredentials(small);
+
+    expect(items.has("ravi.cloud-auth/user_alice")).toBe(true);
+    expect(existsSync(join(getCloudAuthUsersDir(), "user_alice", "credentials.json"))).toBe(false);
+    expect(readCloudCredentials()).toEqual(small);
   });
 });
 
