@@ -17,6 +17,7 @@ applies_to:
   - src/cli/remote-gateway.ts
   - src/cli/host-cli-gateway.ts
   - src/security/private-files.ts
+  - packages/ravi-os-sdk/src/inherit.ts
 owners:
   - ravi-dev
 status: active
@@ -59,18 +60,28 @@ Runtime context keys are opaque credentials that connect provider turns, Ravi to
   exposed through an explicit CLI path. It MUST NOT run automatically during
   dispatch or daemon startup.
 - `ravi.db` (which holds context records) and its `-wal`/`-shm` files MUST be
-  owner-only after every open: group/other bits are removed when the file is a
-  regular file owned by the current user. Symlinks and files owned by another
-  user are left alone, `RAVI_STATE_DIR_KEEP_PERMISSIONS=1` opts out, and a
-  failure never stops the open. The credential broker DB follows the same rule.
+  owner-only: a missing db is created empty with mode `0600` before SQLite
+  opens it (its `-wal`/`-shm` inherit that mode), and an existing one loses its
+  group/other bits on every open when it is a regular file owned by the current
+  user. Symlinks and files owned by another user are left alone,
+  `RAVI_STATE_DIR_KEEP_PERMISSIONS=1` opts out, and a failure never stops the
+  open. The credential broker DB, `chat.db` (message contents) and
+  `insights.db` follow the same rule.
 - A CLI sends its context key as a bearer token to `RAVI_GATEWAY_URL`. An
   `http:` URL MUST be refused with `REMOTE_GATEWAY_INSECURE` (exit 2) unless its
   host, as WHATWG URL parsing reads it, is `localhost` or a literal
   127.0.0.0/8 or `::1` address. There is no override; use `https:` or `unix://`.
+  The SDK's `createInheritedClient` applies the same rule to the URL it
+  resolves (`RAVI_BASE_URL`, `RAVI_HTTP_BASE_URL`, `RAVI_GATEWAY_URL`,
+  `RAVI_HTTP_HOST`/`RAVI_HTTP_PORT` or an explicit `baseUrl`) and throws with
+  `code: "REMOTE_GATEWAY_INSECURE"` before sending any request.
 - A starting daemon MUST NOT unlink the host CLI gateway socket while another
   process accepts connections on it, nor a path that is not a socket owned by
-  the current user; it starts without the gateway instead. Stopping the gateway
-  MUST NOT remove a socket file that another daemon bound after it.
+  the current user; it starts without the gateway instead. The public socket
+  name is claimed atomically (listen on a private name in the same directory,
+  then `link(2)`), so of daemons starting at once exactly one serves it; only a
+  dead socket of ours is moved aside, and the claim is retried once. Stopping
+  the gateway MUST NOT remove a socket file that another daemon bound after it.
 
 ## Acceptance
 

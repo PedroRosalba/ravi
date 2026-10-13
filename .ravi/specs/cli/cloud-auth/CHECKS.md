@@ -25,6 +25,10 @@
   `"; delete-keychain` in the payload cannot add a command, and an oversized
   payload is refused before `security` runs
   (`bun test src/cloud-auth/secret-backends.test.ts`).
+- After a Keychain write falls back to the file store, `readCloudCredentials()`
+  MUST return the file copy (never a stale Keychain item), the stale item MUST
+  be deleted, one warning names the `0600` file store without token material,
+  and logout removes the file copy (`bun test src/cloud-auth/storage.test.ts`).
 - No remote-login discovery, post-login provider, or remote installation
   credential module is present in the root auth implementation.
 - Login polling retries `AUTH_PENDING`, `RATE_LIMITED`, and `SERVER_UNAVAILABLE`

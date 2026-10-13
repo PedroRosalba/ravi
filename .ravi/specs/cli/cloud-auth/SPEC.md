@@ -158,8 +158,12 @@ The CLI MUST use a capability-detected backend abstraction:
    (`RAVI_CLOUD_AUTH_BACKEND=keychain` or `auto` on Darwin). The credential
    payload MUST NOT appear in any `security` argv: the write runs
    `security -i` with the `add-generic-password` command on stdin and the
-   payload hex-encoded (`-X`). A payload too large for one `security -i` line
-   is not written to Keychain; the write falls back to the portable file store.
+   payload hex-encoded (`-X`), or double-quoted (`-w`) when hex would not fit
+   one `security -i` line. A payload too large for both is not written to
+   Keychain: the write falls back to the portable file store, the active
+   pointer records `backend: "file"`, reads follow the pointer's backend, any
+   older Keychain item for that user is deleted, and the CLI warns once on
+   stderr that the credentials went to the `0600` file store.
 
 `auto` MAY prefer an optional backend when present. Unavailable optional
 backends MUST fall back to the portable file store. The CLI MUST never require
