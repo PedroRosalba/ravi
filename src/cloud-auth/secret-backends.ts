@@ -3,7 +3,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, wri
 import { dirname, join } from "node:path";
 import {
   buildAddGenericPasswordLine,
-  decodeSecurityPasswordOutput,
+  findGenericPasswordArgs,
+  parseSecurityPasswordOutput,
   redactSecurityOutput,
 } from "../security/macos-keychain.js";
 import { CloudAuthError } from "./errors.js";
@@ -189,10 +190,18 @@ function createKeychainBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBacke
       return platform === "darwin" && commandExists("security");
     },
     read(userId) {
-      const result = runCommand("security", ["find-generic-password", "-a", userId, "-s", KEYCHAIN_SERVICE, "-w"]);
+      // `-g` prints the payload unambiguously on stderr (`-w` would hex-decode
+      // a printable payload made of hex digits); see src/security/macos-keychain.ts.
+      const result = runCommand("security", findGenericPasswordArgs({ account: userId, service: KEYCHAIN_SERVICE }));
       if (result.status !== 0) return null;
-      const payload = decodeSecurityPasswordOutput(result.stdout.trim());
-      return payload || null;
+      const parsed = parseSecurityPasswordOutput(result.stderr);
+      if (!parsed.ok) {
+        throw new CloudAuthError(
+          "CREDENTIALS_INVALID",
+          `Stored Ravi Cloud credentials in macOS Keychain could not be read: ${parsed.message} Run \`ravi logout\` and login again.`,
+        );
+      }
+      return parsed.secret || null;
     },
     write(userId, payload) {
       // Never pass the payload in argv: `security -i` reads the command from
@@ -257,8 +266,8 @@ function defaultRunCommand(command: string, args: string[], options: { input?: s
 
 /**
  * Minified JSON with every non-ASCII character escaped: shorter, so more fits
- * in one `security -i` line, and printable, so `find-generic-password -w`
- * returns it as text. A payload that is not JSON is stored unchanged.
+ * in one `security -i` line, and printable ASCII, which also makes it eligible
+ * for the quoted `-w` write form. A payload that is not JSON is stored unchanged.
  */
 function compactJsonPayload(payload: string): string {
   let value: unknown;
