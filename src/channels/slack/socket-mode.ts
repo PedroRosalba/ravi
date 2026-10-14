@@ -109,12 +109,15 @@ const log = logger.child("channels:slack");
 const SLACK_THREAD_CREATED_TOPIC = "ravi.inbound.thread.created";
 const DEFAULT_SLACK_AUTH_TEST_FAILURE_RETRY_MS = 5_000;
 const DEFAULT_SLACK_AUTH_TEST_TIMEOUT_MS = 5_000;
+const DEFAULT_SLACK_USER_LOOKUP_TIMEOUT_MS = 5_000;
 const DEFAULT_SLACK_HEARTBEAT_INTERVAL_MS = 10_000;
 const DEFAULT_SLACK_PONG_TIMEOUT_MS = 5_000;
 const DEFAULT_SLACK_HELLO_TIMEOUT_MS = 10_000;
 const DEFAULT_SLACK_INBOUND_RECONCILE_INTERVAL_MS = 5_000;
 const DEFAULT_SLACK_INBOUND_PRUNE_INTERVAL_MS = 6 * 60 * 60_000;
 const SLACK_FILE_INFO_RETRY_DELAYS_MS = [0, 250, 750, 1_500] as const;
+const SLACK_USER_MENTION_RE = /<@([UW][A-Z0-9]+)(?:\|([^>]*))?>/g;
+const SLACK_MAX_RESOLVED_MENTIONS = 20;
 const SLACK_LOOKUP_FAILURE_BACKOFF_MS = 10 * 60_000;
 
 type PublishPrompt = typeof publishSessionPrompt;
@@ -200,6 +203,8 @@ export interface SlackSocketModeServiceOptions {
   readonly authTestFailureRetryMs?: number;
   /** Maximum time bot intake waits for Slack auth.test before failing closed. */
   readonly authTestTimeoutMs?: number;
+  /** Maximum time an inbound turn waits for one users.info lookup before using the raw id. */
+  readonly userLookupTimeoutMs?: number;
   /** Clock injection for bounded auth.test retry tests. */
   readonly now?: () => number;
   readonly transcribeAudio?: typeof transcribeAudio;
@@ -614,10 +619,11 @@ export class SlackSocketModeService {
   private readonly cancelTimeout: typeof clearTimeout;
   private readonly authTestFailureRetryMs: number;
   private readonly authTestTimeoutMs: number;
+  private readonly userLookupTimeoutMs: number;
   private readonly now: () => number;
   private readonly seenEnvelopeIds = new RecentIdCache();
   private readonly userProfiles = new Map<string, SlackUserProfile | null>();
-  private readonly channelNames = new Map<string, string | null>();
+  private readonly channelNames = new Map<string, string>();
   private readonly lookupFailures = new Map<string, number>();
   private localBotIdentity: SlackLocalBotIdentity | null = null;
   private localBotIdentityInFlight: Promise<SlackLocalBotIdentity | null> | null = null;
@@ -670,6 +676,12 @@ export class SlackSocketModeService {
       Number.isFinite(options.authTestTimeoutMs)
         ? (options.authTestTimeoutMs ?? DEFAULT_SLACK_AUTH_TEST_TIMEOUT_MS)
         : DEFAULT_SLACK_AUTH_TEST_TIMEOUT_MS,
+    );
+    this.userLookupTimeoutMs = Math.max(
+      1,
+      Number.isFinite(options.userLookupTimeoutMs)
+        ? (options.userLookupTimeoutMs ?? DEFAULT_SLACK_USER_LOOKUP_TIMEOUT_MS)
+        : DEFAULT_SLACK_USER_LOOKUP_TIMEOUT_MS,
     );
     this.now = options.now ?? Date.now;
   }
@@ -1373,7 +1385,11 @@ export class SlackSocketModeService {
     if (typeof usersInfo !== "function") return null;
     if (this.slackLookupRecentlyFailed(`user:${userId}`)) return null;
     try {
-      const response = await usersInfo.call(this.webClient, userId);
+      const response = await withAbortableTimeout(
+        (signal) => usersInfo.call(this.webClient, userId, { signal }),
+        this.userLookupTimeoutMs,
+        "Slack users.info timed out",
+      );
       const user = recordField(response, "user");
       const profile = recordField(user, "profile");
       const resolved = {
@@ -1408,6 +1424,31 @@ export class SlackSocketModeService {
     }
   }
 
+  /**
+   * Slack delivers user mentions inside message text as `<@U…>` (or the legacy
+   * `<@U…|name>`). Rewrite each one as `@Name (<@U…>)` for the agent prompt so
+   * the agent knows who was mentioned and can still mention them back by id.
+   * A mention whose profile cannot be resolved stays as Slack sent it.
+   */
+  private async resolveSlackUserMentions(text: string): Promise<string> {
+    const userIds = [...new Set(Array.from(text.matchAll(SLACK_USER_MENTION_RE), (match) => match[1] ?? ""))].slice(
+      0,
+      SLACK_MAX_RESOLVED_MENTIONS,
+    );
+    if (userIds.length === 0) return text;
+    const names = new Map<string, string>();
+    await Promise.all(
+      userIds.map(async (userId) => {
+        const displayName = (await this.slackUserProfile(userId))?.displayName;
+        if (displayName) names.set(userId, displayName);
+      }),
+    );
+    return text.replace(SLACK_USER_MENTION_RE, (match, userId: string, label: string | undefined) => {
+      const name = names.get(userId) ?? label?.trim();
+      return name ? `@${name} (<@${userId}>)` : match;
+    });
+  }
+
   private async slackChannelName(channelId: string): Promise<string | null> {
     const cached = this.channelNames.get(channelId);
     if (cached !== undefined) return cached;
@@ -1416,7 +1457,12 @@ export class SlackSocketModeService {
     if (this.slackLookupRecentlyFailed(`channel:${channelId}`)) return null;
     try {
       const response = await conversationsInfo.call(this.webClient, { channel: channelId });
-      const name = stringField(recordField(response, "channel"), "name") ?? null;
+      const name = stringField(recordField(response, "channel"), "name");
+      if (!name) {
+        // A response without a name is retried after the backoff, not cached for the process lifetime.
+        this.lookupFailures.set(`channel:${channelId}`, this.now());
+        return null;
+      }
       if (this.channelNames.size >= 1_000) {
         const oldest = this.channelNames.keys().next().value;
         if (oldest) this.channelNames.delete(oldest);
@@ -1827,6 +1873,7 @@ export class SlackSocketModeService {
       actorIdentity,
     });
     const leadingPrefix = parseSlackMessagePrefix(message.text);
+    const promptText = await this.resolveSlackUserMentions(leadingPrefix ? leadingPrefix.body : message.text);
     const ingress = await acceptResolvedChannelIngress(
       {
         request: {
@@ -1856,11 +1903,7 @@ export class SlackSocketModeService {
           name: sessionName,
         },
         prompt: {
-          prompt: formatSlackPrompt(
-            leadingPrefix ? { ...message, text: leadingPrefix.body } : message,
-            processedFiles,
-            senderDisplayName,
-          ),
+          prompt: formatSlackPrompt({ ...message, text: promptText }, processedFiles, senderDisplayName),
           source: { ...source },
           context: { ...context },
           deliveryBarrier: "after_tool",
