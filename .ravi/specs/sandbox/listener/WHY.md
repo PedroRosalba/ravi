@@ -157,12 +157,28 @@ message. That is the same exposure that excluded `tasks.comment` from the
 allowlist. Console should consider the same restriction (or a quoting
 contract) for these three before they are granted to untrusted sandboxes.
 
-### Boot-only configuration is temporary
+### The tunnel gate is read per request from ravi.db
 
-04b reads the drift latch and whether to start the listener once, at daemon
-boot. That is acceptable only while no cloudflared runs: 05b must add the
-`ravi.config.changed` hook and a cross-process latch before cloudflared is
-ever started.
+04b read the drift latch and whether to start the listener once, at daemon
+boot. Once cloudflared runs (05a) that is not enough: the drift poller lives
+in another process (the PM2 `ravi-gateway` runner, cloudflared's parent), and
+Console's drift check says the listener serves nothing until the first
+successful poll and nothing once a poll fails. So the runner writes the latch
+and `last_poll_at` into `sandbox_listener_state` and the listener evaluates
+them on every request, cached at most 1 s: a latch reaches the listener within
+a second of the runner writing it, and a runner that died (poller gone,
+cloudflared possibly orphaned) closes the gate by itself within 10 s because
+its polls stop. The latch is not a `gateway.*` setting: settings writes
+restart the listener and `ravi settings set` must not be able to clear it.
+
+### Settings changes restart the listener in place
+
+ADR 0002 #8: `ravi gateway expose` (05b) writes the `gateway.*` settings and
+emits `ravi.config.changed`, which carries no payload. The supervisor re-reads
+the settings on each event (and every 30 s) and starts, stops or restarts the
+listener only when the effective configuration changed, so an expose, a
+re-expose with a new port or an unexpose takes effect without a daemon
+restart, and unrelated config events cost one settings read.
 
 ### Plan items the spec superseded
 

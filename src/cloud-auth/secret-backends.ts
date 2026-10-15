@@ -14,8 +14,8 @@ import { CLOUD_AUTH_BACKENDS } from "./types.js";
 const STORE_DIR_MODE = 0o700;
 const CREDENTIALS_FILE_MODE = 0o600;
 const CREDENTIALS_FILE = "credentials.json";
-const LIBSECRET_SERVICE = "ravi.cloud-auth";
-const KEYCHAIN_SERVICE = "ravi.cloud-auth";
+/** Default Keychain / Secret Service service name; other stores (the gateway tunnel) pass their own `deps.service`. */
+export const CLOUD_AUTH_SECRET_SERVICE = "ravi.cloud-auth";
 
 export const CLOUD_AUTH_BACKEND_ENV = "RAVI_CLOUD_AUTH_BACKEND";
 
@@ -34,6 +34,10 @@ export interface CloudAuthBackendCapability {
 }
 
 export interface CloudAuthBackendDeps {
+  /** Keychain / Secret Service service name; defaults to `ravi.cloud-auth`. */
+  service?: string;
+  /** Secret Service item label; defaults to `Ravi Cloud <userId>`. */
+  label?: (userId: string) => string;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   usersDir: string;
@@ -140,13 +144,15 @@ function createFileBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBackend {
 function createLibsecretBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBackend {
   const commandExists = deps.commandExists ?? defaultCommandExists;
   const runCommand = deps.runCommand ?? defaultRunCommand;
+  const service = deps.service ?? CLOUD_AUTH_SECRET_SERVICE;
+  const label = deps.label ?? ((userId: string) => `Ravi Cloud ${userId}`);
   return {
     name: "libsecret",
     available() {
       return commandExists("secret-tool");
     },
     read(userId) {
-      const result = runCommand("secret-tool", ["lookup", "service", LIBSECRET_SERVICE, "account", userId]);
+      const result = runCommand("secret-tool", ["lookup", "service", service, "account", userId]);
       if (result.status !== 0) return null;
       const payload = result.stdout.trim();
       return payload || null;
@@ -154,7 +160,7 @@ function createLibsecretBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBack
     write(userId, payload) {
       const result = runCommand(
         "secret-tool",
-        ["store", "--label", `Ravi Cloud ${userId}`, "service", LIBSECRET_SERVICE, "account", userId],
+        ["store", "--label", label(userId), "service", service, "account", userId],
         { input: payload },
       );
       if (result.status !== 0) {
@@ -168,7 +174,7 @@ function createLibsecretBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBack
     delete(userId) {
       // `secret-tool clear` exits 0 when nothing matched; a non-zero status is
       // a Secret Service failure, so the item may survive and the caller must know.
-      const result = runCommand("secret-tool", ["clear", "service", LIBSECRET_SERVICE, "account", userId]);
+      const result = runCommand("secret-tool", ["clear", "service", service, "account", userId]);
       if (result.status !== 0) {
         throw new CloudAuthError(
           "CREDENTIALS_INVALID",
@@ -184,6 +190,7 @@ function createKeychainBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBacke
   const commandExists = deps.commandExists ?? defaultCommandExists;
   const runCommand = deps.runCommand ?? defaultRunCommand;
   const platform = deps.platform ?? process.platform;
+  const service = deps.service ?? CLOUD_AUTH_SECRET_SERVICE;
   return {
     name: "keychain",
     available() {
@@ -192,7 +199,7 @@ function createKeychainBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBacke
     read(userId) {
       // `-g` prints the payload unambiguously on stderr (`-w` would hex-decode
       // a printable payload made of hex digits); see src/security/macos-keychain.ts.
-      const result = runCommand("security", findGenericPasswordArgs({ account: userId, service: KEYCHAIN_SERVICE }));
+      const result = runCommand("security", findGenericPasswordArgs({ account: userId, service }));
       if (result.status !== 0) return null;
       const parsed = parseSecurityPasswordOutput(result.stderr);
       if (!parsed.ok) {
@@ -208,7 +215,7 @@ function createKeychainBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBacke
       // stdin and the payload travels hex-encoded (see src/security/macos-keychain.ts).
       const command = buildAddGenericPasswordLine({
         account: userId,
-        service: KEYCHAIN_SERVICE,
+        service,
         secret: compactJsonPayload(payload),
       });
       if (!command.ok) {
@@ -228,7 +235,7 @@ function createKeychainBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBacke
       }
     },
     delete(userId) {
-      const result = runCommand("security", ["delete-generic-password", "-a", userId, "-s", KEYCHAIN_SERVICE]);
+      const result = runCommand("security", ["delete-generic-password", "-a", userId, "-s", service]);
       if (result.status === 0 || isKeychainItemNotFound(result)) return;
       // A locked Keychain ("User interaction is not allowed") or any other
       // failure leaves the item in place: the caller decides what to tell the user.
