@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContractError } from "../agent-contract.js";
 import { runWithContext } from "../context.js";
+import { getCliOnlyMetadata } from "../decorators.js";
 import { MeetingProfileCommands, MeetingsCommands } from "./meetings.js";
 
 let tempDir: string | undefined;
@@ -486,3 +487,17 @@ async function captureConsole<T>(run: () => T | Promise<T>): Promise<{ output: s
     console.log = originalLog;
   }
 }
+
+describe("meetings command annotations", () => {
+  it("exposes the provider commands to a session, keeping only login CLI-only", () => {
+    const cliOnly = getCliOnlyMetadata(MeetingsCommands);
+    // `login` opens a browser on the host: it has no remote-call semantics.
+    expect([...cliOnly]).toEqual(["login"]);
+    // These answer JSON through the provider and now carry typed returns, so an
+    // agent reaches them from a session: they used to be CLI-only for lack of a
+    // return schema, and the gateway answered 404 for them.
+    for (const method of ["join", "list", "show", "leave", "fetch"]) {
+      expect([...cliOnly]).not.toContain(method);
+    }
+  });
+});
