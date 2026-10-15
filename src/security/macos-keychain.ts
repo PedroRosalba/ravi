@@ -83,27 +83,67 @@ export function buildAddGenericPasswordLine(input: {
 }
 
 /**
- * Undo `find-generic-password -w` hex output. `security` prints a password as
- * text when every byte is printable ASCII and as hex otherwise. Hex output is
- * decoded only when the bytes are not all printable (otherwise `security`
- * would have printed them as text) and are valid UTF-8 (Ravi stores text).
- * A printable secret that looks like hex, such as `7b2261223a317d` or
- * `deadbeef`, comes back unchanged.
+ * The argv that reads a generic password unambiguously. `find-generic-password
+ * -w` prints a printable secret verbatim and any other secret as bare lowercase
+ * hex, so a printable secret made only of hex digits (`123456`, `c3a9`) cannot
+ * be told from the hex encoding of other bytes. `-g` prints the secret on
+ * stderr as `password: ` plus Apple's `print_buffer` (SecurityTool
+ * keychain_utilities.c), which is self-describing:
+ *
+ * - `"text"` when every byte is in `0x20..0x7e` and none is a backslash (the
+ *   text is verbatim, `"` included, and cannot contain `\` or a newline);
+ * - `0x<HEX> ` (one trailing space) when no byte is printable that way;
+ * - `0x<HEX>  "dump"` (two spaces) when the bytes are mixed; the dump escapes
+ *   non-printable bytes and backslashes as `\ooo`;
+ * - nothing after `password: ` when the secret is empty.
+ *
+ * The attributes `-g` prints on stdout hold no secret material.
  */
-export function decodeSecurityPasswordOutput(output: string): string {
-  if (!/^(?:[0-9a-fA-F]{2})+$/.test(output)) return output;
-  const bytes = Buffer.from(output, "hex");
-  if (bytes.every((byte) => byte >= 0x20 && byte < 0x7f)) return output;
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return output;
-  }
+export function findGenericPasswordArgs(input: { account: string; service: string }): string[] {
+  return ["find-generic-password", "-a", input.account, "-s", input.service, "-g"];
 }
 
-/** Strip any secret material (`-w <value>`, `-w "<quoted>"`, `-X <hex>`, long hex runs) from `security` output. */
+const PASSWORD_LINE_PREFIX = "password: ";
+
+export type ParsedSecurityPassword = { ok: true; secret: string } | { ok: false; message: string };
+
+/**
+ * The secret in the stderr of `find-generic-password -g`. Ravi stores UTF-8
+ * text, so hex output is decoded as UTF-8 with a leading BOM kept (`ignoreBOM`),
+ * so a secret that starts with U+FEFF round-trips; the message of a failed
+ * parse never includes the output.
+ */
+export function parseSecurityPasswordOutput(stderr: string): ParsedSecurityPassword {
+  const line = stderr.split("\n").find((candidate) => candidate.startsWith(PASSWORD_LINE_PREFIX));
+  if (line === undefined) {
+    return { ok: false, message: "`security find-generic-password -g` printed no `password:` line." };
+  }
+  const body = line.slice(PASSWORD_LINE_PREFIX.length);
+  if (body === "") return { ok: true, secret: "" };
+  const text = /^"(.*)"$/.exec(body);
+  if (text) return { ok: true, secret: text[1]! };
+  // The dump after the hex never holds a raw backslash or newline; `"` is printed as is.
+  const hex = /^0x((?:[0-9A-Fa-f]{2})*) ?(?: "(?:[^\\]|\\[0-7]{3})*")?$/.exec(body);
+  if (hex) {
+    try {
+      return {
+        ok: true,
+        secret: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.from(hex[1]!, "hex")),
+      };
+    } catch {
+      return { ok: false, message: "The macOS Keychain item is not UTF-8 text." };
+    }
+  }
+  return { ok: false, message: "`security find-generic-password -g` printed a `password:` line Ravi cannot parse." };
+}
+
+/**
+ * Strip any secret material (`-w <value>`, `-w "<quoted>"`, `-X <hex>`, the
+ * `password:` line of `-g`, long hex runs) from `security` output.
+ */
 export function redactSecurityOutput(value: string): string {
   return value
+    .replace(/(password:\s*).*/g, "$1[redacted]")
     .replace(/(-w\s+)"(?:[^"\\]|\\.)*"?/g, "$1[redacted]")
     .replace(/(-[wX]\s+)\S+/g, "$1[redacted]")
     .replace(/[0-9a-fA-F]{16,}/g, "[redacted]")
