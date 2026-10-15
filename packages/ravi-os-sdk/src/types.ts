@@ -2,6 +2,74 @@
 // Run `ravi sdk client generate` to regenerate.
 // Drift is detected by `ravi sdk client check` (CI).
 
+/** Input shape for `access.request`. */
+export type AccessRequestInput = {
+  console?: string;
+  execute?: boolean;
+  message?: string;
+  url: string;
+};
+
+/** Return shape for `access.request`. */
+export type AccessRequestReturn = ({
+  actedBy: ({
+    kind: "operator";
+  }) | ({
+    contactId: string;
+    kind: "contact";
+  });
+  approvalNote: string;
+  approvalUrl: string;
+  consoleUrl: string;
+  request: {
+    createdAt: string;
+    decidedAt: string | null;
+    expiresAt: string | null;
+    host: string;
+    id: string;
+    path: string;
+    status: string;
+    url: string;
+  };
+  status: "requested";
+  success: true;
+}) | ({
+  actedBy: ({
+    kind: "operator";
+  }) | ({
+    contactId: string;
+    kind: "contact";
+  });
+  consoleUrl: string;
+  status: "already_allowed";
+  success: true;
+  url: string;
+});
+
+/** Input shape for `access.status`. */
+export type AccessStatusInput = {
+  console?: string;
+  requestId: string;
+};
+
+/** Return shape for `access.status`. */
+export type AccessStatusReturn = {
+  approvalNote: string;
+  approvalUrl: string;
+  consoleUrl: string;
+  request: {
+    createdAt: string;
+    decidedAt: string | null;
+    expiresAt: string | null;
+    host: string;
+    id: string;
+    path: string;
+    status: string;
+    url: string;
+  };
+  success: true;
+};
+
 /** Input shape for `adapters.list`. */
 export type AdaptersListInput = {
   limit?: string;
@@ -6248,12 +6316,16 @@ export type ConnectorsListInput = {
 /** Return shape for `connectors.list`. */
 export type ConnectorsListReturn = {
   connections: Array<{
+    accessMode?: "full" | "read_only";
     createdAt: string;
     displayName: string;
+    externalAccountLogin?: string | null;
     id: string;
-    projectId: string;
+    isDefault?: boolean;
+    projectId: string | null;
     provider: string;
     requiresReauth: boolean;
+    scopeKind?: "user" | "organization";
     scopes: string[];
     status: string;
   }>;
@@ -6263,6 +6335,24 @@ export type ConnectorsListReturn = {
     returned: number;
     total: number;
   };
+};
+
+/** Input shape for `connectors.mode`. */
+export type ConnectorsModeInput = {
+  agent: string;
+  execute?: boolean;
+  mode?: "owner" | "person-asking" | "person_asking" | "shared";
+  provider: string;
+};
+
+/** Return shape for `connectors.mode`. */
+export type ConnectorsModeReturn = {
+  agentId: string;
+  changed: boolean;
+  label: string;
+  mode: "owner" | "person_asking" | "shared";
+  previousMode: "owner" | "person_asking" | "shared";
+  provider: string;
 };
 
 /** Input shape for `connectors.revoke`. */
@@ -6286,16 +6376,21 @@ export type ConnectorsShowInput = {
 /** Return shape for `connectors.show`. */
 export type ConnectorsShowReturn = {
   connection: {
+    accessMode?: "full" | "read_only";
     capabilities: string[];
     createdAt: string;
     displayName: string;
     externalAccountLogin: string | null;
     grantedAt: string;
     id: string;
+    isDefault?: boolean;
     lastReauthAt: string | null;
-    projectId: string;
+    lastUsedAt?: string | null;
+    projectId: string | null;
     provider: string;
     requiresReauth: boolean;
+    revokedAt?: string | null;
+    scopeKind?: "user" | "organization";
     scopes: string[];
     status: string;
   };
@@ -9123,11 +9218,13 @@ export type FeedbackSendReturn = {
 
 /** Input shape for `gmail.list`. */
 export type GmailListInput = {
+  approval?: string;
   connector?: string;
   cursor?: string;
   label?: string;
   max?: string;
   q?: string;
+  shared?: boolean;
 };
 
 /** Return shape for `gmail.list`. */
@@ -9139,9 +9236,11 @@ export type GmailListReturn = {
 
 /** Input shape for `gmail.read`. */
 export type GmailReadInput = {
+  approval?: string;
   connector?: string;
   format?: string;
   id: string;
+  shared?: boolean;
 };
 
 /** Return shape for `gmail.read`. */
@@ -9149,6 +9248,32 @@ export type GmailReadReturn = {
   capability: string;
   refreshed: boolean;
   result?: unknown;
+};
+
+/** Input shape for `gmail.send`. */
+export type GmailSendInput = {
+  approval?: string;
+  bcc?: string;
+  body?: string;
+  cc?: string;
+  connector?: string;
+  execute?: boolean;
+  html?: string;
+  inReplyTo?: string;
+  shared?: boolean;
+  subject?: string;
+  to?: string;
+};
+
+/** Return shape for `gmail.send`. */
+export type GmailSendReturn = {
+  capability: string;
+  refreshed: boolean;
+  result?: {
+    labelIds?: string[];
+    messageId?: string;
+    threadId?: string;
+  };
 };
 
 /** Input shape for `heartbeat.disable`. */
@@ -10071,6 +10196,86 @@ export type InstancesTargetInput = {
 
 /** Return shape for `instances.target`. */
 export type InstancesTargetReturn = Record<string, unknown>;
+
+/** Input shape for `invites.create`. */
+export type InvitesCreateInput = {
+  console?: string;
+  email?: string;
+  execute?: boolean;
+  reason?: string;
+  role?: string;
+};
+
+/** Return shape for `invites.create`. */
+export type InvitesCreateReturn = {
+  actedBy: ({
+    kind: "operator";
+  }) | ({
+    contactId: string;
+    kind: "contact";
+  });
+  consoleUrl: string;
+  invite: {
+    createdAt: string;
+    email: string;
+    expiresAt: string;
+    id: string;
+    invitedBy: string | null;
+    role: string;
+  };
+  success: true;
+  url: string;
+};
+
+/** Input shape for `invites.list`. */
+export type InvitesListInput = {
+  console?: string;
+  limit?: string;
+  offset?: string;
+};
+
+/** Return shape for `invites.list`. */
+export type InvitesListReturn = {
+  consoleUrl: string;
+  invites: Array<{
+    createdAt: string;
+    email: string;
+    expiresAt: string;
+    id: string;
+    invitedBy: string | null;
+    role: string;
+  }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  success: true;
+  total: number;
+};
+
+/** Input shape for `invites.revoke`. */
+export type InvitesRevokeInput = {
+  console?: string;
+  inviteId: string;
+};
+
+/** Return shape for `invites.revoke`. */
+export type InvitesRevokeReturn = {
+  actedBy: ({
+    kind: "operator";
+  }) | ({
+    contactId: string;
+    kind: "contact";
+  });
+  consoleUrl: string;
+  revoked: boolean;
+  success: true;
+};
 
 /** Input shape for `jobs.kill`. */
 export type JobsKillInput = {
@@ -11264,6 +11469,71 @@ export type MediaSendReturn = {
   };
 };
 
+/** Input shape for `meetings.fetch`. */
+export type MeetingsFetchInput = {
+  meetingId: string;
+  noNotify?: boolean;
+  out?: string;
+  project?: string;
+  video?: boolean;
+};
+
+/** Return shape for `meetings.fetch`. */
+export type MeetingsFetchReturn = ({
+  meeting: {
+    botName: string;
+    clientRef: string | null;
+    createdAt: string;
+    endedAt: string | null;
+    failureReason: string | null;
+    id: string;
+    joinAt: string | null;
+    maxRecordingSeconds: number;
+    meetingCode: string | null;
+    meetingUrl: string;
+    ready: boolean;
+    recordingSeconds: number | null;
+    recordingStartedAt: string | null;
+    status: string;
+    statusSubCode: string | null;
+    title: string | null;
+  };
+  outcome: "pending";
+}) | ({
+  joinArtifactId: string | null;
+  meeting: {
+    botName: string;
+    clientRef: string | null;
+    createdAt: string;
+    endedAt: string | null;
+    failureReason: string | null;
+    id: string;
+    joinAt: string | null;
+    maxRecordingSeconds: number;
+    meetingCode: string | null;
+    meetingUrl: string;
+    ready: boolean;
+    recordingSeconds: number | null;
+    recordingStartedAt: string | null;
+    status: string;
+    statusSubCode: string | null;
+    title: string | null;
+  };
+  notified: boolean;
+  outcome: "failed";
+}) | ({
+  downloadedMediaCount: number;
+  joinArtifactId: string | null;
+  mediaRefCount: number;
+  meetingId: string;
+  notified: boolean;
+  outcome: "finalized";
+  rawArtifactId: string | null;
+  rawArtifactPath: string | null;
+  status: "finalized" | "already_finalized" | "enriched" | "in_progress";
+  transcriptSegmentCount: number;
+});
+
 /** Input shape for `meetings.finalize`. */
 export type MeetingsFinalizeInput = {
   noPostTranscribe?: boolean;
@@ -11287,6 +11557,174 @@ export type MeetingsFinalizeReturn = {
     title: string | null;
   };
   transcriptSegmentCount: number;
+};
+
+/** Input shape for `meetings.join`. */
+export type MeetingsJoinInput = {
+  agent?: string;
+  artifactId?: string;
+  asyncWorker?: boolean;
+  capture?: string;
+  context?: string;
+  dryRun?: boolean;
+  duration?: string;
+  emptyGrace?: string;
+  includeSessionContext?: boolean;
+  initialPrompt?: string;
+  initialPromptDelay?: string;
+  live?: boolean;
+  local?: boolean;
+  maxDuration?: string;
+  name?: string;
+  out?: string;
+  profile?: string;
+  profileDir?: string;
+  project?: string;
+  provider?: string;
+  skipFinalize?: boolean;
+  sync?: boolean;
+  tools?: string;
+  url?: string;
+  voiceRuntime?: string;
+};
+
+/** Return shape for `meetings.join`. */
+export type MeetingsJoinReturn = ({
+  mode: "dry-run";
+  project: string | null;
+  provider: string;
+  providerRuntime: string;
+  request: {
+    botName?: string;
+    maxMinutes?: number;
+    meetingUrl: string;
+  };
+  runtime: "cloud";
+}) | ({
+  artifactId: string;
+  artifact_id: string;
+  events?: string;
+  hint?: string;
+  kind: string;
+  leave?: string;
+  limits: ({
+    maxConcurrentBots: number;
+    maxRecordingSeconds: number;
+    monthlyBudgetUsd: number;
+  }) | null;
+  meeting: {
+    botName: string;
+    clientRef: string | null;
+    createdAt: string;
+    endedAt: string | null;
+    failureReason: string | null;
+    id: string;
+    joinAt: string | null;
+    maxRecordingSeconds: number;
+    meetingCode: string | null;
+    meetingUrl: string;
+    ready: boolean;
+    recordingSeconds: number | null;
+    recordingStartedAt: string | null;
+    status: string;
+    statusSubCode: string | null;
+    title: string | null;
+  };
+  runtime: "cloud";
+  status: string;
+  success: true;
+}) | ({
+  args?: string[];
+  mode: string;
+  provider: string;
+  providerRuntime: string;
+});
+
+/** Input shape for `meetings.leave`. */
+export type MeetingsLeaveInput = {
+  meetingId: string;
+  project?: string;
+};
+
+/** Return shape for `meetings.leave`. */
+export type MeetingsLeaveReturn = {
+  left: boolean;
+  meeting: {
+    botName: string;
+    clientRef: string | null;
+    createdAt: string;
+    endedAt: string | null;
+    failureReason: string | null;
+    id: string;
+    joinAt: string | null;
+    maxRecordingSeconds: number;
+    meetingCode: string | null;
+    meetingUrl: string;
+    ready: boolean;
+    recordingSeconds: number | null;
+    recordingStartedAt: string | null;
+    status: string;
+    statusSubCode: string | null;
+    title: string | null;
+  };
+};
+
+/** Input shape for `meetings.list`. */
+export type MeetingsListInput = {
+  limit?: string;
+  offset?: string;
+  project?: string;
+};
+
+/** Return shape for `meetings.list`. */
+export type MeetingsListReturn = {
+  items: Array<{
+    botName: string;
+    clientRef: string | null;
+    createdAt: string;
+    endedAt: string | null;
+    failureReason: string | null;
+    id: string;
+    joinAt: string | null;
+    maxRecordingSeconds: number;
+    meetingCode: string | null;
+    meetingUrl: string;
+    ready: boolean;
+    recordingSeconds: number | null;
+    recordingStartedAt: string | null;
+    status: string;
+    statusSubCode: string | null;
+    title: string | null;
+  }>;
+  meetings: Array<{
+    botName: string;
+    clientRef: string | null;
+    createdAt: string;
+    endedAt: string | null;
+    failureReason: string | null;
+    id: string;
+    joinAt: string | null;
+    maxRecordingSeconds: number;
+    meetingCode: string | null;
+    meetingUrl: string;
+    ready: boolean;
+    recordingSeconds: number | null;
+    recordingStartedAt: string | null;
+    status: string;
+    statusSubCode: string | null;
+    title: string | null;
+  }>;
+  pagination: {
+    hasMore?: boolean;
+    limit: number;
+    nextCommand?: string | null;
+    nextOffset?: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
+  project: string | null;
+  total: number;
 };
 
 /** Input shape for `meetings.profiles.init`. */
@@ -11441,6 +11879,34 @@ export type MeetingsProfilesValidateReturn = {
     valid: boolean;
   }>;
   valid: boolean;
+};
+
+/** Input shape for `meetings.show`. */
+export type MeetingsShowInput = {
+  meetingId: string;
+  project?: string;
+};
+
+/** Return shape for `meetings.show`. */
+export type MeetingsShowReturn = {
+  meeting: {
+    botName: string;
+    clientRef: string | null;
+    createdAt: string;
+    endedAt: string | null;
+    failureReason: string | null;
+    id: string;
+    joinAt: string | null;
+    maxRecordingSeconds: number;
+    meetingCode: string | null;
+    meetingUrl: string;
+    ready: boolean;
+    recordingSeconds: number | null;
+    recordingStartedAt: string | null;
+    status: string;
+    statusSubCode: string | null;
+    title: string | null;
+  };
 };
 
 /** Input shape for `meetings.voice-runtimes`. */
@@ -11776,6 +12242,42 @@ export type ObserversShowInput = {
 export type ObserversShowReturn = {
   binding: Record<string, unknown>;
   [k: string]: unknown;
+};
+
+/** Input shape for `pages.access`. */
+export type PagesAccessInput = {
+  console?: string;
+  url: string;
+};
+
+/** Return shape for `pages.access`. */
+export type PagesAccessReturn = {
+  actedBy: ({
+    kind: "operator";
+  }) | ({
+    contactId: string;
+    kind: "contact";
+  });
+  consoleUrl: string;
+  grants: Array<{
+    createdAt: string;
+    createdBy: string | null;
+    email: string;
+    expiresAt: string | null;
+    id: string;
+    name: string | null;
+    routeId: string | null;
+    routePath: string | null;
+    scope: "route" | "site";
+    url: string;
+    userId: string;
+  }>;
+  site: {
+    host: string;
+    id: string;
+  };
+  success: true;
+  total: number;
 };
 
 /** Input shape for `pages.assertion.audiences.list`. */
@@ -12129,6 +12631,130 @@ export type PagesPublishedReturn = {
   total: number;
 };
 
+/** Input shape for `pages.read`. */
+export type PagesReadInput = {
+  console?: string;
+  cursor?: string;
+  customDomain?: boolean;
+  format?: string;
+  maxChars?: string;
+  out?: string;
+  url: string;
+};
+
+/** Return shape for `pages.read`. */
+export type PagesReadReturn = {
+  consoleUrl: string;
+  content: {
+    cursor: number;
+    format: "markdown" | "html" | "files" | "zip";
+    nextCursor: number | null;
+    note: string;
+    representation: "extracted_markdown" | "entry_source" | "file_list";
+    text: string;
+    totalChars: number;
+    truncated: boolean;
+  };
+  contentTrust: "untrusted";
+  download?: {
+    files: Array<{
+      contentType: string;
+      entrypoint: boolean;
+      path: string;
+      sizeBytes: number;
+    }>;
+    kind: "directory" | "zip";
+    path: string;
+    totalBytes: number;
+  };
+  links: Array<{
+    text: string;
+    url: string;
+  }>;
+  page: {
+    artifact: {
+      id: string;
+      versionId: string;
+      versionNumber: number;
+    };
+    description: string | null;
+    file: {
+      contentType: string;
+      path: string;
+      sha256: string | null;
+      sizeBytes: number | null;
+    };
+    host: string;
+    path: string;
+    projectId: string;
+    release: {
+      id: string;
+      number: number;
+    };
+    route: {
+      id: string;
+      matchType: string;
+      path: string;
+    };
+    siteId: string;
+    title: string;
+    url: string;
+    visibility: string;
+  };
+  publicOnly: boolean;
+  routes: Array<{
+    matchType: string;
+    path: string;
+    url: string;
+    visibility: string;
+  }>;
+  signals: {
+    raviElements: string[];
+    renderSuggested: boolean;
+    scripts: number;
+    staticTextChars: number;
+  };
+  success: true;
+};
+
+/** Input shape for `pages.share`. */
+export type PagesShareInput = {
+  console?: string;
+  execute?: boolean;
+  expires?: string;
+  reason?: string;
+  site?: boolean;
+  url: string;
+  with?: string;
+};
+
+/** Return shape for `pages.share`. */
+export type PagesShareReturn = {
+  actedBy: ({
+    kind: "operator";
+  }) | ({
+    contactId: string;
+    kind: "contact";
+  });
+  consoleUrl: string;
+  created: boolean;
+  grant: {
+    createdAt: string;
+    createdBy: string | null;
+    email: string;
+    expiresAt: string | null;
+    id: string;
+    name: string | null;
+    routeId: string | null;
+    routePath: string | null;
+    scope: "route" | "site";
+    url: string;
+    userId: string;
+  };
+  success: true;
+  userCreated: boolean;
+};
+
 /** Input shape for `pages.ship`. */
 export type PagesShipInput = {
   args?: string[];
@@ -12171,6 +12797,28 @@ export type PagesShipReturn = {
   uses?: string[];
   visibility: string;
   warnings?: string[];
+};
+
+/** Input shape for `pages.unshare`. */
+export type PagesUnshareInput = {
+  console?: string;
+  grant?: string;
+  site?: boolean;
+  url?: string;
+  with?: string;
+};
+
+/** Return shape for `pages.unshare`. */
+export type PagesUnshareReturn = {
+  actedBy: ({
+    kind: "operator";
+  }) | ({
+    contactId: string;
+    kind: "contact";
+  });
+  consoleUrl: string;
+  revoked: boolean;
+  success: true;
 };
 
 /** Input shape for `pages.update`. */
