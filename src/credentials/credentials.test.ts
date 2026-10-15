@@ -3,7 +3,8 @@ import { serve } from "bun";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SECURITY_INTERACTIVE_MAX_LINE_BYTES, type SecurityCommandResult } from "../security/macos-keychain.js";
+import { SECURITY_INTERACTIVE_MAX_LINE_BYTES } from "../security/macos-keychain.js";
+import { createFakeSecurity } from "../test/fake-security.js";
 import {
   deleteSecret,
   readSecret,
@@ -127,39 +128,11 @@ describe("credential broker", () => {
 });
 
 describe("credential broker Keychain backend", () => {
-  /** Fake `security`: parses the `security -i` stdin line; never runs the real binary. */
+  /** The shared fake `security` (src/test/fake-security.ts); never runs the real binary. */
   function fakeSecurity() {
-    const calls: Array<{ args: string[]; input?: string }> = [];
-    const items = new Map<string, string>();
-    setKeychainCommandRunnerForTests((args, options = {}): SecurityCommandResult => {
-      calls.push({ args: [...args], ...(options.input !== undefined ? { input: options.input } : {}) });
-      const key = (a: string[]) => `${a[a.indexOf("-s") + 1]}/${a[a.indexOf("-a") + 1]}`;
-      if (args[0] === "-i") {
-        const input = options.input ?? "";
-        const hex = /^add-generic-password -U -a (\S+) -s (\S+) -X ([0-9a-f]+)\n$/.exec(input);
-        const quoted = /^add-generic-password -U -a (\S+) -s (\S+) -w "((?:[^"\\]|\\.)*)"\n$/.exec(input);
-        if (hex) items.set(`${hex[2]}/${hex[1]}`, Buffer.from(hex[3]!, "hex").toString("utf8"));
-        else if (quoted) items.set(`${quoted[2]}/${quoted[1]}`, quoted[3]!.replace(/\\(.)/g, "$1"));
-        else return { status: 1, stdout: "", stderr: "unknown command" };
-        return { status: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "find-generic-password") {
-        const value = items.get(key(args));
-        if (value === undefined) {
-          return { status: 44, stdout: "", stderr: "The specified item could not be found in the keychain." };
-        }
-        // Like `security -w`: printable ASCII as text, anything else as hex.
-        const printable = /^[\x20-\x7e]*$/.test(value);
-        return { status: 0, stdout: `${printable ? value : Buffer.from(value).toString("hex")}\n`, stderr: "" };
-      }
-      if (args[0] === "delete-generic-password") {
-        return items.delete(key(args))
-          ? { status: 0, stdout: "", stderr: "" }
-          : { status: 44, stdout: "", stderr: "The specified item could not be found in the keychain." };
-      }
-      return { status: 1, stdout: "", stderr: "unexpected" };
-    });
-    return { calls, items };
+    const fake = createFakeSecurity();
+    setKeychainCommandRunnerForTests(fake.run);
+    return { calls: fake.calls, items: fake.items, fake };
   }
 
   it("writes the secret through stdin: it is in no argv element", async () => {
@@ -204,10 +177,53 @@ describe("credential broker Keychain backend", () => {
     expect(await readSecret(ref)).toBe(secret);
   });
 
-  it("reads back a non-ASCII secret that `security -w` prints as hex", async () => {
+  it("reads back a non-ASCII secret (printed as hex by `security -g`)", async () => {
     fakeSecurity();
     const ref = await writeSecret({ backend: "keychain", provider: "slack", connection: "rbbt", secret: "senha-ç✓" });
     expect(await readSecret(ref)).toBe("senha-ç✓");
+  });
+
+  it("reads with `find-generic-password -g`, so hex-shaped printable secrets come back verbatim", async () => {
+    const { calls } = fakeSecurity();
+    const secrets = ["123456", "000000", "0a", "c3a9", "deadbeef", '{"a":"\\u00e9"}', "é", 'x "q" \\ \n'];
+    for (const secret of secrets) {
+      const ref = await writeSecret({ backend: "keychain", provider: "p", connection: "c", secret });
+      expect(await readSecret(ref)).toBe(secret);
+    }
+    const reads = calls.filter((call) => call.args[0] === "find-generic-password");
+    expect(reads).toHaveLength(secrets.length);
+    for (const read of reads) {
+      expect(read.args).toContain("-g");
+      expect(read.args).not.toContain("-w");
+    }
+  });
+
+  it("reads a legacy item an older Ravi wrote with `add-generic-password -w <secret>` in argv", async () => {
+    const { fake } = fakeSecurity();
+    fake.run(["add-generic-password", "-U", "-a", "slack:rbbt", "-s", "ravi.credentials", "-w", "000000"]);
+    fake.run(["add-generic-password", "-U", "-a", "slack:old", "-s", "ravi.credentials", "-w", "xoxb-ç"]);
+
+    expect(await readSecret("keychain:ravi.credentials/slack:rbbt")).toBe("000000");
+    expect(await readSecret("keychain:ravi.credentials/slack:old")).toBe("xoxb-ç");
+  });
+
+  it("round-trips a printable secret that fills the `security -i` line exactly", async () => {
+    const { calls } = fakeSecurity();
+    const overhead = Buffer.byteLength('add-generic-password -U -a slack:rbbt -s ravi.credentials -w ""\n');
+    const secret = "7".repeat(SECURITY_INTERACTIVE_MAX_LINE_BYTES - overhead);
+
+    const ref = await writeSecret({ backend: "keychain", provider: "slack", connection: "rbbt", secret });
+
+    expect(Buffer.byteLength(calls[0]!.input!)).toBe(SECURITY_INTERACTIVE_MAX_LINE_BYTES);
+    expect(await readSecret(ref)).toBe(secret);
+    await expect(
+      writeSecret({ backend: "keychain", provider: "slack", connection: "rbbt", secret: `${secret}7` }),
+    ).rejects.toThrow("vault backend");
+  });
+
+  it("fails a read whose output it cannot parse, without the output in the error", async () => {
+    setKeychainCommandRunnerForTests(() => ({ status: 0, stdout: "", stderr: "password: 0xZZ \n" }));
+    await expect(readSecret("keychain:ravi.credentials/slack:rbbt")).rejects.toThrow("cannot parse");
   });
 
   it("refuses a secret too large for one `security -i` line instead of truncating it", async () => {

@@ -27,6 +27,22 @@ export const CLOUD_AUTH_ERROR_CODES = [
   "NOT_FOUND",
   "CONFLICT",
   "VERSION_CONFLICT",
+  "CONNECTOR_GROUP_BLOCKED",
+  "CONNECTOR_SPEAKER_NOT_OWNER",
+  "CONNECTOR_DISABLED_BY_ORG",
+  "CONNECTOR_TOOL_BLOCKED",
+  "CONNECTOR_APPROVAL_REQUIRED",
+  "CONNECTOR_APPROVAL_PENDING",
+  "CONNECTOR_APPROVAL_DENIED",
+  "CONNECTOR_APPROVAL_INVALID",
+  "CONNECTOR_CONSENT_REQUIRED",
+  "CONNECTOR_NOT_LINKED",
+  "CONNECTOR_CONNECTION_REQUIRED",
+  "CONNECTOR_REAUTH_REQUIRED",
+  "CONNECTOR_PERMISSION_REQUIRED",
+  "CONNECTOR_POLICY_ABOVE_CEILING",
+  "CONNECTOR_FORBIDDEN",
+  "ACTOR_NOT_LINKED",
 ] as const;
 
 export type CloudAuthErrorCode = (typeof CLOUD_AUTH_ERROR_CODES)[number];
@@ -40,6 +56,30 @@ export const RETRYABLE_CLOUD_AUTH_CODES: ReadonlySet<CloudAuthErrorCode> = new S
   "RATE_LIMITED",
   "SERVER_UNAVAILABLE",
 ]);
+
+/**
+ * Connector policy blocks. They are the system working (exit 3), not failures:
+ * the turn, the organization or the account owner decided this call does not
+ * run as asked.
+ */
+export const CONNECTOR_POLICY_CODES: ReadonlySet<CloudAuthErrorCode> = new Set([
+  "CONNECTOR_GROUP_BLOCKED",
+  "CONNECTOR_SPEAKER_NOT_OWNER",
+  "CONNECTOR_DISABLED_BY_ORG",
+  "CONNECTOR_TOOL_BLOCKED",
+  "CONNECTOR_APPROVAL_REQUIRED",
+  "CONNECTOR_APPROVAL_PENDING",
+  "CONNECTOR_APPROVAL_DENIED",
+  "CONNECTOR_CONSENT_REQUIRED",
+  "CONNECTOR_NOT_LINKED",
+  // Console access calls (`ravi pages share`, `ravi invites`, `ravi access`)
+  // that name a chat author with no `ravi link` binding.
+  "ACTOR_NOT_LINKED",
+]);
+
+export function isConnectorPolicyCode(code: CloudAuthErrorCode): boolean {
+  return CONNECTOR_POLICY_CODES.has(code);
+}
 
 export function isRetryableCloudAuthCode(code: CloudAuthErrorCode): boolean {
   return RETRYABLE_CLOUD_AUTH_CODES.has(code);
@@ -187,6 +227,7 @@ function normalizeRetryAfterMs(value: number | undefined): number | undefined {
 }
 
 function defaultExitCode(code: CloudAuthErrorCode): number {
+  if (isConnectorPolicyCode(code)) return 3;
   switch (code) {
     case "AUTH_REQUIRED":
     case "AUTH_PENDING":

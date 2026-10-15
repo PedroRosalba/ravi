@@ -136,6 +136,43 @@ ravi pages password set acme-website --route /report --stdin --execute < /secure
 
 Never put the password in a command argument, an environment variable, a log or a JSON payload. The CLI has no flag for it, and its output never contains it. `remove` requires a replacement `--visibility`, so removing a password never makes a page public by accident.
 
+## Share a page with one person
+
+To show a private page to one person, share it with their email. Do not make the route public or add a password for that.
+
+```bash
+ravi pages share https://acme-website.ravi.page/report --with ana@example.com             # plan only, exit 3
+ravi pages share https://acme-website.ravi.page/report --with ana@example.com --expires 30d --execute
+ravi pages share https://acme-website.ravi.page/ --with ana@example.com --site --execute  # every private route
+ravi pages access https://acme-website.ravi.page/report                                    # who has access, until when
+ravi pages unshare https://acme-website.ravi.page/report --with ana@example.com            # applies at once
+```
+
+- The person signs in to the Console with that email (verified) and sees only what was shared: the route, or with `--site` every private route of the host. It is not membership: no operator bar, no Page Chat and no live Bases data.
+- `--expires` takes `30d`, `12h`, `2w` or an ISO date, up to 365 days. Sharing again updates the expiry and reason. `unshare --grant <id>` removes one grant by the id `pages access` lists.
+- Anyone who can publish to the project can share: an organization `owner`, `admin` or `developer`, or a project admin or developer.
+
+To bring someone into the organization instead, create an invite. Ravi does not email it: the command prints a link that works once, for that email only, for 7 days.
+
+```bash
+ravi invites create --email bia@example.com --role developer --execute
+ravi invites list
+ravi invites revoke <invite-id>
+```
+
+Roles are `viewer` (default), `developer`, `admin`, `billing` and `owner`. Only an owner or admin invites, and only an owner invites an owner.
+
+When a page answers that you have no access, ask its managers:
+
+```bash
+ravi access request https://other-org.ravi.page/report --message "For the Q3 review" --execute
+ravi access status <request-id>
+```
+
+The answer carries an approval link. Anyone can forward it; opening it changes nothing, and only the page's managers can approve.
+
+When your agent runs these commands, it acts for whoever wrote the message: you on your own turns, and otherwise that person through their `ravi link` (to share or invite, both of you must have the role; a request is made in their name). A person without a link gets `ACTOR_NOT_LINKED` and the agent sends them `ravi link`. To let a narrower agent use them, grant `mutate:pages.access:*`, `read:pages.access:*`, `mutate:invites:*`, `read:invites:*` or `mutate:access.requests:create` as needed.
+
 ## The operator bar and comments
 
 When a project member opens a page from the Console (the project's **Pages** list), a bar appears at the top of the page. Ordinary visitors never see it. Its labels are in Portuguese today. From the bar you can:
@@ -215,6 +252,23 @@ Your agent runs the same `ravi pages ship` through the daemon, using the daemon'
 3. Ask the agent, for example: "Publish ./report as /report on the website project."
 
 The daemon gives a CLI call from an agent 30 seconds. A large `--dir` upload can time out on the agent's side even though the publish finished; check `ravi pages published` before shipping again.
+
+## Let your agent read a page
+
+When you send your agent a Page link, it reads it with `ravi pages read` instead of a browser. A browser would stop at the Console login on a private page; `pages read` goes through the Console with the daemon's login and returns the page as Markdown, with its links and the host's other routes.
+
+```bash
+ravi pages read https://acme-website.ravi.page/report
+ravi pages read https://acme-website.ravi.page/report --json
+ravi pages read https://acme-website.ravi.page/report --format html
+ravi pages read https://acme-website.ravi.page/report --format zip --out ./report.zip
+ravi pages read https://docs.acme.com/ --custom-domain
+```
+
+- The agent picks the format. The default Markdown is the page's text without its styles, layout or images, and the output says so. `--format html` returns the entry file's source, and `--format zip --out <file>` (or `--format files --out <dir>`) downloads every published file, so the agent can see the design or build a page in the same style.
+- Public routes are always readable. Private, `protected_link` and password routes are read only on your own turns (the terminal, your direct chat with the agent, routines you own) and only when your login can read the project. When someone else sends the agent a private link, the command exits 3 and the agent tells them it cannot open it.
+- The read is static: the published file, not run in a browser. A data page built with JavaScript shows little text, and the result says so.
+- Ravi blocks browser and fetch tools aimed at `*.ravi.page` links and points the agent to `ravi pages read`. Every read of a private route is recorded in the Console audit log.
 
 ## Data pages
 
