@@ -1,6 +1,7 @@
 import {
   buildAddGenericPasswordLine,
-  decodeSecurityPasswordOutput,
+  findGenericPasswordArgs,
+  parseSecurityPasswordOutput,
   redactSecurityOutput,
   runSecurityCommand,
   type SecurityCommandRunner,
@@ -96,9 +97,15 @@ function writeKeychainSecret(provider: string, connection: string, secret: strin
 
 function readKeychainSecret(secretRef: string): string {
   const { service, account } = parseKeychainRef(secretRef);
-  return decodeSecurityPasswordOutput(
-    runSecurity(["find-generic-password", "-a", account, "-s", service, "-w"]).trim(),
-  );
+  // `-g` prints the secret unambiguously on stderr (`-w` would hex-decode a
+  // printable secret such as `123456`); see src/security/macos-keychain.ts.
+  const result = securityRunner(findGenericPasswordArgs({ account, service }));
+  if (result.status !== 0) {
+    throw new Error(`security failed: ${redactSecurityOutput(result.stderr || result.stdout)}`);
+  }
+  const parsed = parseSecurityPasswordOutput(result.stderr);
+  if (!parsed.ok) throw new Error(`security failed: ${parsed.message}`);
+  return parsed.secret;
 }
 
 function deleteKeychainSecret(secretRef: string): boolean {

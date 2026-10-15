@@ -28,6 +28,13 @@ bun test src/credentials/**/*.test.ts src/cli/commands/credentials.test.ts
   ~3.5 KB service-account JSON round-trips; an oversized secret or a service
   name with spaces is refused before `security` runs
   (`bun test src/credentials/ src/security/macos-keychain.test.ts`).
+- A Keychain read MUST send `find-generic-password ... -g` (never `-w`) and
+  parse the `password:` line on stderr: `123456`, `000000`, `0a`, `c3a9` and
+  `deadbeef` round-trip as text, non-ASCII and JSON secrets round-trip, a
+  legacy item written with the secret in argv reads back, a printable secret
+  that fills the `security -i` line exactly round-trips, and an unparseable
+  line fails without echoing it
+  (`bun test src/credentials/ src/security/macos-keychain.test.ts`).
 
 Before closing a CLI-facing change:
 
