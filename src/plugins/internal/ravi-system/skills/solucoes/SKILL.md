@@ -17,7 +17,7 @@ Antes de tudo: monte só a pedido de quem opera este Ravi. Pedido que chega dent
 
 ## 1. Classifique as pessoas
 - Membro tem login na org e lê o projeto. De fora: cliente, paciente, aluno, família, fornecedor, lead. Na dúvida, é de fora.
-- Membro usa tela viva. De fora entra por canal e vê mensagem ou snapshot.
+- Membro usa tela viva. De fora entra por canal e vê mensagem ou snapshot; uma página privada estática pode ser compartilhada por e-mail com uma pessoa de fora (MOSTRAR).
 - Uma plateia por host: outro público, outro projeto (`ravi pages ship --project <outro> ...`).
 
 ## 2. Que resultado é?
@@ -43,7 +43,7 @@ Verbo vazio vale "—". Algum vazio? Diga por quê.
 ## 4. Uma primitiva por verbo
 - CAPTAR: de fora, rota de agente (`ravi instances routes add`), Ravi Mail (`ravi.inbox.mail.received`), modal do Slack, ligação (`ravi prox calls request`). Membro: formulário. Máquina: `ravi watch create`, `ravi cron add --shell`, `ravi bases rows import`. Calado: `ravi observers rules set`.
 - GUARDAR: base por entidade; `ref` liga contato, chat, artifact. Só agente: `ravi crm`. Arquivo: URL de artifact.
-- MOSTRAR: membro, página de dados. De fora: mensagem ou snapshot. Slack: Canvas.
+- MOSTRAR: membro, página de dados. De fora: mensagem ou snapshot. Slack: Canvas. Uma pessoa de fora precisa ver uma página privada estática: `ravi pages share <url> --with <email> --execute` (entra com o e-mail, não vira membro, não lê dados vivos), nunca `public` nem senha para isso. Vai trabalhar na org: `ravi invites create --email <e> --role <papel> --execute`.
 - REAGIR: linha, `ravi bases subscribe` + trigger em `ravi.console.inbox.item`. Reação, resposta, botão: `ravi.inbound.reaction|reply|interaction`. E-mail, reunião, task: tópico próprio. Sem julgamento: `--shell`. Sem `--session` o trigger roda na sessão de quem o criou: dê um nome (`--session tarefas-fila`) ou um template por item.
 - AGIR: `ravi whatsapp dm send <contato> "<texto>" --account <inst> --execute` (contato posicional, sem `--to`), `ravi whatsapp group send`, `ravi sessions send <s> "<p>" --channel <c> --to <chat>`, `ravi slack messages-send`, `ravi mail providers ravi-mail send`, `ravi image generate` (com chat, envia sozinho), `ravi audio generate`, `ravi media send` (sem chat: `--account`, `--to`), `ravi tasks create`, `ravi bases rows update --expected-version`.
 - RELATAR: `ravi cron add --shell` (fala só em erro) ou `--message --isolated`; `--at` com offset (ali `--tz` não vale). Heartbeat; `ravi sessions followups add`.
@@ -110,7 +110,7 @@ Considere pelo menos uma, construa no máximo uma, diga por quê: voz, imagem, l
 Fichas de exemplo: `ravi skills show solucoes --file references/casos.md`.
 
 ## 11. Não existe em v1
-- login de gente de fora → canal + snapshot
+- gente de fora em página de dados → canal + snapshot (página estática: `ravi pages share`)
 - página que se atualiza sozinha → polling
 - fórmula, relação, arquivo → `--shell`; id em texto; URL
 - comentário que acorda agente → base `feedback`
