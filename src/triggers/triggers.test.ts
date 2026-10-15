@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { cleanupIsolatedRaviState, createIsolatedRaviState } from "../test/ravi-state.js";
 import { resolveTriggerActivation } from "./activation.js";
 import { compileFilter } from "./filter.js";
-import { isTriggerOriginatedEvent, planTriggerTopicRefresh, shouldRetryTriggerTopic } from "./runner.js";
+import {
+  isTriggerOriginatedEvent,
+  planTriggerTopicRefresh,
+  shouldRetryTriggerTopic,
+  sourceFromSessionEntry,
+} from "./runner.js";
 import { findTriggerTopicCatalogEntry } from "./topic-catalog.js";
 import { dbCreateTrigger, dbGetTrigger, dbRecordTriggerFilterRejects, dbUpdateTrigger } from "./triggers-db.js";
 
@@ -51,6 +56,35 @@ describe("triggers native automation support", () => {
     expect(fields).toContain("sessionKey");
     expect(fields).toContain("canonicalChatId");
     expect(entry?.examples.some((example) => example.includes("ravi.inbound.thread.created"))).toBe(true);
+  });
+
+  it("catalogs Slack session creation as a first-class trigger event", () => {
+    const entry = findTriggerTopicCatalogEntry("ravi.inbound.session.created");
+    const fields = new Set(entry?.schema?.fields.map((field) => field.path));
+
+    expect(entry?.category).toBe("inbound");
+    expect(entry?.payload).toContain("sessionKey");
+    expect(fields).toContain("provider");
+    expect(fields).toContain("channelId");
+    expect(fields).toContain("sessionKey");
+    expect(fields).toContain("sessionName");
+    expect(fields).toContain("agentId");
+    expect(entry?.examples.some((example) => example.includes("ravi.inbound.session.created"))).toBe(true);
+    expect(entry?.notes?.some((note) => note.includes("ravi.inbound.thread.created"))).toBe(true);
+  });
+
+  it("documents a root-session filter example that matches sessions without a thread timestamp", () => {
+    const entry = findTriggerTopicCatalogEntry("ravi.inbound.session.created");
+    const example = entry?.examples.find((line) => line.includes("Configure new channel session"));
+    const filter = example?.match(/--filter '(.+)' --message/)?.[1];
+
+    expect(filter).toBeDefined();
+    const compiled = compileFilter(filter);
+    expect(compiled.valid).toBe(true);
+    // Root-channel session: threadTs is omitted from the payload.
+    expect(compiled.evaluate({ provider: "slack", channelId: "C123" })).toBe(true);
+    // Thread session: threadTs is present, so the root-session example must not match.
+    expect(compiled.evaluate({ provider: "slack", channelId: "C123", threadTs: "1792019187.321239" })).toBe(false);
   });
 
   it("catalogs exhausted runtime recovery as an operator alert event", () => {
@@ -212,5 +246,24 @@ describe("triggers native automation support", () => {
     });
     dbUpdateTrigger(trigger.id, { name: "renamed again" });
     expect(dbGetTrigger(trigger.id)?.filterRejectCount).toBe(1);
+  });
+});
+
+describe("trigger reply source", () => {
+  it("replies where the session last talked", () => {
+    expect(
+      sourceFromSessionEntry({ lastChannel: "whatsapp", lastAccountId: "main-account", lastTo: "chat-a" }),
+    ).toEqual({ channel: "whatsapp", accountId: "main-account", chatId: "chat-a" });
+  });
+
+  it("lets the trigger's explicit account win", () => {
+    expect(
+      sourceFromSessionEntry({ lastChannel: "whatsapp", lastAccountId: "main-account", lastTo: "chat-a" }, "other"),
+    ).toEqual({ channel: "whatsapp", accountId: "other", chatId: "chat-a" });
+  });
+
+  it("has no source when the session never talked to a chat", () => {
+    expect(sourceFromSessionEntry({ lastChannel: "whatsapp" })).toBeUndefined();
+    expect(sourceFromSessionEntry(null)).toBeUndefined();
   });
 });

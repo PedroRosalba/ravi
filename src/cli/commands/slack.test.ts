@@ -12,7 +12,9 @@
  *    ContractError instead of exiting the process.
  */
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CloudAuthError } from "../../cloud-auth/errors.js";
 
 afterAll(() => {
   mock.restore();
@@ -39,7 +41,9 @@ let conversationsHistoryResult: Record<string, unknown> = { ok: true, messages: 
 let filesListResult: Record<string, unknown> = { ok: true, files: [] };
 let credentialsAvailable = true;
 let credentialConnectionConfigured = true;
+let devSlackChannelConfigured = true;
 let clientConstructionCount = 0;
+let blocksValidateResult: Record<string, unknown> = { ok: true };
 
 function recordClientCall<T extends Record<string, unknown>>(method: string, args: unknown, result: T): T {
   clientCalls.push({ method, args });
@@ -67,8 +71,11 @@ mock.module("../decorators.js", () => ({
   Option: () => () => {},
 }));
 
+// Gateway handlers carry the caller cwd in the request context.
+let mockContext: Record<string, unknown> | undefined;
+
 mock.module("../context.js", () => ({
-  getContext: () => undefined,
+  getContext: () => mockContext,
   // Real hasContext checks RAVI_* envs; the contract helpers use it to throw
   // ContractError instead of process.exit, which is what tests need.
   hasContext: () => true,
@@ -87,12 +94,16 @@ mock.module("../../config-store.js", () => ({
           name: "ravi-slack",
           ...(credentialConnectionConfigured ? { credentialConnection: "ravi-slack-secret" } : {}),
         },
-        dev: {
-          enabled: true,
-          provider: "slack",
-          name: "ravi-slack-dev",
-          credentialConnection: "ravi-slack-dev-secret",
-        },
+        ...(devSlackChannelConfigured
+          ? {
+              dev: {
+                enabled: true,
+                provider: "slack",
+                name: "ravi-slack-dev",
+                credentialConnection: "ravi-slack-dev-secret",
+              },
+            }
+          : {}),
         zap: { enabled: true, provider: "whatsapp", name: "zap" },
       },
     }),
@@ -165,7 +176,7 @@ mock.module("../../channels/slack/client.js", () => ({
       return recordClientCall("filesList", args, filesListResult);
     }
     async blocksValidate(args: Record<string, unknown>) {
-      return recordClientCall("blocksValidate", args, { ok: true });
+      return recordClientCall("blocksValidate", args, blocksValidateResult);
     }
     async postMessage(args: Record<string, unknown>) {
       return recordClientCall("postMessage", args, {
@@ -426,6 +437,7 @@ beforeEach(() => {
   filesListResult = { ok: true, files: [] };
   credentialsAvailable = true;
   credentialConnectionConfigured = true;
+  devSlackChannelConfigured = true;
   schemaInitializingArtifactCalls.length = 0;
 });
 
@@ -1243,6 +1255,25 @@ describe("slack agent-first contract", () => {
     expect(clientCalls).toHaveLength(0);
   });
 
+  it("messages-send without a Ravi channel uses the only Slack channel config", async () => {
+    devSlackChannelConfigured = false;
+    const commands = new SlackCommands();
+    await silenced(() => commands.messagesSend("C0PRIVATE1", "olá", undefined, undefined, undefined, true, true));
+
+    expect(credentialResolutionCalls).toEqual([{ action: "chat.postMessage", channel: "ravi-slack" }]);
+    expect(callsTo("postMessage")[0]?.args).toMatchObject({ channel: "C0PRIVATE1", text: "olá" });
+  });
+
+  it("messages-send without a Ravi channel still fails when several Slack configs exist", async () => {
+    const commands = new SlackCommands();
+    await expectContractError(
+      () => commands.messagesSend("C0PRIVATE1", "olá", undefined, undefined, undefined, true, true),
+      "CHANNEL_NOT_FOUND",
+      1,
+    );
+    expect(clientCalls).toHaveLength(0);
+  });
+
   it("a mutating command reports a missing credential connection without hydrating the broker", async () => {
     credentialConnectionConfigured = false;
     const commands = new SlackCommands();
@@ -1346,5 +1377,72 @@ describe("slack agent-first contract", () => {
 
     expect(callsTo("blocksValidate")).toHaveLength(1);
     expect(payload).toMatchObject({ ok: true });
+  });
+});
+
+describe("slack Block Kit payload files over the gateway", () => {
+  const fixtureDir = dirname(jsonFixturePath);
+  const fixtureName = basename(jsonFixturePath);
+
+  beforeEach(() => {
+    clientCalls.length = 0;
+    blocksValidateResult = { ok: true };
+    mockContext = undefined;
+  });
+
+  afterAll(() => {
+    mockContext = undefined;
+  });
+
+  it("resolves a relative payload path against the caller cwd, not the daemon cwd", async () => {
+    mockContext = { cwd: fixtureDir };
+    const commands = new SlackCommands();
+    const payload = await silenced(() => commands.blocksValidate(fixtureName, "ravi-slack", undefined, true));
+
+    expect(callsTo("blocksValidate")).toHaveLength(1);
+    expect(payload).toMatchObject({ ok: true, item: { valid: true } });
+  });
+
+  it("reports an unreadable payload file as PAYLOAD_INVALID before calling Slack", async () => {
+    mockContext = { cwd: fixtureDir };
+    const commands = new SlackCommands();
+    const runs: Array<() => Promise<unknown>> = [
+      () => commands.blocksValidate("missing-payload.json", "ravi-slack", undefined, true),
+      () =>
+        commands.blocksSend(
+          "C123",
+          "missing-payload.json",
+          "ravi-slack",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          true,
+          true,
+        ),
+    ];
+    for (const run of runs) {
+      let caught: unknown;
+      try {
+        await silenced(run);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(CloudAuthError);
+      const error = caught as CloudAuthError;
+      expect(error.code).toBe("PAYLOAD_INVALID");
+      expect(error.exitCode).toBe(2);
+      expect(error.issues?.[0]).toMatchObject({ path: ["file"], code: "invalid" });
+    }
+    expect(callsTo("blocksValidate")).toHaveLength(0);
+    expect(callsTo("postMessage")).toHaveLength(0);
+  });
+
+  it("returns a structured invalid result when Slack rejects the blocks", async () => {
+    blocksValidateResult = { ok: false, error: "invalid_blocks", errors: ["must provide a type"] };
+    const commands = new SlackCommands();
+    const payload = await silenced(() => commands.blocksValidate(jsonFixturePath, "ravi-slack", undefined, true));
+
+    expect(payload).toMatchObject({ ok: true, item: { valid: false, error: "invalid_blocks" } });
   });
 });

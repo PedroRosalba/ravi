@@ -1,5 +1,5 @@
 import type { ContextCapability } from "../router/router-db.js";
-import { isChatOnlyAgent } from "./agent-default-capabilities-provider.js";
+import { suppressesRuntimeBootstrap } from "./agent-default-capabilities-provider.js";
 import type {
   PermissionProvider,
   PermissionProviderCapabilityOptions,
@@ -16,9 +16,11 @@ const TRUSTED_BOOTSTRAP_SUBJECT_TYPES = new Set(["agent", "automation"]);
  *    (runtime/allowed-skills.ts) e também aparecem como skill no contexto.
  *  - Fabric de operação (self/doctor): introspecção e saúde. NÃO têm skill associada no
  *    mapa de gates, então habilitam rodar o comando SEM poluir o índice de skills.
+ *  - identity (`ravi link`/`ravi unlink`): só age sobre o autor da mensagem do turno e o
+ *    vínculo só existe depois que a própria pessoa aprova no Console.
  * Domínio/admin (cron, crm, whatsapp, db, service…) continuam opt-in por `execute:group:<grupo>`.
  */
-const BASELINE_COMMAND_GROUPS = ["sessions", "tasks", "specs", "skills", "self", "doctor"] as const;
+const BASELINE_COMMAND_GROUPS = ["sessions", "tasks", "specs", "skills", "self", "doctor", "identity"] as const;
 const SAFE_EXECUTABLES = [
   "bun",
   "cat",
@@ -73,10 +75,10 @@ function shouldSuppressRuntimeBootstrap(
   subjectId: string,
   options?: PermissionProviderCapabilityOptions,
 ): boolean {
-  if (subjectType === "agent") return isChatOnlyAgent(subjectId);
+  if (subjectType === "agent") return suppressesRuntimeBootstrap(subjectId);
   if (subjectType === "automation") {
     const executorAgentId = options?.executorAgentId?.trim();
-    return executorAgentId ? isChatOnlyAgent(executorAgentId) : false;
+    return executorAgentId ? suppressesRuntimeBootstrap(executorAgentId) : false;
   }
   return false;
 }

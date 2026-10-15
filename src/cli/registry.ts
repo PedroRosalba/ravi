@@ -12,6 +12,7 @@ import {
   getArgsMetadata,
   getOptionsMetadata,
   getScopeMetadata,
+  getCliOnlyMetadata,
   type CommandAccessOptions,
   type CommandMetadata,
   type ScopeType,
@@ -43,6 +44,7 @@ import {
   remoteGatewayExitCode,
   remoteDispatchOutput,
   resolveContextKeyForRemote,
+  cliOnlyCommandError,
   gatewayRequiredError,
   requiresRemoteGateway,
   type RemoteDispatchResult,
@@ -191,6 +193,9 @@ function registerCommand(
   }
 
   const toolName = `${groupName}_${cmdMeta.name}`;
+  // `@CliOnly()` excludes the command from the gateway route table, so a remote
+  // dispatch can only ever answer 404 there. The flag has to be consulted here.
+  const cliOnly = getCliOnlyMetadata(instance.constructor as Function).has(cmdMeta.method);
 
   // Set up the action handler
   sub.action(async (...commanderArgs: unknown[]) => {
@@ -209,6 +214,7 @@ function registerCommand(
 
     // Build the final args array in parameter order
     const finalArgs: unknown[] = [];
+    const sharedOptionValues = new Map<string, unknown>();
     const totalParams = argsMeta.length + optionsMeta.length;
 
     for (let i = 0; i < totalParams; i++) {
@@ -225,10 +231,22 @@ function registerCommand(
         const optName = extractOptionName(optAtIndex.flags);
         const optionValue = resolveOptionValue(options, optAtIndex.flags, optionsMeta, cmd);
         finalArgs.push(optionValue);
-        if (optionValue !== undefined) {
+        if (optionValue === undefined) continue;
+        if (argsMeta.some((arg) => arg.name === optName)) {
+          sharedOptionValues.set(optName, optionValue);
+        } else {
           input[optName] = optionValue;
         }
       }
+    }
+
+    // An option that shares its name with an arg must not overwrite the arg's
+    // value in the flat input (and the remote gateway body built from it); the
+    // arg owns that key, as in the gateway dispatcher. When the arg was left
+    // out, the option fills the key, so `pages list --project <ref>` still
+    // reaches the gateway, which hands the key to the arg.
+    for (const [optName, optionValue] of sharedOptionValues) {
+      if (input[optName] === undefined) input[optName] = optionValue;
     }
 
     let remoteConfig: RemoteGatewayConfig | null;
@@ -240,6 +258,15 @@ function registerCommand(
         return;
       }
       if (!(error instanceof ContractError)) throw error;
+      renderContractError(error, input.json === true);
+      process.exit(error.exitCode);
+    }
+
+    // A CLI-only command dispatched to the gateway answers 404, which reads as a
+    // transport outage. It has no remote-call semantics: refuse it with the real
+    // reason instead of sending it to a route table that excludes it by design.
+    if (cliOnly && (remoteConfig || requiresRemoteGateway(process.env))) {
+      const error = cliOnlyCommandError(commandOperation(groupName, cmdMeta.name));
       renderContractError(error, input.json === true);
       process.exit(error.exitCode);
     }

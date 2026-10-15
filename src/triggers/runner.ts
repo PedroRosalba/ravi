@@ -25,9 +25,11 @@ import {
   expandHome,
 } from "../router/index.js";
 import { getAgent } from "../router/config.js";
+import { spawnedAutomationEnv } from "../runtime/turn-origin.js";
 import { dbListTriggers, dbGetTrigger, dbRecordTriggerFilterRejects, dbUpdateTriggerState } from "./triggers-db.js";
 import type { CompiledFilter } from "./filter.js";
-import type { Trigger } from "./types.js";
+import { isLegacySessionTarget, isSessionNameTemplate, type Trigger } from "./types.js";
+import { resolveTemplate, resolveTemplateStrict } from "./template.js";
 import { resolveTriggerActivation } from "./activation.js";
 import { buildTriggerPrompt } from "./prompt.js";
 import { DEFAULT_CRON_SHELL_TIMEOUT_MS, runShellCronCommand, type ShellCronRunResult } from "../cron/shell-executor.js";
@@ -35,6 +37,7 @@ import { DEFAULT_CRON_SHELL_TIMEOUT_MS, runShellCronCommand, type ShellCronRunRe
 const log = logger.child("triggers:runner");
 const EVENT_DEDUPE_TTL_MS = 60_000;
 const EVENT_DEDUPE_MAX = 2_000;
+const SESSION_NAME_MAX = 64;
 
 /** Tracks a topic subscription stream for teardown */
 type TopicSub = ReturnType<typeof nats.subscribe>;
@@ -79,6 +82,22 @@ export function planTriggerTopicRefresh(
   };
 }
 
+/**
+ * Outbound source for a trigger turn, taken from where a session last talked.
+ * `undefined` when the session has never had a chat to reply to.
+ */
+export function sourceFromSessionEntry(
+  session: { lastChannel?: string; lastAccountId?: string; lastTo?: string } | null | undefined,
+  accountId?: string,
+): { channel: string; accountId: string; chatId: string } | undefined {
+  if (!session?.lastChannel || !session.lastTo) return undefined;
+  return {
+    channel: session.lastChannel,
+    accountId: accountId ?? session.lastAccountId ?? "",
+    chatId: session.lastTo,
+  };
+}
+
 export function isTriggerOriginatedEvent(topic: string, data: unknown): boolean {
   if (topic.includes(":trigger:")) return true;
   if (!data || typeof data !== "object") return false;
@@ -106,6 +125,8 @@ export class TriggerRunner {
   private desiredTopics = new Set<string>();
   private running = false;
   private recentEventFires = new Map<string, number>();
+  /** Last fire per resolved session of named-session triggers (per-session cooldown). */
+  private keyedLastFiredAt = new Map<string, { at: number; cooldownMs: number }>();
   private recentEventFireOps = 0;
   private pendingFilterRejects = new Map<string, PendingFilterRejects>();
   private filterRejectFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -282,6 +303,10 @@ export class TriggerRunner {
       try {
         for await (const event of stream) {
           if (!this.running) break;
+          // A refresh that removed this topic calls stream.return(), but an
+          // async generator queues that behind the pending next(), so one more
+          // event still lands here. Drop it instead of firing stale triggers.
+          if (this.topicSubs.get(topic) !== subscription) break;
 
           // Skip events from trigger sessions (prevents self-fire loops)
           // Trigger sessions use pattern: ravi.agent:{id}:trigger:{triggerId}.*
@@ -292,8 +317,29 @@ export class TriggerRunner {
 
           for (const prepared of subscription.triggers) {
             const trigger = prepared.trigger;
+            // Named-session triggers cool down per resolved session: one busy
+            // session must not swallow events that belong to another.
+            let keyedCooldownKey: string | null = null;
+            if (!isLegacySessionTarget(trigger.session)) {
+              const targetName = resolveSessionTargetName(trigger.session, event);
+              if (!targetName) {
+                // Skip before touching cooldown, so every unresolved event
+                // is logged and none holds back a resolvable one.
+                log.warn("Skipping trigger fire; session name template did not resolve", {
+                  triggerId: trigger.id,
+                  triggerName: trigger.name,
+                  topic: event.topic,
+                  session: trigger.session,
+                });
+                continue;
+              }
+              keyedCooldownKey = keyedCooldownId(trigger, targetName);
+            }
+            const lastFiredAt = keyedCooldownKey
+              ? this.keyedLastFiredAt.get(keyedCooldownKey)?.at
+              : trigger.lastFiredAt;
             // Cooldown check
-            if (trigger.lastFiredAt && Date.now() - trigger.lastFiredAt < trigger.cooldownMs) {
+            if (lastFiredAt && Date.now() - lastFiredAt < trigger.cooldownMs) {
               log.debug("Trigger cooldown active, skipping", {
                 triggerId: trigger.id,
                 triggerName: trigger.name,
@@ -321,7 +367,8 @@ export class TriggerRunner {
             // Without this, multiple events arriving in rapid succession
             // all pass the cooldown check before the first fireTrigger
             // completes and updates lastFiredAt.
-            trigger.lastFiredAt = Date.now();
+            if (keyedCooldownKey) this.markKeyedFire(keyedCooldownKey, trigger.cooldownMs);
+            else trigger.lastFiredAt = Date.now();
 
             this.fireTrigger(trigger, event).catch((err) => {
               log.error("Error firing trigger", {
@@ -366,10 +413,26 @@ export class TriggerRunner {
     return false;
   }
 
+  private markKeyedFire(key: string, cooldownMs: number): void {
+    const now = Date.now();
+    this.keyedLastFiredAt.set(key, { at: now, cooldownMs });
+    if (this.keyedLastFiredAt.size > EVENT_DEDUPE_MAX) {
+      // Each entry expires on its own trigger's cooldown, so pruning for one
+      // trigger never shortens another's.
+      for (const [candidate, entry] of this.keyedLastFiredAt) {
+        if (now - entry.at >= entry.cooldownMs) this.keyedLastFiredAt.delete(candidate);
+      }
+    }
+  }
+
   /**
    * Fire a trigger with event data.
    */
-  private async fireTrigger(trigger: Trigger, event: { topic: string; data: unknown }): Promise<void> {
+  private async fireTrigger(
+    trigger: Trigger,
+    event: { topic: string; data: unknown },
+    opts: { test?: boolean } = {},
+  ): Promise<void> {
     const agentId = trigger.agentId ?? getDefaultAgentId();
     const agent = getAgent(agentId);
     if (!agent) {
@@ -393,22 +456,25 @@ export class TriggerRunner {
         const resolved = resolveSession(trigger.replySession);
         if (resolved?.name) {
           sessionName = resolved.name;
-          if (resolved.lastChannel && resolved.lastTo) {
-            source = {
-              channel: resolved.lastChannel,
-              accountId: trigger.accountId ?? resolved.lastAccountId ?? "",
-              chatId: resolved.lastTo,
-            };
-          }
+          source = sourceFromSessionEntry(resolved, trigger.accountId);
         } else {
           // Fallback: derive source from session key and use main session
           source = deriveSourceFromSessionKey(trigger.replySession) ?? undefined;
           sessionName = this.resolveMainSessionName(agentId, agentCwd);
         }
       } else {
+        // No reply override: the turn runs in the agent main session. A
+        // creator-time `replySource` stays the pinned recipient (applied
+        // below); only without one does the turn reply where the main session
+        // last talked, the routing an explicit `--reply-session <main>` gives.
+        // Without either the turn was source-less and its reply could be
+        // dropped by the gateway (2a728cd4).
         sessionName = this.resolveMainSessionName(agentId, agentCwd);
+        if (!trigger.replySource) {
+          source = sourceFromSessionEntry(resolveSession(sessionName), trigger.accountId);
+        }
       }
-    } else {
+    } else if (trigger.session === "isolated") {
       const dbKey = `agent:${agentId}:trigger:${trigger.id}`;
       const existing = resolveSession(dbKey);
       if (existing?.name) {
@@ -422,16 +488,64 @@ export class TriggerRunner {
 
       // Derive source from replySession for isolated sessions too
       if (trigger.replySession) {
-        const replyResolved = resolveSession(trigger.replySession);
-        if (replyResolved?.lastChannel && replyResolved.lastTo) {
-          source = {
-            channel: replyResolved.lastChannel,
-            accountId: trigger.accountId ?? replyResolved.lastAccountId ?? "",
-            chatId: replyResolved.lastTo,
-          };
-        } else {
-          source = deriveSourceFromSessionKey(trigger.replySession) ?? undefined;
-        }
+        source =
+          sourceFromSessionEntry(resolveSession(trigger.replySession), trigger.accountId) ??
+          deriveSourceFromSessionKey(trigger.replySession) ??
+          undefined;
+      }
+    } else {
+      const targetName = opts.test
+        ? resolveSessionTargetName(trigger.session, event, { fillUnresolved: "test" })
+        : resolveSessionTargetName(trigger.session, event);
+      if (!targetName) {
+        // Never fall back to a shared session: an unresolved name would mix
+        // events that belong to different sessions.
+        log.warn("Skipping trigger fire; session name template did not resolve", {
+          triggerId: trigger.id,
+          triggerName: trigger.name,
+          topic: event.topic,
+          session: trigger.session,
+        });
+        return;
+      }
+      // An existing session with that name is the target as is (the agent
+      // that owns it runs the turn); otherwise create it for this trigger.
+      const dbKey = `agent:${agentId}:trigger:${trigger.id}:key:${createHash("sha256").update(targetName).digest("hex").slice(0, 24)}`;
+      // The raw value first, so a session key or a name outside the
+      // normalized form still finds its session.
+      const rawTarget = resolveTemplate(trigger.session, event).trim();
+      const existing = resolveSession(rawTarget) ?? resolveSession(targetName) ?? resolveSession(dbKey);
+      if (existing && existing.agentId !== agentId && isSessionNameTemplate(trigger.session)) {
+        // A name built from event data must not reach into another agent's
+        // session; only a literal name chosen at creation may do that.
+        log.warn("Skipping trigger fire; resolved session belongs to another agent", {
+          triggerId: trigger.id,
+          triggerName: trigger.name,
+          topic: event.topic,
+          session: existing.name ?? existing.sessionKey,
+        });
+        return;
+      }
+      if (existing) {
+        // An unnamed session (e.g. the creator's, inherited by key) is reused
+        // and given a name, never replaced by a new one.
+        sessionName = existing.name ?? ensureUniqueName(targetName);
+        if (!existing.name) updateSessionName(existing.sessionKey, sessionName);
+      } else {
+        sessionName = ensureUniqueName(targetName);
+        const session = getOrCreateSession(dbKey, agentId, agentCwd, { name: sessionName });
+        if (!session.name) updateSessionName(session.sessionKey, sessionName);
+      }
+
+      if (trigger.replySession) {
+        source =
+          sourceFromSessionEntry(resolveSession(trigger.replySession), trigger.accountId) ??
+          deriveSourceFromSessionKey(trigger.replySession) ??
+          undefined;
+      } else if (!trigger.replySource) {
+        // Like main-session triggers (2a728cd4): reply where the target
+        // session last talked, unless a creator-time recipient is pinned.
+        source = sourceFromSessionEntry(existing, trigger.accountId);
       }
     }
 
@@ -610,6 +724,8 @@ export class TriggerRunner {
       RAVI_TRIGGER_MESSAGE_TS: stringField("messageTs"),
       RAVI_TRIGGER_THREAD_TS: stringField("threadTs"),
       RAVI_TRIGGER_RESPONSE_URL_ID: stringField("responseUrlId"),
+      // The command acts for this trigger, never as the operator's terminal.
+      ...spawnedAutomationEnv("trigger", trigger.id),
     };
   }
 
@@ -810,14 +926,18 @@ export class TriggerRunner {
           continue;
         }
 
-        await this.fireTrigger(trigger, {
-          topic: trigger.topic,
-          data: {
-            _test: true,
-            message: "Test event fired via CLI",
-            timestamp: new Date().toISOString(),
+        await this.fireTrigger(
+          trigger,
+          {
+            topic: trigger.topic,
+            data: {
+              _test: true,
+              message: "Test event fired via CLI",
+              timestamp: new Date().toISOString(),
+            },
           },
-        });
+          { test: true },
+        );
       }
     } catch (err) {
       log.error("Test subscription error", { error: err });
@@ -903,4 +1023,39 @@ function sortForStableStringify(value: unknown): unknown {
     sorted[key] = sortForStableStringify(record[key]);
   }
   return sorted;
+}
+
+/** Per-session cooldown id for a named-session trigger. */
+function keyedCooldownId(trigger: Trigger, sessionName: string): string {
+  return `${trigger.id}\u0000${sessionName}`;
+}
+
+/**
+ * The session name a trigger targets for one event: its `session` template
+ * resolved against the event and normalized to a session name (lowercase,
+ * alphanumerics and hyphens, max 64; longer names end in a hash of the
+ * whole name), or null when a placeholder did not
+ * resolve to a non-empty value (missing, null, empty) or nothing is left.
+ * `fillUnresolved` replaces those placeholders instead (`ravi triggers test`).
+ */
+export function resolveSessionTargetName(
+  session: string,
+  event: { topic: string; data: unknown },
+  opts: { fillUnresolved?: string } = {},
+): string | null {
+  let resolved = resolveTemplateStrict(session, event);
+  if (resolved === null) {
+    if (opts.fillUnresolved === undefined) return null;
+    const fill = opts.fillUnresolved;
+    resolved = session.replace(/\{\{([^}]+)\}\}/g, (match) => resolveTemplateStrict(match, event) ?? fill);
+  }
+  const name = resolved
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (name.length <= SESSION_NAME_MAX) return name || null;
+  // Keep long names that share a prefix apart: a hash of the whole name
+  // replaces the tail.
+  const hash = createHash("sha256").update(name).digest("hex").slice(0, 8);
+  return `${name.slice(0, SESSION_NAME_MAX - hash.length - 1).replace(/-+$/, "")}-${hash}`;
 }

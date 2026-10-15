@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { CliExpectedError } from "../../cli/expected-error.js";
 import type { SlackBlockKitBlock } from "./block-kit.js";
 
 export interface SlackWebApiClientOptions {
@@ -17,6 +18,9 @@ export interface SlackPostMessageInput {
   readonly clientMsgId?: string;
   readonly blocks?: readonly SlackBlockKitBlock[];
   readonly metadata?: Record<string, unknown>;
+  /** Set false so Slack does not fetch links in the message (for single-use URLs). */
+  readonly unfurlLinks?: boolean;
+  readonly unfurlMedia?: boolean;
 }
 
 export interface SlackPostEphemeralInput extends SlackPostMessageInput {
@@ -368,6 +372,12 @@ export class SlackWebApiClient {
     if (input.metadata) {
       body.metadata = JSON.stringify(input.metadata);
     }
+    if (input.unfurlLinks !== undefined) {
+      body.unfurl_links = input.unfurlLinks;
+    }
+    if (input.unfurlMedia !== undefined) {
+      body.unfurl_media = input.unfurlMedia;
+    }
 
     const response = await this.apiRequest<SlackPostMessageResponse>("chat.postMessage", this.botToken, body);
     if (!response.channel || !response.ts) {
@@ -483,6 +493,8 @@ export class SlackWebApiClient {
         message: input.message ? JSON.stringify(input.message) : undefined,
         view: input.view ? JSON.stringify(input.view) : undefined,
       }),
+      // A rejected payload is the validation answer, not a request failure.
+      { okErrors: SLACK_BLOCKS_VALIDATION_ERRORS },
     );
   }
 
@@ -530,8 +542,8 @@ export class SlackWebApiClient {
     };
   }
 
-  async usersInfo(user: string): Promise<SlackUserInfoResponse> {
-    return this.apiRequest<SlackUserInfoResponse>("users.info", this.botToken, { user });
+  async usersInfo(user: string, options: { signal?: AbortSignal } = {}): Promise<SlackUserInfoResponse> {
+    return this.apiRequest<SlackUserInfoResponse>("users.info", this.botToken, { user }, options);
   }
 
   async addReaction(input: SlackReactionInput): Promise<Record<string, unknown>> {
@@ -809,7 +821,7 @@ export class SlackWebApiClient {
       if (payload.ok === false && options.okErrors?.includes(error)) {
         return payload;
       }
-      throw new Error(`Slack ${method} failed: ${formatSlackApiError(payload, error)}`);
+      throw new SlackApiError(method, error, formatSlackApiError(payload, error));
     }
     return payload;
   }
@@ -837,10 +849,43 @@ export class SlackWebApiClient {
       if (payload.ok === false && options.okErrors?.includes(error)) {
         return { payload, headers: res.headers };
       }
-      throw new Error(`Slack ${method} failed: ${formatSlackApiError(payload, error)}`);
+      throw new SlackApiError(method, error, formatSlackApiError(payload, error));
     }
     return { payload, headers: res.headers };
   }
+}
+
+/**
+ * Slack Web API answered with `ok: false` (or a non-2xx status). It is an
+ * expected failure, so CLI and gateway callers get a structured
+ * `SLACK_<ERROR>` code instead of an opaque HTTP 500.
+ */
+const SLACK_BLOCKS_VALIDATION_ERRORS = ["invalid_blocks", "invalid_blocks_format"] as const;
+
+export class SlackApiError extends CliExpectedError {
+  readonly method: string;
+  readonly slackError: string;
+
+  constructor(method: string, slackError: string, detail: string = slackError) {
+    super(
+      `Slack ${method} failed: ${detail}`,
+      slackApiErrorCode(slackError),
+      1,
+      `Fix the Slack ${method} request (Slack error: ${slackError}) and retry`,
+    );
+    this.name = "SlackApiError";
+    this.method = method;
+    this.slackError = slackError;
+  }
+}
+
+export function slackApiErrorCode(slackError: string): string {
+  const suffix = slackError
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 50);
+  return suffix ? `SLACK_${suffix}` : "SLACK_API_ERROR";
 }
 
 function compactBody(input: Record<string, unknown>): Record<string, unknown> {

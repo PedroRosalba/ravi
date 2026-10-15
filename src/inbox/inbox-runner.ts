@@ -28,6 +28,7 @@ import {
 } from "../mailbox/console-ingest.js";
 import { flushNats, publish } from "../nats.js";
 import { logger } from "../utils/logger.js";
+import { handOffMeetingInboxItem } from "../meetings/inbox-handoff.js";
 import { watchEventFromInboxPayload } from "../watch/events.js";
 import {
   ackInboxItems as ackInboxItemsRemote,
@@ -54,6 +55,9 @@ import {
   upsertDeliveredItem,
 } from "./inbox-db.js";
 import { enrichMailMessageReceivedPayload, withMailEnrichmentFailure } from "./mail-enrichment.js";
+import { basesApiRoot } from "../bases/client.js";
+import type { BaseRowWriteResponse } from "../bases/schemas.js";
+import { enrichBasesRowPayload, isBasesRowInboxEvent } from "./bases-enrichment.js";
 import { INBOX_NATS_SUBJECT, type ConsoleInboxItem, type InboxNatsPayload } from "./types.js";
 
 const log = logger.child("inbox:runner");
@@ -76,6 +80,8 @@ const POLL_LOCK_TTL_MS = 120_000;
 const POLL_LOCK_RENEW_MS = 30_000;
 
 interface RunnerOptions {
+  /** Called once per newly delivered item; turns cloud meeting events into local artifacts. */
+  meetingHandoff?: (payload: InboxNatsPayload) => void;
   intervalMs?: number;
   nats?: InboxNatsPublishDependencies;
 }
@@ -118,10 +124,12 @@ export class InboxRunner {
   private readonly lockOwnerId = randomUUID();
   private readonly natsDependencies: InboxNatsPublishDependencies;
   private tickInFlight: Promise<void> | null = null;
+  private readonly meetingHandoff: (payload: InboxNatsPayload) => void;
 
   constructor(options: RunnerOptions = {}) {
     this.intervalMs = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.natsDependencies = options.nats ?? { publish, flush: flushNats };
+    this.meetingHandoff = options.meetingHandoff ?? ((payload) => void handOffMeetingInboxItem(payload));
   }
 
   async start(): Promise<void> {
@@ -660,6 +668,13 @@ export class InboxRunner {
     // 3. Mark delivered locally so we can ack to Console.
     input.assertPollLock();
     markItemDelivered(localItem.id, Date.now());
+    // 4. Side work that must not hold the poll or undo the delivery: cloud
+    // meeting recordings.
+    try {
+      this.meetingHandoff(enrichedNatsPayload);
+    } catch (error) {
+      log.warn("Meeting inbox handoff failed", { itemId: input.item.itemId, error: errMessage(error) });
+    }
     return { delivered: true };
   }
 
@@ -671,6 +686,28 @@ export class InboxRunner {
     },
     natsPayload: InboxNatsPayload,
   ): Promise<InboxNatsPayload> {
+    if (isBasesRowInboxEvent(input.item.eventType)) {
+      const enriched = await enrichBasesRowPayload(natsPayload, ({ projectId, baseId, rowId, includeArchived }) =>
+        this.withAutoRefresh(input.client, input.credentials, (token) =>
+          input.client.requestJson<BaseRowWriteResponse>(
+            "GET",
+            `${basesApiRoot(projectId)}/${encodeURIComponent(baseId)}/rows/${encodeURIComponent(rowId)}${
+              includeArchived ? "?includeArchived=1" : ""
+            }`,
+            undefined,
+            token,
+          ),
+        ),
+      );
+      const rowEnrichment = enriched.payload?.rowEnrichment as { status?: string; code?: string } | undefined;
+      if (rowEnrichment?.status === "failed") {
+        log.warn("Bases row enrichment failed; publishing metadata-only payload", {
+          itemId: input.item.itemId,
+          code: rowEnrichment.code,
+        });
+      }
+      return enriched;
+    }
     if (input.item.eventType !== "mail.message.received") return natsPayload;
     const mailClient = new RaviMailClient(input.client);
     let lastError: unknown = null;

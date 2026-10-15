@@ -2459,6 +2459,34 @@ function getDb(): Database {
     CREATE INDEX IF NOT EXISTS idx_console_inbox_poll_locks_expiry
       ON console_inbox_poll_locks(expires_at);
 
+    -- ravi link: Console link requests this install is waiting on, with where
+    -- to confirm. IDs and chat coordinates only; the approval token is never stored.
+    CREATE TABLE IF NOT EXISTS cloud_link_requests (
+      id                TEXT PRIMARY KEY,
+      console_url       TEXT NOT NULL,
+      installation_id   TEXT NOT NULL,
+      contact_id        TEXT NOT NULL,
+      display_name      TEXT,
+      origin_channel    TEXT,
+      origin_account_id TEXT,
+      origin_chat_id    TEXT,
+      origin_thread_id  TEXT,
+      origin_message_id TEXT,
+      dm_channel        TEXT NOT NULL,
+      dm_account_id     TEXT NOT NULL,
+      dm_chat_id        TEXT NOT NULL,
+      status            TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending','approved','denied','expired','cancelled','failed')),
+      expires_at        INTEGER NOT NULL,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL,
+      completed_at      INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_cloud_link_requests_status
+      ON cloud_link_requests(status, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_cloud_link_requests_contact
+      ON cloud_link_requests(contact_id, status);
+
     -- Local-first sync: optional, best-effort replication ledger.
     -- SQLite remains the local source of truth; these tables are durable queues
     -- for remote bridge delivery and cursor-based remote intake.
@@ -2929,6 +2957,7 @@ function getDb(): Database {
       shell_timeout_ms INTEGER,
       shell_env_file TEXT,
       on_error TEXT,
+      owner_principal TEXT,
 
       -- State
       next_run_at INTEGER,
@@ -2978,7 +3007,7 @@ function getDb(): Database {
       agent_id TEXT,
       topic TEXT NOT NULL,
       message TEXT NOT NULL,
-      session TEXT DEFAULT 'isolated' CHECK(session IN ('main','isolated')),
+      session TEXT DEFAULT 'isolated',
       enabled INTEGER DEFAULT 1,
       cooldown_ms INTEGER DEFAULT 5000,
       last_fired_at INTEGER,
@@ -3039,6 +3068,7 @@ function getDb(): Database {
   }
   ensureColumn(db, "triggers", "filter_reject_count", "INTEGER DEFAULT 0");
   ensureColumn(db, "triggers", "last_filter_reject_at", "INTEGER");
+  migrateTriggerSessionCheck(db);
 
   // Migration: add account_id column to cron_jobs
   const cronColumns = db.prepare("PRAGMA table_info(cron_jobs)").all() as Array<{ name: string }>;
@@ -3069,6 +3099,13 @@ function getDb(): Database {
   if (!cronColumns.some((c) => c.name === "last_exit_code")) {
     db.exec("ALTER TABLE cron_jobs ADD COLUMN last_exit_code INTEGER");
     log.info("Added last_exit_code column to cron_jobs table");
+  }
+  // Who a job runs as for personal connectors: `operator`, or the actor
+  // principal of the turn that created it. NULL (rows created before this
+  // column) means the operator.
+  if (!cronColumns.some((c) => c.name === "owner_principal")) {
+    db.exec("ALTER TABLE cron_jobs ADD COLUMN owner_principal TEXT");
+    log.info("Added owner_principal column to cron_jobs table");
   }
 
   // Migration: add heartbeat_account_id column to agents
@@ -9144,6 +9181,17 @@ export function dbDeleteAgent(id: string): boolean {
   const s = getStatements();
   // Clean up per-agent skill grants so a same-id recreation does not inherit orphans.
   s.deleteSkillGrantsForAgent.run(id);
+  // Same for its connector modes (`connectors.mode.<id>.<provider>`): a new
+  // agent with this id starts at `owner`, never at a mode set for the old one.
+  // An exact prefix match plus a provider with no dot, so `a` never takes
+  // `a.b`'s keys.
+  const modePrefix = `connectors.mode.${id}.`;
+  const modeKeys = getDb().prepare("SELECT key FROM settings WHERE key LIKE 'connectors.mode.%'").all() as Array<{
+    key: string;
+  }>;
+  for (const { key } of modeKeys) {
+    if (key.startsWith(modePrefix) && !key.slice(modePrefix.length).includes(".")) s.deleteSetting.run(key);
+  }
   s.deleteAgent.run(id);
   if (getDbChanges() > 0) {
     log.info("Deleted agent", { id });
@@ -11116,4 +11164,54 @@ export function dbListAuditLog(entity?: string, limit = 100): AuditEntry[] {
     actor: r.actor,
     ts: r.ts,
   }));
+}
+
+const LEGACY_TRIGGER_SESSION_CHECK = /\s*CHECK\s*\(\s*session\s+IN\s*\(\s*'main'\s*,\s*'isolated'\s*\)\s*\)/;
+
+/**
+ * Older databases constrain `triggers.session` to main|isolated, but a trigger
+ * session is now any session name (or name template). SQLite cannot drop a
+ * CHECK, so rebuild the table from its stored definition (which keeps every
+ * column added by later migrations) without it.
+ */
+export function migrateTriggerSessionCheck(database: Database): void {
+  // Same lock-before-inspect rule as ensureChannelOutboundReceiptSchema: a
+  // daemon and CLI can initialize the database concurrently.
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const tableRow = database
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'triggers'")
+      .get() as { sql: string | null } | undefined;
+    const sql = tableRow?.sql ?? "";
+    if (!LEGACY_TRIGGER_SESSION_CHECK.test(sql)) {
+      database.exec("COMMIT");
+      return;
+    }
+    const rebuiltSql = sql
+      .replace(LEGACY_TRIGGER_SESSION_CHECK, "")
+      .replace(/^CREATE TABLE\s+("?)triggers\1/, "CREATE TABLE triggers_session_migration");
+    if (!rebuiltSql.startsWith("CREATE TABLE triggers_session_migration")) {
+      throw new Error("Unexpected triggers table definition; cannot migrate session CHECK");
+    }
+    // DROP TABLE removes the table's indexes; recreate them as they were.
+    const indexSqls = (
+      database
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'triggers' AND sql IS NOT NULL")
+        .all() as Array<{ sql: string }>
+    ).map((row) => row.sql);
+    database.exec(rebuiltSql);
+    database.exec("INSERT INTO triggers_session_migration SELECT * FROM triggers");
+    database.exec("DROP TABLE triggers");
+    database.exec("ALTER TABLE triggers_session_migration RENAME TO triggers");
+    for (const indexSql of indexSqls) database.exec(indexSql);
+    database.exec("COMMIT");
+    log.info("Dropped the triggers.session main|isolated CHECK; sessions are now names");
+  } catch (error) {
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // SQLite may already have rolled the transaction back.
+    }
+    throw error;
+  }
 }

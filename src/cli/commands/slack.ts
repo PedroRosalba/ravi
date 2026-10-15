@@ -51,8 +51,11 @@ import {
   type ArtifactVersion,
 } from "../../artifacts/store.js";
 import { Arg, Command, CommandAccess, Group, Option, Returns } from "../decorators.js";
-import { contractDryRun, contractFail, pickFields, suggestSimilar } from "../agent-contract.js";
+import { CONTRACT_EXIT_USAGE, contractDryRun, contractFail, pickFields, suggestSimilar } from "../agent-contract.js";
 import { fail, getContext } from "../context.js";
+import { resolveCallerPath } from "../caller-cwd.js";
+import { CliExpectedError } from "../expected-error.js";
+import { CloudAuthError, isCloudAuthError } from "../../cloud-auth/errors.js";
 import { jsonObjectSchema, jsonValueSchema } from "../return-schemas.js";
 
 const slackPaginationReturnSchema = z
@@ -218,12 +221,16 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 function resolveSlackChannelConfig(channelName?: string): ChannelConfig | undefined {
   const channels = configStore.getConfig().channels ?? {};
   const context = getContext();
+  const enabledSlack = Object.values(channels).filter(
+    (channel) => channel.enabled !== false && channel.provider === "slack",
+  );
   const resolvedName =
     channelName?.trim() || (context?.source?.channel === "slack" ? context.source.accountId?.trim() : undefined);
-  if (!resolvedName) return undefined;
-  return Object.values(channels).find(
-    (channel) => channel.enabled !== false && channel.provider === "slack" && channel.name === resolvedName,
-  );
+  // Over the SDK gateway `--channel` shares its body key with the positional
+  // conversation id, so it never arrives; a host with one Slack channel config
+  // has nothing to choose, so use it instead of failing.
+  if (!resolvedName) return enabledSlack.length === 1 ? enabledSlack[0] : undefined;
+  return enabledSlack.find((channel) => channel.name === resolvedName);
 }
 
 /** Enabled Slack channel-config names from the LOCAL config store (cheap source for suggestions). */
@@ -251,7 +258,7 @@ function resolveSlackOpsTarget(channelName: string | undefined, contract: SlackC
       "CHANNEL_NOT_FOUND",
       requested
         ? `Slack channel config not found: ${requested}`
-        : "Slack channel not resolved. Pass --channel <name> or run from a Slack-sourced context.",
+        : "Slack channel not resolved. Pass --channel <name> (local CLI) or run from a Slack-sourced context.",
       {
         asJson: contract.asJson,
         details: {
@@ -372,19 +379,53 @@ function parseRequiredCsvOption(value: string, label: string): string[] {
   return items;
 }
 
+/**
+ * Payload problems are the caller's input errors (PAYLOAD_INVALID, exit 2),
+ * never an opaque gateway 500. Paths resolve against the caller cwd because
+ * gateway handlers run in the daemon process.
+ */
+function slackPayloadInvalid(message: string): CloudAuthError {
+  return new CloudAuthError("PAYLOAD_INVALID", message, {
+    exitCode: CONTRACT_EXIT_USAGE,
+    issues: [{ path: ["file"], code: "invalid", message }],
+  });
+}
+
+function slackPayloadInput<T>(build: () => T): T {
+  try {
+    return build();
+  } catch (error) {
+    if (isCloudAuthError(error) || error instanceof CliExpectedError || !(error instanceof Error)) throw error;
+    throw slackPayloadInvalid(error.message);
+  }
+}
+
+function readSlackJsonFile(path: string): unknown {
+  let source: string;
+  try {
+    source = readFileSync(resolveCallerPath(path), "utf8");
+  } catch {
+    throw slackPayloadInvalid(`Invalid payload file: could not read ${path}`);
+  }
+  return slackPayloadInput(() => parseSlackBlockKitJson(source));
+}
+
 function readSlackBlockKitJsonFile(path: string): unknown {
-  return parseSlackBlockKitJson(readFileSync(path, "utf8"));
+  return readSlackJsonFile(path);
 }
 
 function readJsonObjectFile(path: string, label: string): Record<string, unknown> {
-  const parsed = parseSlackBlockKitJson(readFileSync(path, "utf8"));
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail(`${label} must be a JSON object`);
+  const parsed = readSlackJsonFile(path);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw slackPayloadInvalid(`${label} must be a JSON object`);
   return parsed as Record<string, unknown>;
 }
 
 function readSlackViewJsonFile(path: string): Record<string, unknown> {
-  const validation = normalizeSlackBlockKitValidationPayload(readSlackBlockKitJsonFile(path), "view");
-  if (!validation.view) fail("Block Kit view payload must be a JSON object");
+  const validation = slackPayloadInput(() =>
+    normalizeSlackBlockKitValidationPayload(readSlackBlockKitJsonFile(path), "view"),
+  );
+  if (!validation.view) throw slackPayloadInvalid("Block Kit view payload must be a JSON object");
   return validation.view;
 }
 
@@ -1436,7 +1477,9 @@ export class SlackCommands {
     @Option({ flags: "--target <target>", description: "Validation target: blocks, message or view" }) target?: string,
     @Option({ flags: "--json", description: "Print raw JSON result" }) asJson?: boolean,
   ) {
-    const validation = normalizeSlackBlockKitValidationPayload(readSlackBlockKitJsonFile(file), target);
+    const validation = slackPayloadInput(() =>
+      normalizeSlackBlockKitValidationPayload(readSlackBlockKitJsonFile(file), target),
+    );
     const request = slackBlockKitValidationRequest(validation);
     const { client, config } = await createSlackOpsContext(raviChannel, "blocks.validate", {
       op: "slack blocks-validate",
@@ -1452,6 +1495,7 @@ export class SlackCommands {
         target: validation.target,
         file,
         valid: raw.ok === true,
+        ...(raw.ok !== true && raw.error ? { error: raw.error } : {}),
       },
       raw,
     };
@@ -1492,7 +1536,9 @@ export class SlackCommands {
     execute?: boolean,
   ) {
     const op = "slack blocks-send";
-    const message = normalizeSlackBlockKitMessagePayload(readSlackBlockKitJsonFile(file), text);
+    const message = slackPayloadInput(() =>
+      normalizeSlackBlockKitMessagePayload(readSlackBlockKitJsonFile(file), text),
+    );
     const method = ephemeralUser ? "chat.postEphemeral" : "chat.postMessage";
     const request = {
       channel,
@@ -1559,7 +1605,9 @@ export class SlackCommands {
     execute?: boolean,
   ) {
     const op = "slack blocks-update";
-    const message = normalizeSlackBlockKitMessagePayload(readSlackBlockKitJsonFile(file), text);
+    const message = slackPayloadInput(() =>
+      normalizeSlackBlockKitMessagePayload(readSlackBlockKitJsonFile(file), text),
+    );
     const request = { channel, ts, file, text: message.text, blocks: message.blocks };
     const { client, config } = await this.mutationOpsContext({
       channelName: raviChannel,
@@ -1849,10 +1897,11 @@ export class SlackCommands {
     if (normalizedTarget !== "message" && normalizedTarget !== "detail") {
       fail("Slack Work Object validation target must be message or detail.");
     }
-    const normalized =
+    const normalized = slackPayloadInput(() =>
       normalizedTarget === "detail"
         ? normalizeSlackNativeWorkObjectDetailMetadata(input)
-        : normalizeSlackNativeWorkObjectMetadata(input);
+        : normalizeSlackNativeWorkObjectMetadata(input),
+    );
     const payload = {
       ok: true,
       provider: "slack" as const,
@@ -1896,9 +1945,8 @@ export class SlackCommands {
     })
     execute?: boolean,
   ) {
-    const message = normalizeSlackNativeWorkObjectMessagePayload(
-      readJsonObjectFile(file, "Slack Work Object message payload"),
-      text,
+    const message = slackPayloadInput(() =>
+      normalizeSlackNativeWorkObjectMessagePayload(readJsonObjectFile(file, "Slack Work Object message payload"), text),
     );
     const request = {
       channel,
@@ -1958,9 +2006,8 @@ export class SlackCommands {
     })
     execute?: boolean,
   ) {
-    const unfurl = normalizeSlackNativeWorkObjectUnfurlPayload(
-      readJsonObjectFile(file, "Slack Work Object unfurl payload"),
-      url,
+    const unfurl = slackPayloadInput(() =>
+      normalizeSlackNativeWorkObjectUnfurlPayload(readJsonObjectFile(file, "Slack Work Object unfurl payload"), url),
     );
     const op = "slack work-objects-unfurl";
     const request = { channel, ts, url, file, ...unfurl };
@@ -2023,8 +2070,8 @@ export class SlackCommands {
     })
     execute?: boolean,
   ) {
-    const metadata = normalizeSlackNativeWorkObjectDetailMetadata(
-      readJsonObjectFile(file, "Slack Work Object detail metadata"),
+    const metadata = slackPayloadInput(() =>
+      normalizeSlackNativeWorkObjectDetailMetadata(readJsonObjectFile(file, "Slack Work Object detail metadata")),
     );
     const op = "slack work-objects-present-details";
     const request = { triggerId, file, metadata };

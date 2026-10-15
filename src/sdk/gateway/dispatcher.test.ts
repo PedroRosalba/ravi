@@ -51,6 +51,26 @@ class GatewayDemoCommands {
     };
   }
 
+  @Command({ name: "collide", description: "Arg and option share one name" })
+  @CommandAccess({ kind: "read", resource: "demo", action: "collide", risk: "low", input: ["channel"] })
+  @Returns(z.object({ channel: z.string(), configName: z.string().nullable() }))
+  collide(
+    @Arg("channel", { description: "Provider conversation id" }) channel: string,
+    @Option({ flags: "--channel <name>", description: "Config name" }) configName?: string,
+  ) {
+    return { channel, configName: configName ?? null };
+  }
+
+  @Command({ name: "collide-optional", description: "Optional arg and a same-meaning option share one name" })
+  @CommandAccess({ kind: "read", resource: "demo", action: "collide-optional", risk: "low", input: ["project"] })
+  @Returns(z.object({ project: z.string().nullable(), projectOption: z.string().nullable() }))
+  collideOptional(
+    @Arg("project", { required: false, description: "Project ref" }) project?: string,
+    @Option({ flags: "--project <ref>", description: "Project ref" }) projectOption?: string,
+  ) {
+    return { project: project ?? null, projectOption: projectOption ?? null };
+  }
+
   @Command({ name: "redacted", description: "Redact sensitive command input from audits" })
   @CommandAccess({
     kind: "read",
@@ -372,6 +392,28 @@ describe("dispatch — body shape (flat-only)", () => {
       shout: true,
       limit: "5",
     });
+  });
+
+  it("gives a body key to the arg when an option shares its name", async () => {
+    const result = await dispatch(
+      findCmd("demo.collide"),
+      { channel: "C0PRIVATE1" },
+      {},
+      { contextRecord: demoContext, emitAudit: captureAudits().emit },
+    );
+    expect(result.response.status).toBe(200);
+    expect(await result.response.json()).toEqual({ channel: "C0PRIVATE1", configName: null });
+  });
+
+  it("hands a shared key to an optional arg, so `--project` sent alone still reaches the command", async () => {
+    const result = await dispatch(
+      findCmd("demo.collide-optional"),
+      { project: "project-a" },
+      {},
+      { contextRecord: demoContext, emitAudit: captureAudits().emit },
+    );
+    expect(result.response.status).toBe(200);
+    expect(await result.response.json()).toEqual({ project: "project-a", projectOption: null });
   });
 
   it("redacts command-declared fields from gateway audits", async () => {

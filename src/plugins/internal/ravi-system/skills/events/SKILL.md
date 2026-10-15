@@ -9,6 +9,9 @@ description: |
 
 # NATS Event Bus
 
+> Verbos: REAGIR (catálogo de tópicos). Compõe com: triggers.
+> Solução com mais de uma peça? `ravi skills show solucoes` primeiro.
+
 O NATS é o pub/sub central do Ravi. Todas as mensagens, prompts, tool calls e respostas passam por ele como eventos em tópicos.
 
 ## Conceitos
@@ -106,6 +109,7 @@ o subject no registry antes de documentar ou usar em trigger.
 | `ravi.inbound.reply` | `{ targetMessageId, text, senderId }` |
 | `ravi.inbound.pollVote` | `{ pollMessageId, votes: [{ name, voters[] }] }` — subscriber existe, publisher vem do omni |
 | `ravi.inbound.thread.created` | `{ provider, eventType, channelId, threadTs, messageTs, userId, canonicalChatId, sessionKey, sessionName, agentId }` — thread nativa de canal criou uma nova sessao Ravi |
+| `ravi.inbound.session.created` | `{ provider, eventType, channelId, userId, sessionKey, sessionName, agentId, canonicalChatId, threadTs? }` — sessao Ravi criada a partir de uma mensagem de canal (canal raiz ou thread) |
 
 > As mensagens inbound dos canais chegam via **omni JetStream** nos subjects `message.received.{channelType}.{instanceId}`, não via pub/sub ravi. O `OmniConsumer` consome esses streams e traduz para prompts de sessão.
 > Reações são normalizadas em `ravi.inbound.reaction` pelo Omni (`reaction.received`) e pelo Slack nativo (`reaction_added`). Aliases como `whatsapp.*.reaction` não são publicados.

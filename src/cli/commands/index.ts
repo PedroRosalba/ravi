@@ -5,6 +5,7 @@
  * Run: bun run gen:commands
  */
 
+export * from "./access.js";
 export * from "./adapters.js";
 export * from "./agents.js";
 export * from "./apps.js";
@@ -39,12 +40,13 @@ export * from "./gmail.js";
 export * from "./group.js";
 export * from "./heartbeat.js";
 export * from "./hooks.js";
+export * from "./identity.js";
 export * from "./image.js";
 export * from "./inbox.js";
 export * from "./insights.js";
 export * from "./instances.js";
+export * from "./invites.js";
 export * from "./jobs.js";
-export * from "./link.js";
 export * from "./mail.js";
 export * from "./media.js";
 export * from "./meetings.js";
