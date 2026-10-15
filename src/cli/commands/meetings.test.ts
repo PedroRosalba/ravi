@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContractError } from "../agent-contract.js";
 import { runWithContext } from "../context.js";
+import { getCliOnlyMetadata } from "../decorators.js";
 import { MeetingProfileCommands, MeetingsCommands } from "./meetings.js";
 
 let tempDir: string | undefined;
@@ -69,6 +70,9 @@ describe("MeetingsCommands", () => {
         undefined,
         undefined,
         true,
+        true,
+        undefined,
+        undefined,
         true,
       ),
     );
@@ -155,6 +159,7 @@ describe("MeetingsCommands", () => {
         true,
         undefined,
         "default",
+        true,
       ),
     );
 
@@ -398,13 +403,76 @@ describe("MeetingsCommands", () => {
           undefined,
           true,
           true,
+          undefined,
+          undefined,
+          true,
         ),
       );
 
       expect(result).toMatchObject({ mode: "dry-run", provider: "google-meet" });
     });
+
+    it("join sends the cloud bot by default: dry-run shows the Console request and needs no recorder", async () => {
+      delete process.env.RAVI_GOOGLE_MEET_RECORDER_BIN;
+      process.env.PATH = "";
+      const { output, result } = await captureConsole(() =>
+        cloudJoin({ url: "meet.google.com/ABC-defg-hij?authuser=1", name: "Notas", maxDuration: "3700" }),
+      );
+      const expected = {
+        mode: "dry-run",
+        runtime: "cloud",
+        provider: "google-meet",
+        request: { meetingUrl: "https://meet.google.com/abc-defg-hij", botName: "Notas", maxMinutes: 62 },
+      };
+      expect(result).toMatchObject(expected);
+      expect(JSON.parse(output)).toMatchObject(expected);
+    });
+
+    it("join refuses local recorder options without --local and links that are not Meet", async () => {
+      const localOnly = await captureConsole(() =>
+        cloudJoin({ url: "https://meet.google.com/abc-defg-hij", out: "/tmp/x" }),
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(localOnly).toBeInstanceOf(ContractError);
+      expect(localOnly).toMatchObject({ code: "LOCAL_RECORDER_OPTION", exitCode: 2 });
+
+      const notMeet = await captureConsole(() => cloudJoin({ url: "https://zoom.us/j/123" })).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(notMeet).toMatchObject({ code: "INVALID_ARGUMENT", exitCode: 2 });
+    });
   });
 });
+
+function cloudJoin(input: { url: string; name?: string; maxDuration?: string; out?: string }) {
+  return new MeetingsCommands().join(
+    undefined,
+    input.url,
+    input.name,
+    input.out,
+    undefined,
+    undefined,
+    input.maxDuration,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    true,
+    true,
+  );
+}
 
 async function captureConsole<T>(run: () => T | Promise<T>): Promise<{ output: string; result: T }> {
   const originalLog = console.log;
@@ -419,3 +487,17 @@ async function captureConsole<T>(run: () => T | Promise<T>): Promise<{ output: s
     console.log = originalLog;
   }
 }
+
+describe("meetings command annotations", () => {
+  it("exposes the provider commands to a session, keeping only login CLI-only", () => {
+    const cliOnly = getCliOnlyMetadata(MeetingsCommands);
+    // `login` opens a browser on the host: it has no remote-call semantics.
+    expect([...cliOnly]).toEqual(["login"]);
+    // These answer JSON through the provider and now carry typed returns, so an
+    // agent reaches them from a session: they used to be CLI-only for lack of a
+    // return schema, and the gateway answered 404 for them.
+    for (const method of ["join", "list", "show", "leave", "fetch"]) {
+      expect([...cliOnly]).not.toContain(method);
+    }
+  });
+});

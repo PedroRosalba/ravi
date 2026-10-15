@@ -10,6 +10,321 @@
 
 export type SdkJsonSchema = Record<string, unknown>;
 
+/** JSON Schema for the input body of `access.request`. */
+export const AccessRequestInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "execute": {
+      "description": "Send the request. Without it, prints the plan and exits 3",
+      "type": "boolean"
+    },
+    "message": {
+      "description": "Why access is needed (shown to the managers, max 500)",
+      "type": "string"
+    },
+    "url": {
+      "description": "The Ravi Page URL that was denied",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `access.request`. */
+export const AccessRequestReturnSchema = {
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "actedBy": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "operator",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "contactId": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "contact",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "contactId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "approvalNote": {
+          "type": "string"
+        },
+        "approvalUrl": {
+          "type": "string"
+        },
+        "consoleUrl": {
+          "type": "string"
+        },
+        "request": {
+          "additionalProperties": false,
+          "properties": {
+            "createdAt": {
+              "type": "string"
+            },
+            "decidedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "expiresAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "host": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "url",
+            "path",
+            "host",
+            "createdAt",
+            "expiresAt",
+            "decidedAt"
+          ],
+          "type": "object"
+        },
+        "status": {
+          "const": "requested",
+          "type": "string"
+        },
+        "success": {
+          "const": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "success",
+        "consoleUrl",
+        "actedBy",
+        "status",
+        "request",
+        "approvalUrl",
+        "approvalNote"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "actedBy": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "operator",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "contactId": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "contact",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "contactId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "consoleUrl": {
+          "type": "string"
+        },
+        "status": {
+          "const": "already_allowed",
+          "type": "string"
+        },
+        "success": {
+          "const": true,
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "consoleUrl",
+        "actedBy",
+        "status",
+        "url"
+      ],
+      "type": "object"
+    }
+  ]
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `access.status`. */
+export const AccessStatusInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "requestId": {
+      "description": "Request id printed by ravi access request",
+      "type": "string"
+    }
+  },
+  "required": [
+    "requestId"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `access.status`. */
+export const AccessStatusReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "approvalNote": {
+      "type": "string"
+    },
+    "approvalUrl": {
+      "type": "string"
+    },
+    "consoleUrl": {
+      "type": "string"
+    },
+    "request": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "type": "string"
+        },
+        "decidedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "url",
+        "path",
+        "host",
+        "createdAt",
+        "expiresAt",
+        "decidedAt"
+      ],
+      "type": "object"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "success",
+    "consoleUrl",
+    "request",
+    "approvalUrl",
+    "approvalNote"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
 /** JSON Schema for the input body of `adapters.list`. */
 export const AdaptersListInputSchema = {
   "additionalProperties": false,
@@ -33011,7 +33326,7 @@ export const ConnectorsListInputSchema = {
       "type": "string"
     },
     "project": {
-      "description": "Filter by Ravi Cloud project id",
+      "description": "Ignored: connections belong to you, not to a project (removed after 2027-01-01)",
       "type": "string"
     },
     "provider": {
@@ -33030,23 +33345,57 @@ export const ConnectorsListReturnSchema = {
       "items": {
         "additionalProperties": false,
         "properties": {
+          "accessMode": {
+            "enum": [
+              "full",
+              "read_only"
+            ],
+            "type": "string"
+          },
           "createdAt": {
             "type": "string"
           },
           "displayName": {
             "type": "string"
           },
+          "externalAccountLogin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
+          "isDefault": {
+            "type": "boolean"
+          },
           "projectId": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "provider": {
             "type": "string"
           },
           "requiresReauth": {
             "type": "boolean"
+          },
+          "scopeKind": {
+            "enum": [
+              "user",
+              "organization"
+            ],
+            "type": "string"
           },
           "scopes": {
             "items": {
@@ -33100,6 +33449,84 @@ export const ConnectorsListReturnSchema = {
   "required": [
     "connections",
     "pagination"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `connectors.mode`. */
+export const ConnectorsModeInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "description": "Agent id",
+      "type": "string"
+    },
+    "execute": {
+      "description": "Actually switch to person-asking or shared; default is a dry-run that only shows the plan (exit 3). owner applies immediately",
+      "type": "boolean"
+    },
+    "mode": {
+      "description": "owner (default) | person-asking | shared; omit to show the current mode",
+      "enum": [
+        "owner",
+        "person-asking",
+        "person_asking",
+        "shared"
+      ],
+      "type": "string"
+    },
+    "provider": {
+      "description": "Provider id (google)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "agent",
+    "provider"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `connectors.mode`. */
+export const ConnectorsModeReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "agentId": {
+      "type": "string"
+    },
+    "changed": {
+      "type": "boolean"
+    },
+    "label": {
+      "type": "string"
+    },
+    "mode": {
+      "enum": [
+        "owner",
+        "person_asking",
+        "shared"
+      ],
+      "type": "string"
+    },
+    "previousMode": {
+      "enum": [
+        "owner",
+        "person_asking",
+        "shared"
+      ],
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "agentId",
+    "provider",
+    "mode",
+    "previousMode",
+    "changed",
+    "label"
   ],
   "type": "object"
 } as const satisfies SdkJsonSchema;
@@ -33168,6 +33595,13 @@ export const ConnectorsShowReturnSchema = {
     "connection": {
       "additionalProperties": false,
       "properties": {
+        "accessMode": {
+          "enum": [
+            "full",
+            "read_only"
+          ],
+          "type": "string"
+        },
         "capabilities": {
           "items": {
             "type": "string"
@@ -33196,6 +33630,9 @@ export const ConnectorsShowReturnSchema = {
         "id": {
           "type": "string"
         },
+        "isDefault": {
+          "type": "boolean"
+        },
         "lastReauthAt": {
           "anyOf": [
             {
@@ -33206,14 +33643,48 @@ export const ConnectorsShowReturnSchema = {
             }
           ]
         },
+        "lastUsedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "projectId": {
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "provider": {
           "type": "string"
         },
         "requiresReauth": {
           "type": "boolean"
+        },
+        "revokedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scopeKind": {
+          "enum": [
+            "user",
+            "organization"
+          ],
+          "type": "string"
         },
         "scopes": {
           "items": {
@@ -33234,8 +33705,8 @@ export const ConnectorsShowReturnSchema = {
         "requiresReauth",
         "scopes",
         "createdAt",
-        "capabilities",
         "externalAccountLogin",
+        "capabilities",
         "grantedAt",
         "lastReauthAt"
       ],
@@ -46143,8 +46614,12 @@ export const FeedbackSendReturnSchema = {
 export const GmailListInputSchema = {
   "additionalProperties": false,
   "properties": {
+    "approval": {
+      "description": "Approval id the account owner approved for this exact action (from a CONNECTOR_APPROVAL_REQUIRED answer)",
+      "type": "string"
+    },
     "connector": {
-      "description": "Connector id (defaults to first active Google)",
+      "description": "Your connection id (defaults to your default Google connection, else the newest active one); only on your own turns",
       "type": "string"
     },
     "cursor": {
@@ -46162,6 +46637,10 @@ export const GmailListInputSchema = {
     "q": {
       "description": "Gmail search query (same as the web search bar)",
       "type": "string"
+    },
+    "shared": {
+      "description": "In your own chat with this agent (or a group its shared account covers), use its shared account instead of yours (the agent must be in shared mode)",
+      "type": "boolean"
     }
   },
   "type": "object"
@@ -46229,8 +46708,12 @@ export const GmailListReturnSchema = {
 export const GmailReadInputSchema = {
   "additionalProperties": false,
   "properties": {
+    "approval": {
+      "description": "Approval id the account owner approved for this exact action (from a CONNECTOR_APPROVAL_REQUIRED answer)",
+      "type": "string"
+    },
     "connector": {
-      "description": "Connector id (defaults to first active Google)",
+      "description": "Your connection id (defaults to your default Google connection, else the newest active one); only on your own turns",
       "type": "string"
     },
     "format": {
@@ -46240,6 +46723,10 @@ export const GmailReadInputSchema = {
     "id": {
       "description": "Gmail message id (from `ravi gmail list`)",
       "type": "string"
+    },
+    "shared": {
+      "description": "In your own chat with this agent (or a group its shared account covers), use its shared account instead of yours (the agent must be in shared mode)",
+      "type": "boolean"
     }
   },
   "required": [
@@ -46297,6 +46784,94 @@ export const GmailReadReturnSchema = {
     },
     "result": {
       "$ref": "#/$defs/__schema0"
+    }
+  },
+  "required": [
+    "capability",
+    "refreshed"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `gmail.send`. */
+export const GmailSendInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "approval": {
+      "description": "Approval id the account owner approved for this exact action (from a CONNECTOR_APPROVAL_REQUIRED answer)",
+      "type": "string"
+    },
+    "bcc": {
+      "description": "Bcc recipients; comma-separated",
+      "type": "string"
+    },
+    "body": {
+      "description": "Plain text body",
+      "type": "string"
+    },
+    "cc": {
+      "description": "Cc recipients; comma-separated",
+      "type": "string"
+    },
+    "connector": {
+      "description": "Your connection id (defaults to your default Google connection, else the newest active one); only on your own turns",
+      "type": "string"
+    },
+    "execute": {
+      "description": "Actually send the email; default is a dry-run that only shows the plan (exit 3)",
+      "type": "boolean"
+    },
+    "html": {
+      "description": "Optional HTML body",
+      "type": "string"
+    },
+    "inReplyTo": {
+      "description": "Message-Id this email replies to",
+      "type": "string"
+    },
+    "shared": {
+      "description": "In your own chat with this agent (or a group its shared account covers), use its shared account instead of yours (the agent must be in shared mode)",
+      "type": "boolean"
+    },
+    "subject": {
+      "description": "Email subject",
+      "type": "string"
+    },
+    "to": {
+      "description": "Recipient address; repeat or comma-separate for multiple",
+      "type": "string"
+    }
+  },
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `gmail.send`. */
+export const GmailSendReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "capability": {
+      "type": "string"
+    },
+    "refreshed": {
+      "type": "boolean"
+    },
+    "result": {
+      "additionalProperties": false,
+      "properties": {
+        "labelIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "type": "object"
     }
   },
   "required": [
@@ -49673,6 +50248,343 @@ export const InstancesTargetInputSchema = {
 export const InstancesTargetReturnSchema = {
   "additionalProperties": {},
   "properties": {},
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `invites.create`. */
+export const InvitesCreateInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "email": {
+      "description": "Email of the person to invite",
+      "type": "string"
+    },
+    "execute": {
+      "description": "Create the invite. Without it, prints the plan and exits 3",
+      "type": "boolean"
+    },
+    "reason": {
+      "description": "Why this person is invited (audit note, max 500)",
+      "type": "string"
+    },
+    "role": {
+      "description": "Organization role: viewer|developer|admin|billing|owner (default viewer)",
+      "type": "string"
+    }
+  },
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `invites.create`. */
+export const InvitesCreateReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "actedBy": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "operator",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "contactId": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "contact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "contactId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "consoleUrl": {
+      "type": "string"
+    },
+    "invite": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "invitedBy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "role",
+        "createdAt",
+        "expiresAt",
+        "invitedBy"
+      ],
+      "type": "object"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    },
+    "url": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "success",
+    "consoleUrl",
+    "actedBy",
+    "invite",
+    "url"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `invites.list`. */
+export const InvitesListInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "limit": {
+      "description": "Maximum invites to return (default: 50)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Number of invites to skip (default: 0)",
+      "type": "string"
+    }
+  },
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `invites.list`. */
+export const InvitesListReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "consoleUrl": {
+      "type": "string"
+    },
+    "invites": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "invitedBy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "role",
+          "createdAt",
+          "expiresAt",
+          "invitedBy"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "success",
+    "consoleUrl",
+    "total",
+    "pagination",
+    "invites"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `invites.revoke`. */
+export const InvitesRevokeInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "inviteId": {
+      "description": "Invite id from ravi invites list",
+      "type": "string"
+    }
+  },
+  "required": [
+    "inviteId"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `invites.revoke`. */
+export const InvitesRevokeReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "actedBy": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "operator",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "contactId": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "contact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "contactId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "consoleUrl": {
+      "type": "string"
+    },
+    "revoked": {
+      "type": "boolean"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "success",
+    "consoleUrl",
+    "actedBy",
+    "revoked"
+  ],
   "type": "object"
 } as const satisfies SdkJsonSchema;
 
@@ -58111,6 +59023,433 @@ export const MediaSendReturnSchema = {
   "type": "object"
 } as const satisfies SdkJsonSchema;
 
+/** JSON Schema for the input body of `meetings.fetch`. */
+export const MeetingsFetchInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "meetingId": {
+      "description": "Cloud meeting id (from join, list or the inbox item)",
+      "type": "string"
+    },
+    "noNotify": {
+      "default": false,
+      "description": "Do not inform the session that asked for the meeting",
+      "type": "boolean"
+    },
+    "out": {
+      "description": "Where to save media (default ~/.ravi/meetings/cloud/<id>)",
+      "type": "string"
+    },
+    "project": {
+      "description": "Console project (default: linked project)",
+      "type": "string"
+    },
+    "video": {
+      "description": "Also download the video",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "meetingId"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `meetings.fetch`. */
+export const MeetingsFetchReturnSchema = {
+  "anyOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "meeting": {
+          "additionalProperties": false,
+          "properties": {
+            "botName": {
+              "type": "string"
+            },
+            "clientRef": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "type": "string"
+            },
+            "endedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "failureReason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "joinAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maxRecordingSeconds": {
+              "type": "number"
+            },
+            "meetingCode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "meetingUrl": {
+              "type": "string"
+            },
+            "ready": {
+              "type": "boolean"
+            },
+            "recordingSeconds": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "recordingStartedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "statusSubCode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "statusSubCode",
+            "meetingUrl",
+            "meetingCode",
+            "botName",
+            "title",
+            "clientRef",
+            "ready",
+            "joinAt",
+            "recordingStartedAt",
+            "endedAt",
+            "recordingSeconds",
+            "maxRecordingSeconds",
+            "failureReason",
+            "createdAt"
+          ],
+          "type": "object"
+        },
+        "outcome": {
+          "const": "pending",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "meeting"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "joinArtifactId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "meeting": {
+          "additionalProperties": false,
+          "properties": {
+            "botName": {
+              "type": "string"
+            },
+            "clientRef": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "type": "string"
+            },
+            "endedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "failureReason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "joinAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maxRecordingSeconds": {
+              "type": "number"
+            },
+            "meetingCode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "meetingUrl": {
+              "type": "string"
+            },
+            "ready": {
+              "type": "boolean"
+            },
+            "recordingSeconds": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "recordingStartedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "statusSubCode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "statusSubCode",
+            "meetingUrl",
+            "meetingCode",
+            "botName",
+            "title",
+            "clientRef",
+            "ready",
+            "joinAt",
+            "recordingStartedAt",
+            "endedAt",
+            "recordingSeconds",
+            "maxRecordingSeconds",
+            "failureReason",
+            "createdAt"
+          ],
+          "type": "object"
+        },
+        "notified": {
+          "type": "boolean"
+        },
+        "outcome": {
+          "const": "failed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "meeting",
+        "joinArtifactId",
+        "notified"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "downloadedMediaCount": {
+          "type": "number"
+        },
+        "joinArtifactId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mediaRefCount": {
+          "type": "number"
+        },
+        "meetingId": {
+          "type": "string"
+        },
+        "notified": {
+          "type": "boolean"
+        },
+        "outcome": {
+          "const": "finalized",
+          "type": "string"
+        },
+        "rawArtifactId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rawArtifactPath": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "finalized",
+            "already_finalized",
+            "enriched",
+            "in_progress"
+          ],
+          "type": "string"
+        },
+        "transcriptSegmentCount": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "outcome",
+        "status",
+        "meetingId",
+        "joinArtifactId",
+        "rawArtifactId",
+        "rawArtifactPath",
+        "transcriptSegmentCount",
+        "mediaRefCount",
+        "downloadedMediaCount",
+        "notified"
+      ],
+      "type": "object"
+    }
+  ]
+} as const satisfies SdkJsonSchema;
+
 /** JSON Schema for the input body of `meetings.finalize`. */
 export const MeetingsFinalizeInputSchema = {
   "additionalProperties": false,
@@ -58223,6 +59562,949 @@ export const MeetingsFinalizeReturnSchema = {
     "mediaRefCount",
     "diagnosticCount",
     "session"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `meetings.join`. */
+export const MeetingsJoinInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "description": "Registered Ravi agent id for live meeting mode",
+      "type": "string"
+    },
+    "artifactId": {
+      "description": "Internal artifact id for async worker continuation",
+      "type": "string"
+    },
+    "asyncWorker": {
+      "description": "Internal background worker mode",
+      "type": "boolean"
+    },
+    "capture": {
+      "description": "Capture mode passed to the provider",
+      "type": "string"
+    },
+    "context": {
+      "description": "Freeform context injected into the live meeting agent prompt",
+      "type": "string"
+    },
+    "dryRun": {
+      "description": "Validate and print provider invocation without joining",
+      "type": "boolean"
+    },
+    "duration": {
+      "description": "Recorder duration hint",
+      "type": "string"
+    },
+    "emptyGrace": {
+      "description": "Seconds to wait after the meeting appears empty",
+      "type": "string"
+    },
+    "includeSessionContext": {
+      "description": "Inject recent Ravi session history into the live meeting prompt",
+      "type": "boolean"
+    },
+    "initialPrompt": {
+      "description": "Initial prompt for the native Ravi meeting session after join",
+      "type": "string"
+    },
+    "initialPromptDelay": {
+      "description": "Delay before --initial-prompt is spoken",
+      "type": "string"
+    },
+    "live": {
+      "description": "Enable native Ravi live agent mode",
+      "type": "boolean"
+    },
+    "local": {
+      "description": "Run the recorder in Chrome on this machine instead of sending the cloud bot",
+      "type": "boolean"
+    },
+    "maxDuration": {
+      "description": "Hard cap while waiting for the meeting to end",
+      "type": "string"
+    },
+    "name": {
+      "description": "Visible meeting participant name",
+      "type": "string"
+    },
+    "out": {
+      "description": "Recorder output base directory",
+      "type": "string"
+    },
+    "profile": {
+      "description": "Reusable meeting profile id",
+      "type": "string"
+    },
+    "profileDir": {
+      "description": "Persistent browser profile directory",
+      "type": "string"
+    },
+    "project": {
+      "description": "Console project for the cloud bot (default: linked project)",
+      "type": "string"
+    },
+    "provider": {
+      "description": "Meeting provider id. Currently: google-meet",
+      "type": "string"
+    },
+    "skipFinalize": {
+      "description": "Skip final meeting.raw artifact registration",
+      "type": "boolean"
+    },
+    "sync": {
+      "description": "Wait for provider completion before returning",
+      "type": "boolean"
+    },
+    "tools": {
+      "description": "Comma-separated Ravi tool names allowlist for live mode",
+      "type": "string"
+    },
+    "url": {
+      "description": "Meeting URL",
+      "type": "string"
+    },
+    "voiceRuntime": {
+      "description": "Voice runtime for live meeting mode. Current ready default: ravi-native",
+      "type": "string"
+    }
+  },
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `meetings.join`. */
+export const MeetingsJoinReturnSchema = {
+  "anyOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "dry-run",
+          "type": "string"
+        },
+        "project": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "providerRuntime": {
+          "type": "string"
+        },
+        "request": {
+          "additionalProperties": false,
+          "properties": {
+            "botName": {
+              "type": "string"
+            },
+            "maxMinutes": {
+              "type": "number"
+            },
+            "meetingUrl": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "meetingUrl"
+          ],
+          "type": "object"
+        },
+        "runtime": {
+          "const": "cloud",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "runtime",
+        "provider",
+        "providerRuntime",
+        "project",
+        "request"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "type": "string"
+        },
+        "artifact_id": {
+          "type": "string"
+        },
+        "events": {
+          "type": "string"
+        },
+        "hint": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "leave": {
+          "type": "string"
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "maxConcurrentBots": {
+                  "type": "number"
+                },
+                "maxRecordingSeconds": {
+                  "type": "number"
+                },
+                "monthlyBudgetUsd": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "maxConcurrentBots",
+                "maxRecordingSeconds",
+                "monthlyBudgetUsd"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "meeting": {
+          "additionalProperties": false,
+          "properties": {
+            "botName": {
+              "type": "string"
+            },
+            "clientRef": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "type": "string"
+            },
+            "endedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "failureReason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "joinAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maxRecordingSeconds": {
+              "type": "number"
+            },
+            "meetingCode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "meetingUrl": {
+              "type": "string"
+            },
+            "ready": {
+              "type": "boolean"
+            },
+            "recordingSeconds": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "recordingStartedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "statusSubCode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "statusSubCode",
+            "meetingUrl",
+            "meetingCode",
+            "botName",
+            "title",
+            "clientRef",
+            "ready",
+            "joinAt",
+            "recordingStartedAt",
+            "endedAt",
+            "recordingSeconds",
+            "maxRecordingSeconds",
+            "failureReason",
+            "createdAt"
+          ],
+          "type": "object"
+        },
+        "runtime": {
+          "const": "cloud",
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "success": {
+          "const": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "success",
+        "runtime",
+        "artifact_id",
+        "artifactId",
+        "kind",
+        "status",
+        "meeting",
+        "limits"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "providerRuntime": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "provider",
+        "providerRuntime"
+      ],
+      "type": "object"
+    }
+  ]
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `meetings.leave`. */
+export const MeetingsLeaveInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "meetingId": {
+      "description": "Cloud meeting id (from join or list)",
+      "type": "string"
+    },
+    "project": {
+      "description": "Console project (default: linked project)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "meetingId"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `meetings.leave`. */
+export const MeetingsLeaveReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "left": {
+      "type": "boolean"
+    },
+    "meeting": {
+      "additionalProperties": false,
+      "properties": {
+        "botName": {
+          "type": "string"
+        },
+        "clientRef": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "endedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failureReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "joinAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxRecordingSeconds": {
+          "type": "number"
+        },
+        "meetingCode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "meetingUrl": {
+          "type": "string"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "recordingSeconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recordingStartedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "statusSubCode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "statusSubCode",
+        "meetingUrl",
+        "meetingCode",
+        "botName",
+        "title",
+        "clientRef",
+        "ready",
+        "joinAt",
+        "recordingStartedAt",
+        "endedAt",
+        "recordingSeconds",
+        "maxRecordingSeconds",
+        "failureReason",
+        "createdAt"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "left",
+    "meeting"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `meetings.list`. */
+export const MeetingsListInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "description": "Page size (default: 20, max: 100)",
+      "type": "string"
+    },
+    "offset": {
+      "description": "Number of newer bots to skip (default: 0)",
+      "type": "string"
+    },
+    "project": {
+      "description": "Console project (default: linked project)",
+      "type": "string"
+    }
+  },
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `meetings.list`. */
+export const MeetingsListReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "botName": {
+            "type": "string"
+          },
+          "clientRef": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "endedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failureReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "joinAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxRecordingSeconds": {
+            "type": "number"
+          },
+          "meetingCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meetingUrl": {
+            "type": "string"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "recordingSeconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recordingStartedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "statusSubCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "statusSubCode",
+          "meetingUrl",
+          "meetingCode",
+          "botName",
+          "title",
+          "clientRef",
+          "ready",
+          "joinAt",
+          "recordingStartedAt",
+          "endedAt",
+          "recordingSeconds",
+          "maxRecordingSeconds",
+          "failureReason",
+          "createdAt"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "meetings": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "botName": {
+            "type": "string"
+          },
+          "clientRef": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "endedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failureReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "joinAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxRecordingSeconds": {
+            "type": "number"
+          },
+          "meetingCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meetingUrl": {
+            "type": "string"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "recordingSeconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recordingStartedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "statusSubCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "statusSubCode",
+          "meetingUrl",
+          "meetingCode",
+          "botName",
+          "title",
+          "clientRef",
+          "ready",
+          "joinAt",
+          "recordingStartedAt",
+          "endedAt",
+          "recordingSeconds",
+          "maxRecordingSeconds",
+          "failureReason",
+          "createdAt"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pagination": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "nextCommand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "returned": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "returned",
+        "total"
+      ],
+      "type": "object"
+    },
+    "project": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "project",
+    "total",
+    "pagination",
+    "items",
+    "meetings"
   ],
   "type": "object"
 } as const satisfies SdkJsonSchema;
@@ -58897,6 +61179,171 @@ export const MeetingsProfilesValidateReturnSchema = {
   "required": [
     "valid",
     "results"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `meetings.show`. */
+export const MeetingsShowInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "meetingId": {
+      "description": "Cloud meeting id (from join or list)",
+      "type": "string"
+    },
+    "project": {
+      "description": "Console project (default: linked project)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "meetingId"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `meetings.show`. */
+export const MeetingsShowReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "meeting": {
+      "additionalProperties": false,
+      "properties": {
+        "botName": {
+          "type": "string"
+        },
+        "clientRef": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "endedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failureReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "joinAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxRecordingSeconds": {
+          "type": "number"
+        },
+        "meetingCode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "meetingUrl": {
+          "type": "string"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "recordingSeconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recordingStartedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "statusSubCode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "statusSubCode",
+        "meetingUrl",
+        "meetingCode",
+        "botName",
+        "title",
+        "clientRef",
+        "ready",
+        "joinAt",
+        "recordingStartedAt",
+        "endedAt",
+        "recordingSeconds",
+        "maxRecordingSeconds",
+        "failureReason",
+        "createdAt"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "meeting"
   ],
   "type": "object"
 } as const satisfies SdkJsonSchema;
@@ -60098,6 +62545,195 @@ export const ObserversShowReturnSchema = {
   },
   "required": [
     "binding"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `pages.access`. */
+export const PagesAccessInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "url": {
+      "description": "Ravi Page URL, such as https://acme.ravi.page/report",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `pages.access`. */
+export const PagesAccessReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "actedBy": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "operator",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "contactId": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "contact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "contactId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "consoleUrl": {
+      "type": "string"
+    },
+    "grants": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "createdBy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "routeId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "routePath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "enum": [
+              "route",
+              "site"
+            ],
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "userId",
+          "scope",
+          "routeId",
+          "routePath",
+          "url",
+          "expiresAt",
+          "createdAt",
+          "createdBy"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "site": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "host"
+      ],
+      "type": "object"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    },
+    "total": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "success",
+    "consoleUrl",
+    "actedBy",
+    "site",
+    "total",
+    "grants"
   ],
   "type": "object"
 } as const satisfies SdkJsonSchema;
@@ -61991,6 +64627,599 @@ export const PagesPublishedReturnSchema = {
   "type": "object"
 } as const satisfies SdkJsonSchema;
 
+/** JSON Schema for the input body of `pages.read`. */
+export const PagesReadInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "cursor": {
+      "description": "Character offset to continue a long page (from nextCursor)",
+      "type": "string"
+    },
+    "customDomain": {
+      "description": "Allow a host that is not *.ravi.page (a custom Pages domain)",
+      "type": "boolean"
+    },
+    "format": {
+      "description": "markdown (default, text only), html (entry source), zip or files (every published file, with --out)",
+      "type": "string"
+    },
+    "maxChars": {
+      "description": "Characters to return (1000-256000, default 256000)",
+      "type": "string"
+    },
+    "out": {
+      "description": "Where --format zip writes the .zip, or --format files the directory",
+      "type": "string"
+    },
+    "url": {
+      "description": "Ravi Page URL, such as https://acme.ravi.page/weekly",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `pages.read`. */
+export const PagesReadReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "consoleUrl": {
+      "type": "string"
+    },
+    "content": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "number"
+        },
+        "format": {
+          "enum": [
+            "markdown",
+            "html",
+            "files",
+            "zip"
+          ],
+          "type": "string"
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "note": {
+          "type": "string"
+        },
+        "representation": {
+          "enum": [
+            "extracted_markdown",
+            "entry_source",
+            "file_list"
+          ],
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "totalChars": {
+          "type": "number"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "format",
+        "representation",
+        "note",
+        "text",
+        "cursor",
+        "nextCursor",
+        "totalChars",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "contentTrust": {
+      "const": "untrusted",
+      "type": "string"
+    },
+    "download": {
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "contentType": {
+                "type": "string"
+              },
+              "entrypoint": {
+                "type": "boolean"
+              },
+              "path": {
+                "type": "string"
+              },
+              "sizeBytes": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "path",
+              "contentType",
+              "sizeBytes",
+              "entrypoint"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "directory",
+            "zip"
+          ],
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "totalBytes": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "path",
+        "files",
+        "totalBytes"
+      ],
+      "type": "object"
+    },
+    "links": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "url"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "page": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "versionId": {
+              "type": "string"
+            },
+            "versionNumber": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "versionId",
+            "versionNumber"
+          ],
+          "type": "object"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "file": {
+          "additionalProperties": false,
+          "properties": {
+            "contentType": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "sha256": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sizeBytes": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "contentType",
+            "sizeBytes",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "host": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "release": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "number": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "number"
+          ],
+          "type": "object"
+        },
+        "route": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "matchType": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "path",
+            "matchType"
+          ],
+          "type": "object"
+        },
+        "siteId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "visibility": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "host",
+        "path",
+        "title",
+        "description",
+        "visibility",
+        "siteId",
+        "projectId",
+        "route",
+        "release",
+        "artifact",
+        "file"
+      ],
+      "type": "object"
+    },
+    "publicOnly": {
+      "type": "boolean"
+    },
+    "routes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "matchType": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "matchType",
+          "url",
+          "visibility"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "signals": {
+      "additionalProperties": false,
+      "properties": {
+        "raviElements": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "renderSuggested": {
+          "type": "boolean"
+        },
+        "scripts": {
+          "type": "number"
+        },
+        "staticTextChars": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "scripts",
+        "raviElements",
+        "staticTextChars",
+        "renderSuggested"
+      ],
+      "type": "object"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "success",
+    "consoleUrl",
+    "publicOnly",
+    "page",
+    "content",
+    "links",
+    "routes",
+    "signals",
+    "contentTrust"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `pages.share`. */
+export const PagesShareInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "execute": {
+      "description": "Give the access. Without it, share prints the plan and exits 3",
+      "type": "boolean"
+    },
+    "expires": {
+      "description": "End of access: 30d, 12h, 2w, or an ISO date (max 365 days)",
+      "type": "string"
+    },
+    "reason": {
+      "description": "Why this person gets access (kept on the grant, max 500)",
+      "type": "string"
+    },
+    "site": {
+      "description": "Share every private route of the page's site, not only this route",
+      "type": "boolean"
+    },
+    "url": {
+      "description": "Ravi Page URL, such as https://acme.ravi.page/report",
+      "type": "string"
+    },
+    "with": {
+      "description": "Email of the person who gets access",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `pages.share`. */
+export const PagesShareReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "actedBy": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "operator",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "contactId": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "contact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "contactId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "consoleUrl": {
+      "type": "string"
+    },
+    "created": {
+      "type": "boolean"
+    },
+    "grant": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "type": "string"
+        },
+        "createdBy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "email": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "routeId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "routePath": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "enum": [
+            "route",
+            "site"
+          ],
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "userId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "name",
+        "userId",
+        "scope",
+        "routeId",
+        "routePath",
+        "url",
+        "expiresAt",
+        "createdAt",
+        "createdBy"
+      ],
+      "type": "object"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    },
+    "userCreated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "success",
+    "consoleUrl",
+    "actedBy",
+    "created",
+    "userCreated",
+    "grant"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
 /** JSON Schema for the input body of `pages.ship`. */
 export const PagesShipInputSchema = {
   "additionalProperties": false,
@@ -62230,6 +65459,92 @@ export const PagesShipReturnSchema = {
     "success",
     "url",
     "visibility"
+  ],
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the input body of `pages.unshare`. */
+export const PagesUnshareInputSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "console": {
+      "description": "Console base URL",
+      "type": "string"
+    },
+    "grant": {
+      "description": "Grant id from ravi pages access (instead of <url> --with)",
+      "type": "string"
+    },
+    "site": {
+      "description": "Remove the whole-site grant instead of the route grant",
+      "type": "boolean"
+    },
+    "url": {
+      "description": "Ravi Page URL; omit with --grant",
+      "type": "string"
+    },
+    "with": {
+      "description": "Email of the person whose access is removed",
+      "type": "string"
+    }
+  },
+  "type": "object"
+} as const satisfies SdkJsonSchema;
+
+/** JSON Schema for the return shape of `pages.unshare`. */
+export const PagesUnshareReturnSchema = {
+  "additionalProperties": false,
+  "properties": {
+    "actedBy": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "operator",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "contactId": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "contact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "contactId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "consoleUrl": {
+      "type": "string"
+    },
+    "revoked": {
+      "type": "boolean"
+    },
+    "success": {
+      "const": true,
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "success",
+    "consoleUrl",
+    "actedBy",
+    "revoked"
   ],
   "type": "object"
 } as const satisfies SdkJsonSchema;

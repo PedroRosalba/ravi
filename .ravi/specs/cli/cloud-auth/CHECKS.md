@@ -29,6 +29,23 @@
   MUST return the file copy (never a stale Keychain item), the stale item MUST
   be deleted, one warning names the `0600` file store without token material,
   and logout removes the file copy (`bun test src/cloud-auth/storage.test.ts`).
+- Logout with another user stored MUST write the pointer with the store that
+  holds the promoted user's credentials: with a fallback file copy present
+  (locked Keychain, stale item left behind) `readCloudCredentials()` returns
+  the file copy's token, and with the file copy as the only store it returns
+  that token rather than `null`; promoting the `_legacy` slot leaves no
+  `users/_legacy/` directory (`bun test src/cloud-auth/storage.test.ts`).
+- Logout clears both stores: after a locked-Keychain fallback left a stale item,
+  `deleteCloudCredentials()` and `deleteCloudCredentialsForUser()` remove the
+  Keychain item and the file copy, `readCloudCredentialsForUser()` returns
+  `null`, promoting `_legacy` removes both, a locked Keychain at logout warns
+  instead of throwing, and the fallback warning names the surviving item when
+  its delete failed (`bun test src/cloud-auth/storage.test.ts`).
+- The Keychain backend reads with `find-generic-password -g` (argv contains
+  `-g`, never `-w`) and returns an all-digit or hex-shaped payload such as
+  `123456` or `c3a9` as text, a non-ASCII item written by an older Ravi
+  decoded, and fails closed on an unparseable `password:` line
+  (`bun test src/cloud-auth/secret-backends.test.ts`).
 - No remote-login discovery, post-login provider, or remote installation
   credential module is present in the root auth implementation.
 - Login polling retries `AUTH_PENDING`, `RATE_LIMITED`, and `SERVER_UNAVAILABLE`
