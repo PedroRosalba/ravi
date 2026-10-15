@@ -67,6 +67,39 @@ Runtime context keys are opaque credentials that connect provider turns, Ravi to
   `RAVI_STATE_DIR_KEEP_PERMISSIONS=1` opts out, and a failure never stops the
   open. The credential broker DB, `chat.db` (message contents) and
   `insights.db` follow the same rule.
+- Context keys MUST be stored as digests: `contexts.context_key` holds
+  `kh1:` + base64url(sha256(key)), never the key. The plaintext key is handed
+  back exactly once, in the record `dbCreateContext` returns at issuance
+  (`ravi daemon init-admin-key`, `ravi context issue`, turn and child
+  issuance); every other read of a record (`dbGetContext`, `dbListContexts`,
+  revoke results, `ravi context list|info|revoke`) carries the digest or no key
+  at all. A key is looked up by its digest; a stored digest presented as a
+  bearer MUST NOT resolve. Rows written by an older Ravi still hold plaintext:
+  lookups accept them until the daemon hashes them at boot
+  (`migrateContextKeysToDigest`, one idempotent transaction with a logged
+  count). Precedence is deterministic: a lookup resolves the digest row first
+  and consults a plaintext row only when no digest matched, whatever the
+  insertion order. The migration never overwrites a plaintext row whose
+  digest another row already holds; it skips it and logs the skipped context
+  ids (ids only, never keys). Only daemon boot runs that migration, never
+  `getDb()`, so a newer CLI cannot hash rows an older daemon still looks up by
+  plaintext. `ravi doctor` reports plaintext rows
+  (`runtime.context_keys_at_rest`) with their context ids (capped at 20, plus
+  the total) and the remedies: restart the daemon, and revoke the listed
+  contexts if rows remain. Digests are irreversible: rolling back to a Ravi
+  that looks keys up by plaintext invalidates every migrated key; turn and
+  child contexts reissue on the next turn, and the admin bootstrap key is
+  re-imported with `ravi daemon init-admin-key --from-env`.
+- Generated context keys are `rctx_` + base64url of 18 random bytes
+  (`randomBytes(18)`: 144 bits, 24 characters). The unsalted digest relies on
+  that randomness, so `ravi daemon init-admin-key --from-env` MUST refuse a
+  `RAVI_BOOTSTRAP_KEY` shorter than `rctx_` + 24 characters with an error that
+  states the minimum.
+- Accepted edge: a row whose stored value starts with `kh1:` is treated as a
+  digest, so a legacy plaintext key that itself started with `kh1:` would never
+  resolve and never be migrated. `dbCreateContext` refuses such keys and
+  generated keys start with `rctx_`, so the row is reachable only by editing
+  the database by hand.
 - A CLI sends its context key as a bearer token to `RAVI_GATEWAY_URL`. An
   `http:` URL MUST be refused with `REMOTE_GATEWAY_INSECURE` (exit 2) unless its
   host, as WHATWG URL parsing reads it, is `localhost` or a literal

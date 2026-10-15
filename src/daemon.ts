@@ -35,6 +35,7 @@ import {
   dbListEligibleDaemonRestartSessionSnapshots,
   dbMarkDaemonRestartResumeDelivered,
   dbUpsertDaemonRestartEpoch,
+  migrateContextKeysToDigest,
   type DaemonRestartSessionSnapshotRecord,
 } from "./router/router-db.js";
 import { getMainSession, getSession, getSessionByName } from "./router/sessions.js";
@@ -369,9 +370,25 @@ async function checkNatsExposureAtBoot(natsUrl: string): Promise<void> {
   }
 }
 
+/**
+ * Store legacy plaintext context keys as digests. Boot is the only place this
+ * runs: the daemon is the single writer of live authority, so a newer CLI never
+ * hashes rows an older daemon still looks up by plaintext.
+ */
+function migrateContextKeysAtBoot(): void {
+  try {
+    migrateContextKeysToDigest();
+  } catch (error) {
+    log.warn("Could not store legacy context keys as digests; lookups still accept them", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export async function startDaemon() {
   maybeNeuterDaemonStdin();
   tightenStateDirAtBoot();
+  migrateContextKeysAtBoot();
 
   // Step 1: Connect to NATS (with retry for PM2 parallel startup)
   const natsUrl = process.env.NATS_URL || "nats://127.0.0.1:4222";

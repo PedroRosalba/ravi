@@ -864,6 +864,74 @@ describe("inspectDoctor", () => {
 
     expect(report.checks.find((check) => check.id === "permissions.provider_runtime_boundaries")?.status).toBe("fail");
   });
+
+  function withPlaintextContextKeyCount(
+    deps: ReturnType<typeof makeHealthyDeps>,
+    count: () => number,
+    ids: () => string[] = () => Array.from({ length: Math.min(count(), 20) }, (_, i) => `ctx_plain_${i}`),
+  ) {
+    return {
+      ...deps,
+      queryRows: ((sql: string) => {
+        if (sql.includes("AS plaintext FROM contexts")) return [{ plaintext: count() }];
+        if (sql.includes("SELECT context_id FROM contexts")) {
+          expect(sql).toContain("LIMIT 20");
+          return ids().map((context_id) => ({ context_id }));
+        }
+        return deps.queryRows(sql);
+      }) as any,
+    };
+  }
+
+  it("passes the context-keys-at-rest check when every stored key is a digest", () => {
+    const report = inspectDoctor(withPlaintextContextKeyCount(makeHealthyDeps(), () => 0));
+    const check = report.checks.find((item) => item.id === "runtime.context_keys_at_rest");
+    expect(check?.status).toBe("pass");
+    expect(check?.domain).toBe("runtime");
+    expect(check?.data).toMatchObject({ plaintextContextKeys: 0 });
+    expect(report.findings.find((finding) => finding.id === "runtime.context_keys_at_rest")?.summary).toBe(
+      "every stored context key is a digest",
+    );
+  });
+
+  it("warns on plaintext context keys with the count, the context ids and both remedies, never a key", () => {
+    const report = inspectDoctor(withPlaintextContextKeyCount(makeHealthyDeps(), () => 3));
+    const check = report.checks.find((item) => item.id === "runtime.context_keys_at_rest");
+    expect(check?.status).toBe("fail");
+    expect(check?.severity).toBe("warn");
+    expect(check?.data).toEqual({
+      plaintextContextKeys: 3,
+      plaintextContextIds: ["ctx_plain_0", "ctx_plain_1", "ctx_plain_2"],
+      plaintextContextIdsTruncated: false,
+    });
+    const finding = report.findings.find((item) => item.id === "runtime.context_keys_at_rest");
+    expect(finding?.summary).toBe("3 context key(s) are stored in plaintext instead of as digests");
+    expect(finding?.fixHint).toContain('ravi daemon restart -m "hash context keys"');
+    expect(finding?.fixHint).toContain("if rows remain, revoke the listed contexts with `ravi context revoke <id>`");
+    expect(JSON.stringify(finding)).toContain("ctx_plain_2");
+    expect(JSON.stringify(finding)).not.toContain("rctx_");
+  });
+
+  it("caps the listed plaintext context ids at 20 and says the list is truncated", () => {
+    const report = inspectDoctor(withPlaintextContextKeyCount(makeHealthyDeps(), () => 45));
+    const check = report.checks.find((item) => item.id === "runtime.context_keys_at_rest");
+    expect(check?.data?.plaintextContextKeys).toBe(45);
+    expect(check?.data?.plaintextContextIds).toHaveLength(20);
+    expect(check?.data?.plaintextContextIdsTruncated).toBe(true);
+  });
+
+  it("skips the context-keys-at-rest check when the contexts table cannot be counted", () => {
+    const report = inspectDoctor(
+      withPlaintextContextKeyCount(makeHealthyDeps(), () => {
+        throw new Error("no such table: contexts");
+      }),
+    );
+    const check = report.checks.find((item) => item.id === "runtime.context_keys_at_rest");
+    expect(check?.status).toBe("skip");
+    expect(report.findings.find((item) => item.id === "runtime.context_keys_at_rest")?.summary).toContain(
+      "no such table: contexts",
+    );
+  });
 });
 
 describe("doctor security checks", () => {
