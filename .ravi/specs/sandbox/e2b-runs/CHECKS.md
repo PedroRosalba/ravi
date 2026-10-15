@@ -3,13 +3,15 @@
 ## Suites
 
 ```bash
-bun test src/sandbox/ src/cli/commands/sandbox.test.ts
+bun test src/sandbox/ src/cli/commands/sandbox.test.ts src/cli/execute-consumers.test.ts
 bun run typecheck
 bunx biome check src/sandbox/ src/cli/commands/sandbox.ts src/cli/commands/sandbox.test.ts
 ```
 
 No check reaches E2B: every run goes through the fake sandbox, fake secret
-store and fake telemetry in `src/sandbox/e2b.test.ts`.
+store and fake telemetry in `src/sandbox/e2b.test.ts`, the template build
+through the recording fake builder there, and the reaper through the fake
+`list`/`kill` in `src/sandbox/reap.test.ts`.
 
 ## Checks
 
@@ -101,5 +103,101 @@ store and fake telemetry in `src/sandbox/e2b.test.ts`.
   `sk-ant-api03-ravi-sandbox-placeholder` readable
   (`bun test src/sandbox/observe.test.ts`, "leaves the fixed placeholder key
   readable").
-- `sandbox run` and `sandbox logs` stay CliOnly, so the new flags change no
-  SDK: `bun src/cli/index.ts sdk openapi check --against openapi.json`.
+- `sandbox run`, `sandbox logs`, `sandbox reap` and `sandbox template build`
+  are CliOnly, so the new command and fields change no SDK:
+  `bun src/cli/index.ts sdk openapi check --against openapi.json`.
+
+### Template pinning
+
+- `TEMPLATE_BUN_LINUX_X64_SHA256` and `NATS_LINUX_AMD64_SHA256` are each 64
+  lowercase hex and differ; `TEMPLATE_BUN_VERSION` is `1.3.11` and
+  `NATS_VERSION` is `2.11.8` (`bun test src/sandbox/e2b.test.ts`, "pins every
+  download").
+- The recorded builder steps contain no `skipCache`; `gitClone` targets
+  `RAVI_REPO` at `/home/user/ravi` with `{ branch: <ref>, depth: 50 }`; the
+  checkout step is exactly
+  `cd /home/user/ravi && git fetch --depth 1 origin <sha> && git checkout --detach <sha> && test "$(git rev-parse HEAD)" = <sha>`
+  and sits after the clone and before `bun run build`; the build step is
+  exactly
+  `cd /home/user/ravi && test "$(git rev-parse HEAD)" = <sha> && bun install --frozen-lockfile && bun run build`
+  ("resolves the ref on the host, checks out that SHA …").
+- No command matches `| bash` or `| sh` and none mentions `bun.sh/install`;
+  each archive's `sha256sum -c` line precedes its `unzip`/`tar` step; both
+  download steps run as root and the Ravi build does not; `Template.build`
+  receives `tags: [sha.slice(0, 12)]` (same test).
+- The record file is mode 0600, holds `{ version: 1, templates: { <name>: {…} } }`
+  with `name, templateId, buildId, ref, sha, bunVersion, natsVersion, builtAt`,
+  and `readE2bTemplateRecord` returns it by name and null for another name
+  (same test); a second build of the same name replaces its record and a
+  different name adds one ("keeps one record per template name").
+- An uppercase 40-hex `--ref` is lower-cased, used as the SHA and never passed
+  to `resolveRef` ("accepts a 40-hex --ref as the SHA itself").
+- A ref that does not resolve rejects with a `SandboxConfigError` naming the
+  ref and `https://github.com/filipexyz/ravi.git`; a resolver answer that is
+  not 40 hex, and `""`, `"  "`, `"-rf"`, `"a b"` reject as well; no builder
+  step and no build happen ("fails clearly when a non-hex ref does not
+  resolve").
+- `pickLsRemoteSha` prefers `refs/heads/<ref>`, then `refs/tags/<ref>^{}`,
+  then `refs/tags/<ref>`, ignores malformed lines and returns null for a
+  prefix match ("picks the branch, then the peeled tag").
+- A run whose sandbox reports the recorded `templateId` writes
+  `Template <name>: ravi <sha> (built <builtAt> on this host)` to run.log and
+  sets `templateSha`, `templateId` and `templateNote`; one whose sandbox
+  reports another id writes
+  `Template <name>: id <id> does not match this host's record (<recorded id>, ravi <sha>) — rebuilt elsewhere?`
+  and `templateSha` is null; one whose `getInfo` fails reports the record as
+  unverified with `templateSha` and `templateId` null; without a record it
+  writes the warning before create, then `id <id>, no build record on this host …`,
+  and `templateSha` is null; a corrupt file or a record without a 40-hex `sha`
+  reads as missing ("template record in a run" suite, "runs the task to done").
+- Created sandboxes carry `ravi_pid: String(process.pid)` next to `purpose`,
+  `ravi_run` and `ravi_host` ("runs the task to done").
+
+### Reaper
+
+- `listRaviTaskSandboxes` queries `{ purpose: "ravi-task", ravi_host }` (only
+  `purpose` with `allHosts`) and, against a server that returns everything,
+  still drops `purpose !== "ravi-task"` (`not-ravi-task`) and other hosts
+  (`other-host`) (`bun test src/sandbox/reap.test.ts`, "queries E2B by purpose
+  and this host").
+- `DEFAULT_REAP_OLDER_THAN_MIN` is `MAX_SANDBOX_TIMEOUT_MIN + 10`; paused,
+  overdue (strictly older) and dead-pid sandboxes are candidates with those
+  causes; a sandbox exactly at the limit, a live pid, no pid and a non-numeric
+  pid are `live` ("flags paused, overdue and dead-pid sandboxes").
+- A dead pid on another host's sandbox is not a cause; the same host's paused
+  sandbox is ("never reads another host's pid as a local process").
+  `processIsAlive(process.pid)` is true and 2^31-1 (above every platform's
+  pid range) is false; 0, -1, `-process.pid`, 1.5, NaN and Infinity are false
+  without reaching `process.kill` ("never passes a non-positive or fractional
+  pid").
+- `killCandidates(plan, deps)` kills exactly `plan.candidates`, records a
+  failed kill and continues, leaves the plan object untouched and ignores
+  anything outside the candidates ("killCandidates kills exactly the plan's
+  candidates").
+- `reapSandboxes` without `execute` lists candidates and calls no kill; with
+  `execute` it kills exactly the candidates, records a failed kill in `failed`
+  and continues; `sbx-live`, another host's sandbox, a forged
+  `purpose: ravi-task` with another `ravi_host`, and a non-ravi sandbox are
+  never killed ("plans without killing", "with execute, kills only the
+  candidates").
+- With `allHosts`, other hosts' paused or overdue ravi-task sandboxes are
+  killed, a non-ravi sandbox is not, and a running other-host sandbox with a
+  dead pid is `live` ("includes other hosts' … only with allHosts").
+- `olderThanMin` 29 flags a 30-minute sandbox and 30 does not; 0, -1, 1.5 and
+  NaN reject before listing ("honours olderThanMin").
+- CLI: `executeSandboxReap` without `--execute` throws `WRITE_REQUIRES_EXECUTE`
+  with exit 3, the message `Dry-run: nothing was killed. Re-run with --execute to kill.`
+  and a plan `{ hostId, allHosts, olderThanMin, kill: [{ sandboxId, cause, … }], skipped }`
+  and no kill; `--execute` kills the matches of this host only, through
+  `killCandidates`, and a kill E2B refuses lands in `failed` while the others
+  are still killed ("with --execute, a failed kill is reported"); `--all-hosts`
+  drops the host filter; no candidate returns the empty plan; `--older-than`
+  `0|abc|1.5|-3` is a `USAGE_ERROR` (exit 2) before any listing and `" 10 "`
+  is accepted (`bun test src/cli/commands/sandbox.test.ts`, "sandbox reap"
+  suite). The spawned CLI without `E2B_API_KEY` exits 1 naming the variable.
+- The plan field is `cause`, not `reason`: `reason` is a content-redacted key
+  in CLI envelopes (`src/cli/redaction.ts`) and would print as `[REDACTED]`.
+- `AGENTS.md` documents `ravi sandbox reap --execute`
+  (`bun test src/cli/execute-consumers.test.ts`); `sandbox reap` declares
+  `requiresConfirmation: true` and reads its `--execute` flag
+  (`bun run test:agent-contract`, confirmation-policy suite).

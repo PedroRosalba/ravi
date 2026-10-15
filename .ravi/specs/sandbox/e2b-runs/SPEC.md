@@ -126,7 +126,7 @@ reaches a place E2B records (command logs, sandbox info, snapshots).
   string and no env var in either mode.
 - `--model-auth broker` without `RAVI_SANDBOX_ANTHROPIC_BASE_URL` is a usage
   error (exit 2) before any credential is read.
-- Metadata is `{ purpose: "ravi-task", ravi_run: <24 hex>, ravi_host: sha256(installation key)[:16] }`;
+- Metadata is `{ purpose: "ravi-task", ravi_run: <24 hex>, ravi_host: sha256(installation key)[:16], ravi_pid: <host pid> }`;
   it never holds the task title.
 
 ### Least privilege inside the sandbox
@@ -148,10 +148,81 @@ reaches a place E2B records (command logs, sandbox info, snapshots).
   The CLI rejects more as a usage error (exit 2) before any credential is read;
   `runE2bSandboxTask` throws a `SandboxConfigError` before creating anything.
 
+### Template pinning (`ravi sandbox template build`)
+
+- `--ref` (default `dev`) is resolved to a 40-hex commit SHA on the host before
+  any build, through `git ls-remote` against the public repository
+  (`RAVI_REPO`): the branch head first, then the peeled tag, then the tag. A
+  40-hex `--ref` is the SHA itself and is not resolved or checked against any
+  branch: GitHub serves any object in the repository network (forks and
+  unreferenced commits included), so such a ref may name a commit that was
+  never on a `filipexyz/ravi` branch. It is operator-trusted input, like the
+  E2B key the same operator holds. A ref that resolves to nothing, or an
+  empty, whitespace- or `-`-prefixed ref, is a `SandboxConfigError` before any
+  builder call.
+- The sandbox checks out that SHA and proves it: after `gitClone`, one step runs
+  `git fetch --depth 1 origin <sha> && git checkout --detach <sha> && test "$(git rev-parse HEAD)" = <sha>`,
+  and the build step is
+  `test "$(git rev-parse HEAD)" = <sha> && bun install --frozen-lockfile && bun run build`.
+  The SHA in both command strings is what invalidates E2B's layer cache for the
+  checkout and the build, so the template never calls `skipCache()`.
+- Bun (`TEMPLATE_BUN_VERSION`, the CI version) and nats-server (`NATS_VERSION`)
+  are installed from pinned release archives saved to disk, verified with
+  `sha256sum -c` against `TEMPLATE_BUN_LINUX_X64_SHA256` and
+  `NATS_LINUX_AMD64_SHA256`, and only then unpacked. No download is piped into
+  a shell (`curl … | bash` does not appear). Each constant is 64 lowercase hex
+  copied from the publisher's checksum file (provenance in RUNBOOK).
+- The build is tagged with `sha.slice(0, 12)` and recorded in
+  `~/.ravi/sandbox-templates.json` (mode 0600, written with
+  `writeUserOnlyFile`) as `{ name, templateId, buildId, ref, sha, bunVersion, natsVersion, builtAt }`
+  under `templates[<name>]`; a rebuild of the same name replaces its record.
+- `sandbox run` reads the record for its template and, once the sandbox is up,
+  asks E2B which template it booted from (`Sandbox.getInfo().templateId`). The
+  record is "last built from this host", not a fact about the sandbox, so the
+  commit is claimed only when the two ids agree: run.log and the text result
+  then say `Template <name>: ravi <sha> (built <builtAt> on this host)` and
+  `templateSha` is the record's sha. When the ids differ they say
+  `Template <name>: id <templateId> does not match this host's record (<recordTemplateId>, ravi <sha>) — rebuilt elsewhere?`
+  and `templateSha` is null; when `getInfo` fails the record is reported as
+  unverified and `templateSha` is null. Without a record the run warns before
+  creating the sandbox and `templateSha` is null. The JSON result carries
+  `templateId` (E2B's answer, null when unread) and `templateNote` (the text
+  after `Template <name>: `). A record whose `sha` is not 40 hex counts as
+  missing.
+
+### Reaper (`ravi sandbox reap`)
+
+- Candidates come from `Sandbox.list` filtered by metadata
+  `{ purpose: "ravi-task", ravi_host: <this host> }` (without `ravi_host` under
+  `--all-hosts`), and the same filter is applied again client-side: an item
+  without `purpose: "ravi-task"` is never a candidate, and without `--all-hosts`
+  neither is one whose `ravi_host` differs, whatever the server returned.
+- A listed sandbox is a candidate when it is `paused` (a `--keep` sandbox of
+  this host included), or running for more than `--older-than` minutes (default
+  `MAX_SANDBOX_TIMEOUT_MIN + 10`), or running on this host with a `ravi_pid`
+  that is not alive here (`process.kill(pid, 0)`; `EPERM` counts as alive;
+  `processIsAlive` itself returns false for anything that is not a positive
+  integer, so pid 0 and negative pids are never passed to `process.kill`).
+  Another host's `ravi_pid` is never tested against this host's process table,
+  so under `--all-hosts` other hosts' sandboxes qualify only as paused or
+  overdue.
+- Killing is irreversible and external: with at least one candidate and no
+  `--execute` the command prints the plan and exits 3 (`contractDryRun`, worded
+  `nothing was killed … --execute to kill`) without calling `kill`; with no
+  candidate it returns the empty plan (exit 0). `--execute` kills each
+  candidate through `killCandidates`, the one kill loop the library
+  (`reapSandboxes({ execute: true })`) and the CLI share; it continues past a
+  failed kill and exits 1 when any kill failed. `--older-than` must be a whole number of minutes, at
+  least 1 (usage error, exit 2, before any listing).
+- The command is CliOnly with
+  `@CommandAccess({ kind: "mutate", resource: "sandbox", action: "reap", risk: "high", requiresConfirmation: true })`,
+  the confirmation metadata every `--execute` brake declares
+  (`src/cli/confirmation-policy.test.ts`).
+
 ## Validation
 
 ```bash
-bun test src/sandbox/ src/cli/commands/sandbox.test.ts
+bun test src/sandbox/ src/cli/commands/sandbox.test.ts src/cli/execute-consumers.test.ts
 ```
 
 See `CHECKS.md`.
@@ -171,6 +242,18 @@ See `CHECKS.md`.
   until that check is recorded there.
 - `pkill -f 'ravi daemon run'` would match the shell running the pkill itself;
   the pattern is `'[r]avi daemon run'`.
+- E2B serves the `gitClone` layer from its cache when the command string is
+  unchanged, so a `--ref dev` rebuild would keep an old checkout; the SHA in the
+  checkout step is what makes that layer stale, and the build layer re-checks
+  the SHA (`test "$(git rev-parse HEAD)" = <sha> && …`) so its own cache key
+  changes with the commit as well; either `rev-parse` test fails the build if
+  a cached layer ever slips through.
+- The build record names the template this host built last, not the template
+  a sandbox booted from: the same name can be rebuilt from another host or
+  the dashboard. The run compares E2B's `templateId` with the record and
+  claims the commit only on a match.
+- `Sandbox.list` metadata matching is an open live check (RUNBOOK 5); the reaper
+  does not rely on it and re-filters every item.
 - A paused run's saved E2B logs show the placeholder key
   (`sk-ant-api03-ravi-sandbox-placeholder`) in clear; `redactTelemetry` leaves
   exactly that value readable so a log does not look like a key leak.

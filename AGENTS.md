@@ -232,14 +232,26 @@ Nothing is pushed; apply the patch yourself.
 
 ```bash
 # Once (and whenever the Ravi baked into the template should be updated)
-ravi sandbox template build                    # [name] --ref dev --cpu 2 --memory 4096
+ravi sandbox template build                    # [name] --ref dev|<tag>|<40-hex sha> --cpu 2 --memory 4096
 
 # Per task
 ravi sandbox run --repo https://github.com/owner/repo.git --task "..." \
   [--branch b] [--title t] [--model sonnet] [--timeout-min 55] [--keep] [--follow] [--output dir] [--json] \
   [--allow-host h...] [--egress dev-registries|strict] [--model-auth broker|header|env] [--allow-key-in-env]
 ravi sandbox logs <sandbox-id> [--output dir] [--json]   # E2B's process log, events and metrics
+ravi sandbox reap [--older-than <min>] [--all-hosts] [--json]   # dry-run: lists orphaned sandboxes (exit 3)
+ravi sandbox reap --execute                    # kills them
 ```
+
+- `template build` resolves `--ref` to a commit SHA on this host (`git ls-remote`), checks that exact
+  commit out in the sandbox and installs Bun 1.3.11 and nats-server from pinned release archives
+  verified with `sha256sum -c`; the build is tagged with the short SHA and recorded in
+  `~/.ravi/sandbox-templates.json`. `sandbox run` prints the recorded commit (`Template:` line, run.log,
+  `templateSha` in `--json`) and warns when the template has no record.
+- `sandbox reap` kills task sandboxes this host created and then lost: paused ones, running ones
+  older than 65 min (`--older-than`), and ones whose `ravi` process (`ravi_pid` metadata) is gone.
+  Other hosts' sandboxes are left alone unless `--all-hosts`, and then only those tagged
+  `purpose: ravi-task` that are paused or overdue.
 
 - Credentials come from the environment: `E2B_API_KEY` plus `ANTHROPIC_API_KEY` (the `RAVI_`-prefixed
   name also works, for hosts that hide the standard one). Sandboxes take an API key only:
@@ -270,7 +282,7 @@ ravi sandbox logs <sandbox-id> [--output dir] [--json]   # E2B's process log, ev
 - `--keep` pauses the sandbox instead of killing it, after denying all egress, dropping the injected
   headers and stopping the daemon, so the resumed machine cannot reach out; it is refused with
   `--model-auth env`. Ctrl-C kills (or, with `--keep`, pauses) it too, even while E2B is still creating it.
-- Both commands are CLI-only (not exposed through the gateway/SDK): they run for minutes and use host paths.
+- All sandbox commands are CLI-only (not exposed through the gateway/SDK): they run for minutes and use host paths.
 
 ## Where everything else lives
 
