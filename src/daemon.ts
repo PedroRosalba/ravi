@@ -58,6 +58,9 @@ import { resolveOmniConnection } from "./omni-config.js";
 import { ensureSessionPromptsStream, publishSessionPrompt } from "./omni/session-stream.js";
 import { ensureRaviEventsStream } from "./events/audit-stream.js";
 import { startWebhookHttpServerFromEnv, type WebhookHttpServerHandle } from "./webhooks/http-server.js";
+import { readSandboxListenerConfig } from "./sandbox-listener/config.js";
+import { pruneSandboxRunsAtStart } from "./sandbox/run-context.js";
+import { type SandboxListenerHandle, startSandboxListener } from "./sandbox-listener/server.js";
 import { startHostCliGateway, type HostCliGatewayHandle } from "./cli/host-cli-gateway.js";
 import type { MessageTarget } from "./runtime/message-types.js";
 import { deliverDaemonRestartSessionEvent } from "./runtime/daemon-restart-resume.js";
@@ -213,6 +216,7 @@ let sessionAdapterBus: ReturnType<typeof createSessionAdapterBus> | null = null;
 let shuttingDown = false;
 let omniConsumer: OmniConsumer | null = null;
 let webhookHttpServer: WebhookHttpServerHandle | null = null;
+let sandboxListener: SandboxListenerHandle | null = null;
 let hostCliGateway: HostCliGatewayHandle | null = null;
 let workObjectNatsService: WorkObjectNatsServiceHandle | null = null;
 
@@ -292,6 +296,11 @@ async function shutdown(signal: string, exitCode = 0) {
 
     if (webhookHttpServer) {
       await webhookHttpServer.stop();
+    }
+
+    if (sandboxListener) {
+      await sandboxListener.stop();
+      sandboxListener = null;
     }
 
     if (hostCliGateway) {
@@ -546,6 +555,33 @@ export async function startDaemon() {
     log.info("Webhook HTTP server ready", { url: webhookHttpServer.url });
   } else {
     log.info("Webhook HTTP server disabled (set RAVI_HTTP_PORT to enable)");
+  }
+
+  // Sandbox run records are pruned at every start, listener or not: an
+  // expired or revoked run's contexts are revoked and its stored grant goes.
+  try {
+    const pruned = pruneSandboxRunsAtStart();
+    if (pruned.runsDeleted > 0 || pruned.jtisPruned > 0) log.info("Sandbox runs pruned at start", pruned);
+  } catch (error) {
+    log.error("Sandbox run prune at start failed", error);
+  }
+
+  // Loopback-only origin for Gate-forwarded sandbox task commands; in process,
+  // like the webhook server (the daemon spawns no child processes). Settings
+  // are written by `ravi gateway expose`; without them the listener is off.
+  try {
+    const listenerConfig = readSandboxListenerConfig();
+    if (listenerConfig.enabled) {
+      sandboxListener = await startSandboxListener({ port: listenerConfig.config.port, config: listenerConfig.config });
+      log.info("Sandbox listener ready", { url: sandboxListener.url });
+    } else if (listenerConfig.reason === "config_invalid") {
+      log.error("Sandbox listener not started: invalid gateway settings", { invalid: listenerConfig.invalid });
+    } else {
+      log.info("Sandbox listener disabled (no gateway.listener.port)");
+    }
+  } catch (error) {
+    log.error("Sandbox listener failed to start", error);
+    sandboxListener = null;
   }
 
   try {
