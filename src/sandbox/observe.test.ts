@@ -9,6 +9,7 @@ import {
   formatProcessTimeline,
   redactSecrets,
   redactTelemetry,
+  SANDBOX_PLACEHOLDER_API_KEY,
   summarizeTelemetry,
 } from "./observe.js";
 
@@ -70,6 +71,13 @@ describe("redactTelemetry", () => {
     expect(redactTelemetry("git clone https://github.com/o/r.git git@github.com:o/r.git")).toBe(
       "git clone https://github.com/o/r.git git@github.com:o/r.git",
     );
+  });
+
+  it("leaves the fixed placeholder key readable so a saved log does not look like a leak", () => {
+    const line = `ANTHROPIC_API_KEY=${SANDBOX_PLACEHOLDER_API_KEY} sk-ant-api03-${"r".repeat(20)}`;
+    expect(redactTelemetry(line)).toBe(`ANTHROPIC_API_KEY=${SANDBOX_PLACEHOLDER_API_KEY} ***`);
+    // A known value that happens to be the placeholder is still not a secret.
+    expect(redactTelemetry(SANDBOX_PLACEHOLDER_API_KEY, [])).toBe(SANDBOX_PLACEHOLDER_API_KEY);
   });
 });
 

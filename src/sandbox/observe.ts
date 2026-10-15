@@ -82,15 +82,24 @@ export function redactSecrets(text: string, secrets: readonly string[] = []): st
   return out;
 }
 
+/**
+ * What the sandbox sees as ANTHROPIC_API_KEY in header and broker modes. Claude Code
+ * needs a key-shaped value to start; the real key is added on the way out by E2B's
+ * egress proxy (header mode) or never exists at all (broker mode). Defined here so the
+ * redaction below can leave it readable without importing the runner.
+ */
+export const SANDBOX_PLACEHOLDER_API_KEY = "sk-ant-api03-ravi-sandbox-placeholder";
+
 // E2B's logs hold every command line, so a credential from an older run (or one
 // that is no longer in this environment) can sit there. These shapes are masked
 // whatever the known values are. Only E2B telemetry gets this: the patch and
 // transcripts must stay byte-exact.
-const CREDENTIAL_PATTERNS: Array<[RegExp, string]> = [
-  [/(\w+:\/\/)[^\s/:@"'\\]+:[^\s/@"'\\]+@/g, "$1***@"],
-  [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, "***"],
-  [/\bsk-ant-[A-Za-z0-9_-]{10,}/g, "***"],
-  [/\be2b_[A-Za-z0-9]{20,}/g, "***"],
+const CREDENTIAL_PATTERNS: Array<[RegExp, (match: string, ...groups: string[]) => string]> = [
+  [/(\w+:\/\/)[^\s/:@"'\\]+:[^\s/@"'\\]+@/g, (_match, scheme) => `${scheme}***@`],
+  [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, () => "***"],
+  // The fixed placeholder is not a secret; masking it would make a saved log look like a key leak.
+  [/\bsk-ant-[A-Za-z0-9_-]{10,}/g, (match) => (match === SANDBOX_PLACEHOLDER_API_KEY ? match : "***")],
+  [/\be2b_[A-Za-z0-9]{20,}/g, () => "***"],
 ];
 
 /** redactSecrets plus generic masking of URL credentials and known token shapes. */
