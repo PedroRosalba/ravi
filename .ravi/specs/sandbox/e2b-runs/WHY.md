@@ -155,3 +155,58 @@ the field because the CLI redacts `reason` as free text. The dry-run says
 "nothing was killed" rather than "nothing was written" because that is what
 the operator is about to do. See ADR 0002, "03b decisions and review
 follow-ups".
+
+### Outputs as untrusted data (ADR 0002 #9)
+
+The sandbox is where a prompt-injected worker has full control, and the run
+then copies its words onto the operator's disk and terminal. Three channels
+matter. Disk: a worker can print without end, so every read is capped inside
+the sandbox, before the bytes cross the network, and the host still knows the
+real size for the marker. The patch is the one file that is all or nothing,
+because a truncated patch applies partially and silently. Terminal: a log line
+can clear the screen, overwrite a line with `\r`, put a command in the
+clipboard (OSC 52), hide a URL behind text (OSC 8) or reverse text with a bidi
+override, so printed copies are cleaned while saved files stay faithful for
+forensics. Decisions: the status is the one value the run acts on, so it is
+parsed through a schema into a closed set and anything else is `invalid`,
+never coerced; `reportedStatus` names it honestly and `status` stays for
+existing scripts. The patch review warns rather than blocks because exit codes
+are a contract (`agent-contract.ts`) and path heuristics have false positives;
+it targets the files that run code on the operator's machine when the patch is
+applied or the repo is next opened by an agent, editor, shell or package
+manager. Private modes follow from the content: the patch and transcripts can
+hold the repository's secrets. See ADR 0002, "03c decisions".
+
+### An attacker-authored patch, and caps that hold against an active sandbox
+
+The first review of these outputs assumed the sandbox was passive: that
+`git diff` writes the patch the way git normally does and that the shell
+wrapper around each read runs as written. Neither holds. The worker owns the
+clone's `.git/config` (`diff.external`, `diff.noprefix`) and can replace any
+binary on its path, so `changes.patch` is whatever the worker wants it to say,
+and `head -c` may not be `head`. The patch review therefore reads the file the
+way the program that acts on it does: `git apply` starts a file at a plain
+`---`/`+++` pair, believes headers only in the extended-header area, consumes
+hunk bodies by their counts, reads modes with `strtoul` base 8, strips one
+path component whatever it is, and writes to a case-insensitive disk on macOS.
+Reading it any other way leaves a gap between what is reviewed and what is
+applied, and each gap was a working bypass (the 03c proof-of-concept patches,
+kept as fixtures). The reviewer classifies every name git could write rather
+than reproducing git's name derivation (a sticky `-p0` guess, CR and timestamp
+cuts, the shorter of `---`/`+++`), because a superset cannot under-flag when
+those heuristics change (fixtures `a1`-`a4`). `package.json` is reviewed by top-level key rather than by
+a few script names, and a change whose key the hunk does not show is flagged,
+because a hunk can start deep inside `"scripts"` with no `"scripts"` line in
+view. Size caps move to where the bytes are counted, the host: each command is
+a handle whose streamed bytes are counted and which is killed past its cap
+plus a margin, the live tail stops at its cap and never holds an unbounded
+line, and the run total counts what arrived rather than what was saved. The
+host can still receive one SDK event past a limit, which is why the spec
+states the bound as limit plus one event instead of "never more than the cap".
+Collection isolates each write and the run always returns, because a
+sandbox-chosen name that breaks one write must not cost the operator the
+status and the review. Writes refuse symbolic links, the task id is checked
+against the format Ravi makes before it reaches a command line, and `--json`
+escapes the characters JSON leaves raw, for the same reason as the terminal
+cleaning: the data is the sandbox's, the terminal and the disk are the
+operator's. See ADR 0002, "03c review follow-ups".

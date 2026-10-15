@@ -201,3 +201,90 @@ through the recording fake builder there, and the reaper through the fake
   (`bun test src/cli/execute-consumers.test.ts`); `sandbox reap` declares
   `requiresConfirmation: true` and reads its `--execute` flag
   (`bun run test:agent-contract`, confirmation-policy suite).
+
+### Outputs
+
+- `writePrivate`/`appendPrivate` create `0600` files in `0700` directories under
+  a nested custom `--output`, and make an existing `0755` `--output` `0700`
+  (`bun test src/sandbox/outputs.test.ts`, "private output files"); a whole run
+  under `custom/out` leaves only `0600` files and `0700` directories, and the
+  `e2b/` telemetry files are `0600` too (`e2b.test.ts` "writes every output
+  0600 …", `observe.test.ts` "collectE2bTelemetry").
+- A planted `daemon.log -> victim` and a dangling `run.log -> target` make
+  `appendPrivate` throw "symbolic link"; the victim keeps its content and mode
+  and the dangling target is not created; a `sessions -> elsewhere` directory
+  link is refused by `mkdirPrivate` and by `writePrivate(…, root)` below it,
+  `elsewhere` keeps `0755`; `writePrivate` over a link replaces the link
+  ("symbolic links in the output directory").
+- The caps are 50/20/10/200/1 MiB; `cappedCommand` run by `/bin/sh` returns at
+  most cap + 1 bytes and the real size, keeps the command's own exit code
+  (`exit 3`), caps 300 000 bytes of stderr to 64 KiB with the
+  `ravi-bytes=` line still last, and `readCapped` takes the wrapper's last
+  `ravi-bytes=` line, not a lookalike ("size caps").
+- Against an active sandbox (the fake streams past the wrapper): a
+  `ravi tasks show` that streams 16 MiB of stderr in 256 KiB chunks is killed
+  (`commandKills >= 1`) after at most cap + 1 MiB + one chunk per command, the
+  run ends `error` with "sent more than 2.0 MiB" and still collects and kills
+  the sandbox; a live daemon tail streaming 120 MiB is disconnected after at
+  most 50 MiB + two chunks, a 400 000-character line without a newline is
+  printed and saved cut at 65 536 characters, and `daemon.log` stays under
+  50 MiB + 1 KiB; with a 3 000-byte collection budget a 4 000-byte daemon log
+  is skipped and no `git diff` or `ravi sessions trace` is run
+  (`e2b.test.ts`, "kills a read that streams past cap + 1 MiB", "disconnects
+  the live daemon tail at 50 MiB", "stops reading once collection has
+  received the run total").
+- A patch over 20 MiB writes only `changes.patch.TOO_LARGE.txt` with its byte
+  count, no `review.json`, `review: null`; a daemon log over 50 MiB ends with
+  the truncation marker naming the reported size ("saves no part of a patch
+  over 20 MiB", "cuts the daemon log at 50 MiB").
+- `stripTerminalControls` removes OSC 52 (BEL and ST), OSC 8 keeping the link
+  text, CSI `2J`/`H`/colours in 7-bit and C1 form, `\r`, other C0/C1, DCS and
+  lone escapes, RTL override and isolates, and keeps `\n`, `\t` and Unicode
+  text ("stripTerminalControls" suite); daemon lines reach `onDaemonLog`
+  without them while `daemon.log` keeps the raw (redacted) bytes ("prints
+  daemon lines without terminal controls").
+- `terminalSafeJson` writes U+009B, U+202E and U+2066 as `\uXXXX`, parses
+  back to the same value, and leaves ordinary Unicode as `JSON.stringify` does
+  ("terminalSafeJson"); every `--json` print in `src/cli/commands/sandbox.ts`
+  uses it.
+- `formatSandboxRunSummary` with OSC 52, CSI, C1 CSI and U+202E in the task
+  id, sandbox id, template note, error, E2B events, kill reason and errors
+  prints no C0 (but `\n`), C1 or bidi character, and the review box shows a
+  quoted `.envrc\nx` path escaped on one line
+  (`bun test src/cli/commands/sandbox.test.ts`, "sandbox run text summary").
+- A sandbox status of `"\x1b[31mdone"` is `invalid`, `reportedStatus` and
+  `status` both say so, and `sandboxRunExitCode` is 1 (0 for `done`); a
+  `task.json` over 1 MiB is not saved or parsed, the run is `invalid`; a task
+  id `task-1; touch /tmp/pwned\x1b[2J` fails the run with `taskId: null`
+  before any other command uses it; session names `../../x` and `/etc/passwd`
+  are saved as `sessions/x~<hash>.*` and `sessions/etc_passwd~<hash>.*`,
+  inside the output directory (`e2b.test.ts`, "untrusted outputs" suite).
+- `safeFileName` keeps `worker-task-1` and `abc.jsonl`, shortens a 230-character
+  name to at most 120 bytes with `~<hash>`, and gives `a b`/`a_b`/`a:b` and
+  `Worker`/`worker` different names; a run with a 230-character session name
+  and transcripts `p/x.jsonl` plus `p/x.jsonl/y.jsonl` saves the first, logs
+  `Could not save transcripts/p/x.jsonl/y.jsonl`, still saves `p/z.jsonl`,
+  ends `done` and returns the review ("survives a 230-character session
+  name …").
+- Patch review (`bun test src/sandbox/patch-review.test.ts`): every path class
+  above is flagged, in any letter case (`Claude.md`, `.Claude/settings.json`,
+  `.Envrc`), and ordinary files (`.vscode/extensions.json`,
+  `.github/CODEOWNERS`) are not. The 03c review's proof-of-concept patches are
+  fixtures in `src/sandbox/fixtures/patch-review/`: `p1` (plain `---`/`+++`
+  creating `.envrc`) flags `.envrc`; `p2` (an in-hunk `+++ b/README.md`) keeps
+  the flag and the exclude on `.envrc`; `p3`/`p3b` (`0120000`, `120000 `) are
+  `symlink` + `path-escape`; `p4` flags all three mixed-case names; `p5` (a
+  script changed in a hunk that starts inside `"scripts"`, plus a git
+  dependency) is `package-json-unknown-section` + `dependency`. A
+  `package.json` change to `version` only, or a registry version bump of an
+  existing dependency, is not flagged; a change inside `"scripts"`, an added
+  `postinstall`, a `github:` source, an added dependency, a `\u0069`-escaped
+  `"scripts"` key, and `trustedDependencies`/`overrides`/`resolutions`/`bin`/
+  `lint-staged`/`simple-git-hooks` are. A rename into `.github/workflows` is
+  flagged; new and changed executables and both binary forms are flagged;
+  quoted headers decode as UTF-8 and `c/x d/x` headers strip like `-p1`;
+  `--exclude` values escape `[`, `]`, `*`, `?`, `\`; a quoted path with `\n`,
+  U+202E and `\001` prints escaped on one line in the box and as `$'…'` in the
+  suggestion. In a run the review lands in `review.json` (`0600`) and
+  `result.review`, no command contains `git apply`, and the exit code still
+  follows the status ("reviews the patch into review.json …").

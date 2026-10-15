@@ -107,6 +107,55 @@ ravi sandbox reap --all-hosts         # plan across every host's ravi-task sandb
 - A kill that fails is reported in `failed` and the exit code is 1; re-run, or
   kill it in the E2B dashboard.
 
+## Reading a run's outputs
+
+Everything under `~/.ravi/sandbox-runs/<sandbox-id>/` came from a machine the
+worker controlled. Treat it like a pull request from a stranger.
+
+- `Status: done (reported by the sandbox, unverified)` means the sandbox said
+  so; `invalid` means it answered something that is not a task status (exit 1).
+  Judge the work by the patch, not the status.
+- Before `git apply`, read the `Patch review` box (or `review.json`, or
+  `review` in `--json`). For each flagged path, either read that part of the
+  patch or leave it out:
+
+  ```bash
+  git apply --check changes.patch
+  git apply --exclude=.github/workflows/ci.yml --exclude=.claude/settings.json changes.patch
+  ```
+
+  An empty review is not a clearance: it reads paths and `package.json` hunks,
+  not what the code does. Read the patch as hostile: the worker could make
+  `git diff` print anything, so the review parses it as `git apply` would.
+  A `package-json-unknown-section` flag means the hunk does not show which
+  top-level key it changes; open `package.json` at that line before applying.
+  Suggested `--exclude` values are escaped for git's glob matching and quoted
+  for the shell (`$'…'` for names with control characters); paste them as
+  printed.
+- `changes.patch.TOO_LARGE.txt` instead of a patch: the diff was over 20 MiB
+  and nothing was saved. Re-run with a narrower task, or resume a `--keep`
+  sandbox in the dashboard and look at the repo there.
+- A file ending in `[ravi: output truncated at …]` was cut at its cap; the
+  marker gives the size the sandbox reported. A daemon log line ending in
+  `[ravi: line cut at 65536 characters]` was longer than that without a
+  newline.
+- A step `… sent more than <n>; the command was killed` means the sandbox
+  streamed past what the wrapper allows: it is not running the commands as
+  written. Treat the whole run as hostile.
+- `Could not save <name>: …` is one output the host refused or could not
+  write (a name clash, a symbolic link in the output directory); the rest was
+  still collected. `Stopped collecting at …` means the run's reads reached
+  200 MiB and later files were not read.
+- Session and transcript files with `~<hash>` in their name were renamed from
+  a name that was not plain, too long, or mixed-case.
+- Open logs and transcripts in a pager or editor that does not interpret
+  escape sequences (`less` without `-r`, `cat -v`); the files keep the raw
+  bytes, only the terminal copy printed during the run was cleaned. `--json`
+  output escapes C1 and bidi characters, but a tool that decodes it and prints
+  the strings gets them back raw.
+- Do not loosen permissions on the directory: it holds the repository's
+  changes and the worker's full transcripts (`0700`/`0600`).
+
 ## Debugging a failed run
 
 `~/.ravi/sandbox-runs/<sandbox-id>/run.log` has the step timeline, including
