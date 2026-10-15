@@ -19,6 +19,8 @@ applies_to:
   - src/runtime/host-hooks.ts
   - src/runtime/runtime-host-attachments.ts
   - src/runtime/*provider.test.ts
+  - src/remote-spawn.ts
+  - src/remote-spawn.test.ts
 owners:
   - ravi-dev
 status: active
@@ -82,6 +84,20 @@ The Claude Code provider adapts the current default cloud execution bridge into 
 - The provider MUST attach host hooks only when capabilities allow it.
 - The provider MUST attach spec server only for spec-mode agents.
 - The provider MUST attach remote spawn only for remote agents.
+- SSH remote spawn MUST preserve the selected auth values, `RAVI_CONTEXT_KEY`
+  and `RAVI_GATEWAY_URL` byte-for-byte, including quotes, backslashes, literal
+  `\\n` sequences and other shell metacharacters.
+- SSH remote spawn MUST NOT put any forwarded value in the ssh argv (visible in
+  local `ps` and as the remote shell's command line). The remote command names
+  only the keys (`IFS= read -r KEY && export KEY && ...`); the values are written
+  to the ssh stdin, one per line, before any SDK input. A value containing a
+  newline cannot be framed this way and MUST be refused, never truncated.
+- SSH remote spawn MUST forward `RAVI_GATEWAY_URL` when configured. For loopback
+  SSH agents only, it MAY derive that URL from the enabled daemon HTTP listener
+  (`RAVI_HTTP_PORT`, or its webhook alias). It MUST NOT infer that a different
+  host can reach the daemon through loopback or forward unrelated host secrets.
+  Derivation MUST use the listener's port precedence (an explicitly empty HTTP
+  port disables the listener) and trimmed HTTP/webhook host selection.
 - A successful result MUST produce `turn.complete` with session id and usage.
 - A non-success result MUST produce `turn.failed`.
 - A query exception MUST become recoverable `turn.failed`, not an unhandled event-loop error.
@@ -96,6 +112,7 @@ The Claude Code provider adapts the current default cloud execution bridge into 
 - `bun test src/runtime/host-env.test.ts`
 - `bun test src/runtime/runtime-host-attachments.test.ts`
 - `bun test src/runtime/session-trace.test.ts`
+- `bun test src/remote-spawn.test.ts`
 
 ## Known Failure Modes
 
