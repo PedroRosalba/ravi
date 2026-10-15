@@ -73,8 +73,11 @@ and runtime/model provider credential pools.
   `security -i` with the command on stdin and the secret hex-encoded, or
   double-quoted when it is printable ASCII and too long for hex (about 3.9 KB
   fits). A secret too large for one `security -i` line is refused (use Vault),
-  never truncated. Reads decode the hex `security -w` prints for non-ASCII
-  secrets.
+  never truncated. Reads run `find-generic-password -g` and parse the
+  `password:` line it prints on stderr (`"text"`, or `0x<hex>` when a byte is
+  not printable ASCII), never `-w`: `-w` prints a printable secret verbatim
+  and any other secret as bare hex, so a printable secret made only of hex
+  digits (`123456`, `c3a9`) would be mis-decoded.
 - Production SHOULD use Vault/KMS or an equivalent secret manager.
 - The broker MUST validate both caller identity and capabilities before
   resolving a provider secret.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { SECURITY_INTERACTIVE_MAX_LINE_BYTES } from "../security/macos-keychain.js";
+import { createFakeSecurity } from "../test/fake-security.js";
 import { CloudAuthError } from "./errors.js";
 import { createBackend, type CommandResult } from "./secret-backends.js";
 
@@ -9,44 +10,22 @@ interface RecordedCall {
   input?: string;
 }
 
-/**
- * A fake `security` that understands the one stdin line Ravi sends to
- * `security -i` and `find-generic-password -w`. Never runs the real binary.
- */
+/** The shared fake `security` (src/test/fake-security.ts) behind the backend's runner. Never runs the real binary. */
 function fakeKeychain(options: { failWrites?: boolean } = {}) {
+  const fake = createFakeSecurity();
   const calls: RecordedCall[] = [];
-  const items = new Map<string, Buffer>();
-  const runCommand = (command: string, args: string[], opts: { input?: string } = {}): CommandResult => {
-    calls.push({ command, args: [...args], ...(opts.input !== undefined ? { input: opts.input } : {}) });
-    if (args[0] === "-i") {
-      if (options.failWrites)
-        return { status: 1, stdout: "", stderr: "security: SecKeychainItemCreateFromContent: -25308" };
-      const lines = (opts.input ?? "").split("\n").filter(Boolean);
-      for (const line of lines) {
-        const hex = /^add-generic-password -U -a (\S+) -s (\S+) -X ([0-9a-f]+)$/.exec(line);
-        const quoted = /^add-generic-password -U -a (\S+) -s (\S+) -w "((?:[^"\\]|\\.)*)"$/.exec(line);
-        if (hex) items.set(`${hex[2]}/${hex[1]}`, Buffer.from(hex[3]!, "hex"));
-        else if (quoted) items.set(`${quoted[2]}/${quoted[1]}`, Buffer.from(quoted[3]!.replace(/\\(.)/g, "$1")));
-        else return { status: 1, stdout: "", stderr: `unknown command "${line.slice(0, 20)}"` };
-      }
-      return { status: 0, stdout: "", stderr: "" };
-    }
-    if (args[0] === "find-generic-password") {
-      const item = items.get(`${args[args.indexOf("-s") + 1]}/${args[args.indexOf("-a") + 1]}`);
-      if (!item) return { status: 44, stdout: "", stderr: "The specified item could not be found in the keychain." };
-      // Like `security`: printable ASCII as text, anything else as hex.
-      const printable = [...item].every((byte) => byte >= 0x20 && byte < 0x7f);
-      return { status: 0, stdout: `${printable ? item.toString("utf8") : item.toString("hex")}\n`, stderr: "" };
-    }
-    return { status: 0, stdout: "", stderr: "" };
-  };
   const backend = createBackend("keychain", {
     usersDir: "/nonexistent/ravi-test-users",
     platform: "darwin",
     commandExists: () => true,
-    runCommand,
+    runCommand: (command, args, opts = {}): CommandResult => {
+      calls.push({ command, args: [...args], ...(opts.input !== undefined ? { input: opts.input } : {}) });
+      if (options.failWrites && args[0] === "-i")
+        return { status: 1, stdout: "", stderr: "security: SecKeychainItemCreateFromContent: -25308" };
+      return fake.run(args, opts);
+    },
   });
-  return { backend, calls, items };
+  return { backend, calls, items: fake.items, fake };
 }
 
 const TRICKY_PAYLOAD = `${JSON.stringify(
@@ -89,17 +68,47 @@ describe("cloud-auth Keychain backend", () => {
     const stored = items.get("ravi.cloud-auth/user_123")!;
     const read = backend.read("user_123");
 
-    // Stored as compact, printable ASCII JSON, so `-w` returns it as text.
+    // Stored as compact, printable ASCII JSON (shorter, and eligible for the quoted write form).
     expect([...stored].every((byte) => byte >= 0x20 && byte < 0x7f)).toBe(true);
     expect(JSON.parse(read!)).toEqual(JSON.parse(TRICKY_PAYLOAD));
   });
 
-  it("decodes an item that `security -w` prints as hex (non-ASCII, written by an older Ravi)", () => {
-    const { backend, items } = fakeKeychain();
+  it("reads with `find-generic-password -g`, never `-w`", () => {
+    const { backend, calls } = fakeKeychain();
+    backend.write("user_123", TRICKY_PAYLOAD);
+    backend.read("user_123");
+
+    const read = calls.find((call) => call.args[0] === "find-generic-password");
+    expect(read?.args).toEqual(["find-generic-password", "-a", "user_123", "-s", "ravi.cloud-auth", "-g"]);
+  });
+
+  it("reads a non-ASCII item an older Ravi wrote with the payload in argv", () => {
+    const { backend, fake } = fakeKeychain();
     const legacy = JSON.stringify({ user: { name: "José" } });
-    items.set("ravi.cloud-auth/user_123", Buffer.from(legacy, "utf8"));
+    fake.run(["add-generic-password", "-U", "-a", "user_123", "-s", "ravi.cloud-auth", "-w", legacy]);
 
     expect(backend.read("user_123")).toBe(legacy);
+  });
+
+  it("returns a payload made only of hex digits as text, not as decoded bytes", () => {
+    const { backend } = fakeKeychain();
+    for (const payload of ["123456", "000000", "c3a9", "0a", "deadbeef"]) {
+      backend.write("user_123", payload);
+      expect(backend.read("user_123")).toBe(payload);
+    }
+  });
+
+  it("returns null for a missing item and fails closed on output it cannot parse", () => {
+    const { backend } = fakeKeychain();
+    expect(backend.read("user_404")).toBeNull();
+
+    const broken = createBackend("keychain", {
+      usersDir: "/nonexistent/ravi-test-users",
+      platform: "darwin",
+      commandExists: () => true,
+      runCommand: () => ({ status: 0, stdout: "", stderr: "password: 0xFF \n" }),
+    });
+    expect(() => broken.read("user_123")).toThrow(CloudAuthError);
   });
 
   it("stores a ~3 KB payload (too long for hex) through the quoted form and reads it back", () => {
@@ -138,5 +147,29 @@ describe("cloud-auth Keychain backend", () => {
     }
     expect(failure).toBeInstanceOf(CloudAuthError);
     expect((failure as Error).message).toContain("fell back to the portable file store");
+  });
+
+  it("delete is silent for a removed or missing item and fails when the Keychain refuses", () => {
+    const { backend, items, fake } = fakeKeychain();
+    backend.write("user_123", TRICKY_PAYLOAD);
+    expect(items.has("ravi.cloud-auth/user_123")).toBe(true);
+
+    expect(() => backend.delete("user_123")).not.toThrow();
+    expect(items.has("ravi.cloud-auth/user_123")).toBe(false);
+    // Nothing left: `security` exits 44 (errSecItemNotFound), which is not a failure.
+    expect(() => backend.delete("user_123")).not.toThrow();
+
+    backend.write("user_123", TRICKY_PAYLOAD);
+    fake.locked = true;
+    let failure: unknown;
+    try {
+      backend.delete("user_123");
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(CloudAuthError);
+    expect((failure as Error).message).toContain("could not be removed");
+    expect(((failure as Error).cause as Error).message).toContain("User interaction is not allowed");
+    expect(items.has("ravi.cloud-auth/user_123")).toBe(true);
   });
 });

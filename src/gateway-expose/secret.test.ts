@@ -41,7 +41,14 @@ function fakeKeychain(options: { failWrites?: boolean } = {}) {
     const key = `${args[args.indexOf("-s") + 1]}/${args[args.indexOf("-a") + 1]}`;
     if (args[0] === "find-generic-password") {
       const item = items.get(key);
-      return item ? { status: 0, stdout: `${item}\n`, stderr: "" } : { status: 44, stdout: "", stderr: "not found" };
+      // `-g` prints the secret on stderr; hex form, as `security` does for non-printable payloads.
+      return item
+        ? { status: 0, stdout: "", stderr: `password: 0x${Buffer.from(item, "utf8").toString("hex").toUpperCase()} \n` }
+        : {
+            status: 44,
+            stdout: "",
+            stderr: "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.",
+          };
     }
     if (args[0] === "delete-generic-password") items.delete(key);
     return { status: 0, stdout: "", stderr: "" };

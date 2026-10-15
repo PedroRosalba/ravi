@@ -140,7 +140,18 @@ Directories MUST be mode `0700`. Credential files MUST be mode `0600`.
 `ravi whoami` MUST read the **active** user (`activeUserId` pointer). `ravi
 login` MUST write that user's slot and update the pointer. `ravi logout` MUST
 delete only the active user and, when other users remain, point at another
-stored user.
+stored user. Logout clears both the configured backend and the file store for
+that user: the store the pointer resolves to, the `users/<userId>/` file copy,
+and the configured optional backend (Keychain or Secret Service) when it
+differs, so an item left behind by a locked-Keychain fallback does not survive
+and `readCloudCredentialsForUser` returns `null` afterwards. A backend delete
+that fails (locked Keychain) MUST be warned about on stderr, never thrown past
+logout. The pointer written for the promoted user MUST name the store
+that holds that user's credentials, by the same rule reads use: the file store
+when `users/<userId>/credentials.json` exists (a copy left by a Keychain
+fallback), else the configured backend; never the departing user's backend.
+Promoting the `_legacy` slot MUST remove it from the store that holds it and
+any file copy.
 
 Legacy `~/.ravi/cloud-auth/credentials.json` MUST be migrated into
 `users/<consoleUserId>/` (or `users/_legacy/` when the user id is not yet
@@ -163,7 +174,15 @@ The CLI MUST use a capability-detected backend abstraction:
    Keychain: the write falls back to the portable file store, the active
    pointer records `backend: "file"`, reads follow the pointer's backend, any
    older Keychain item for that user is deleted, and the CLI warns once on
-   stderr that the credentials went to the `0600` file store.
+   stderr that the credentials went to the `0600` file store. When that delete
+   fails (locked Keychain: `security delete-generic-password` exits non-zero
+   other than 44, item not found), the warning says the older item could not
+   be removed and will be deleted at the next logout. Keychain reads
+   run `find-generic-password -g` and parse the `password:` line it prints on
+   stderr (`"text"`, or `0x<hex>` for bytes that are not printable ASCII),
+   never `-w`: `-w` prints a printable payload verbatim and other bytes as
+   bare hex, so a payload made only of hex digits cannot be told apart from
+   encoded bytes.
 
 `auto` MAY prefer an optional backend when present. Unavailable optional
 backends MUST fall back to the portable file store. The CLI MUST never require
@@ -176,10 +195,13 @@ macOS.
   on disk. Those stay on the `link.ravi.so` Worker.
 - Console session JWTs are not provider tokens. They are Ravi-owned CLI
   credentials for Console/Link as that Console user.
-- There is no operator JWT fallback for user-scoped connector tools. If a turn
-  has a bound `consoleUserId`, those tools MUST use that user's stored
-  session (or fail). They MUST NOT silently use the installation operator
-  session. Full user-scoped connector vault on the Worker is a follow-up.
+- Connector tools use only the active `ravi login` session, and only for the
+  operator's own turns: the terminal, the operator's own direct chat (a
+  contact whose `consoleUserId` is the active user), and routines the
+  operator owns (`cli/connectors`). Every other turn fails closed with exit 3
+  before any remote call. They MUST NOT use the operator session for anyone
+  else's turn, and MUST NOT borrow another user's stored session, even for a
+  contact linked to that user.
 
 The CLI MAY cache non-secret metadata such as:
 

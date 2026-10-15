@@ -3,7 +3,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, wri
 import { dirname, join } from "node:path";
 import {
   buildAddGenericPasswordLine,
-  decodeSecurityPasswordOutput,
+  findGenericPasswordArgs,
+  parseSecurityPasswordOutput,
   redactSecurityOutput,
 } from "../security/macos-keychain.js";
 import { CloudAuthError } from "./errors.js";
@@ -171,7 +172,16 @@ function createLibsecretBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBack
       }
     },
     delete(userId) {
-      runCommand("secret-tool", ["clear", "service", service, "account", userId]);
+      // `secret-tool clear` exits 0 when nothing matched; a non-zero status is
+      // a Secret Service failure, so the item may survive and the caller must know.
+      const result = runCommand("secret-tool", ["clear", "service", service, "account", userId]);
+      if (result.status !== 0) {
+        throw new CloudAuthError(
+          "CREDENTIALS_INVALID",
+          `The FreeDesktop Secret Service item for ${userId} could not be removed.`,
+          { cause: new Error(result.stderr || result.stdout) },
+        );
+      }
     },
   };
 }
@@ -187,10 +197,18 @@ function createKeychainBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBacke
       return platform === "darwin" && commandExists("security");
     },
     read(userId) {
-      const result = runCommand("security", ["find-generic-password", "-a", userId, "-s", service, "-w"]);
+      // `-g` prints the payload unambiguously on stderr (`-w` would hex-decode
+      // a printable payload made of hex digits); see src/security/macos-keychain.ts.
+      const result = runCommand("security", findGenericPasswordArgs({ account: userId, service }));
       if (result.status !== 0) return null;
-      const payload = decodeSecurityPasswordOutput(result.stdout.trim());
-      return payload || null;
+      const parsed = parseSecurityPasswordOutput(result.stderr);
+      if (!parsed.ok) {
+        throw new CloudAuthError(
+          "CREDENTIALS_INVALID",
+          `Stored Ravi Cloud credentials in macOS Keychain could not be read: ${parsed.message} Run \`ravi logout\` and login again.`,
+        );
+      }
+      return parsed.secret || null;
     },
     write(userId, payload) {
       // Never pass the payload in argv: `security -i` reads the command from
@@ -217,9 +235,22 @@ function createKeychainBackend(deps: CloudAuthBackendDeps): CloudAuthSecretBacke
       }
     },
     delete(userId) {
-      runCommand("security", ["delete-generic-password", "-a", userId, "-s", service]);
+      const result = runCommand("security", ["delete-generic-password", "-a", userId, "-s", service]);
+      if (result.status === 0 || isKeychainItemNotFound(result)) return;
+      // A locked Keychain ("User interaction is not allowed") or any other
+      // failure leaves the item in place: the caller decides what to tell the user.
+      throw new CloudAuthError("CREDENTIALS_INVALID", `The macOS Keychain item for ${userId} could not be removed.`, {
+        cause: new Error(redactSecurityOutput(result.stderr || result.stdout)),
+      });
     },
   };
+}
+
+/** `security` exits 44 (errSecItemNotFound) when there is nothing to delete; that is a successful logout. */
+const SECURITY_ITEM_NOT_FOUND_STATUS = 44;
+
+function isKeychainItemNotFound(result: CommandResult): boolean {
+  return result.status === SECURITY_ITEM_NOT_FOUND_STATUS || result.stderr.includes("could not be found");
 }
 
 function defaultCommandExists(command: string): boolean {
@@ -242,8 +273,8 @@ function defaultRunCommand(command: string, args: string[], options: { input?: s
 
 /**
  * Minified JSON with every non-ASCII character escaped: shorter, so more fits
- * in one `security -i` line, and printable, so `find-generic-password -w`
- * returns it as text. A payload that is not JSON is stored unchanged.
+ * in one `security -i` line, and printable ASCII, which also makes it eligible
+ * for the quoted `-w` write form. A payload that is not JSON is stored unchanged.
  */
 function compactJsonPayload(payload: string): string {
   let value: unknown;

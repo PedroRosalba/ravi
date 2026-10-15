@@ -290,7 +290,7 @@ describe("Slack Socket Mode routing", () => {
     });
 
     expect(published).toHaveLength(0);
-    expect(usersInfo).toHaveBeenCalledWith("U123");
+    expect(usersInfo).toHaveBeenCalledWith("U123", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(listAccountPendingContacts("slack-main")).toMatchObject([
       { accountId: "slack-main", phone: "U123", name: "Luis", chatId: "D123", isGroup: false },
     ]);
@@ -370,7 +370,7 @@ describe("Slack Socket Mode routing", () => {
     });
 
     expect(published).toHaveLength(0);
-    expect(usersInfo).toHaveBeenCalledWith("U555");
+    expect(usersInfo).toHaveBeenCalledWith("U555", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(listAccountPendingChats("slack-main")).toMatchObject([
       { accountId: "slack-main", phone: "C555", chatId: "C555", isGroup: true },
     ]);
@@ -1205,6 +1205,148 @@ describe("Slack Socket Mode routing", () => {
     expect(dbLegacySessionChatBindingsTableExists()).toBe(false);
   });
 
+  it("names the Slack sender and channel in the prompt and falls back to ids when lookups fail", async () => {
+    const config: RouterConfig = {
+      agents: { "ravi-hil": { id: "ravi-hil", cwd: "/tmp/ravi-hil", dmScope: "per-peer" } },
+      routes: [
+        {
+          pattern: "group:C123",
+          accountId: "ravi-rbbt-slack",
+          agent: "ravi-hil",
+          session: "ravi-hil",
+          priority: 100,
+          policy: "open",
+          channel: "slack",
+        },
+      ],
+      defaultAgent: "ravi-hil",
+      defaultDmScope: "per-peer",
+      accountAgents: { "ravi-rbbt-slack": "ravi-hil" },
+      instanceToAccount: {},
+      instances: {},
+    };
+    const published: Array<{ sessionName: string; payload: Record<string, unknown> }> = [];
+    const usersInfo = mock(async (user: string) => {
+      if (user === "U404") throw new Error("slack_users.info_user_not_found");
+      return {
+        ok: true,
+        user: { id: user, name: "ana", profile: { display_name: "Ana", real_name: "Ana Example" } },
+      };
+    });
+    const conversationsInfo = mock(async () => ({ ok: true, channel: { id: "C123", name: "general" } }));
+    const service = new SlackSocketModeService({
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      accountId: "ravi-rbbt-slack",
+      routeAccountId: "ravi-rbbt-slack",
+      instanceId: "slack-instance-1",
+      getRouterConfig: () => config,
+      publishPrompt: async (sessionName, payload) => {
+        published.push({ sessionName, payload });
+      },
+      webClient: { usersInfo, conversationsInfo } as never,
+    });
+    const envelope = (id: string, user: string, ts: string): SlackSocketEnvelope => ({
+      envelope_id: id,
+      payload: {
+        team_id: "T1",
+        event_id: id,
+        event_time: 1_713_000_000,
+        event: { type: "message", channel: "C123", channel_type: "channel", user, text: "oi", ts },
+      },
+    });
+
+    await service.handleEnvelope(envelope("Ev-name-1", "U123", "1713000000.000100"));
+    await service.handleEnvelope(envelope("Ev-name-2", "U123", "1713000000.000200"));
+    await service.handleEnvelope(envelope("Ev-name-3", "U404", "1713000000.000300"));
+    await service.handleEnvelope(envelope("Ev-name-4", "U404", "1713000000.000400"));
+
+    expect(published).toHaveLength(4);
+    expect(String(published[0]?.payload.prompt)).toEndWith("\nAna (<@U123>): oi");
+    expect(published[0]?.payload.context).toMatchObject({
+      senderId: "U123",
+      senderName: "Ana",
+      groupId: "C123",
+      groupName: "general",
+    });
+    expect(String(published[2]?.payload.prompt)).toEndWith("\n<@U404>: oi");
+    expect(published[2]?.payload.context).toMatchObject({ senderName: "<@U404>", groupName: "general" });
+    // Cached: one users.info per user (the failure is not retried right away), one conversations.info per channel.
+    expect(usersInfo).toHaveBeenCalledTimes(2);
+    expect(conversationsInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the users mentioned in a Slack message in the agent prompt", async () => {
+    const config: RouterConfig = {
+      agents: { "ravi-hil": { id: "ravi-hil", cwd: "/tmp/ravi-hil", dmScope: "per-peer" } },
+      routes: [
+        {
+          pattern: "group:C123",
+          accountId: "ravi-rbbt-slack",
+          agent: "ravi-hil",
+          session: "ravi-hil",
+          priority: 100,
+          policy: "open",
+          channel: "slack",
+        },
+      ],
+      defaultAgent: "ravi-hil",
+      defaultDmScope: "per-peer",
+      accountAgents: { "ravi-rbbt-slack": "ravi-hil" },
+      instanceToAccount: {},
+      instances: {},
+    };
+    const published: Array<{ sessionName: string; payload: Record<string, unknown> }> = [];
+    const names: Record<string, string> = { UBOT: "Ravi", U456: "Ana" };
+    const usersInfo = mock(async (userId: string, options?: { signal?: AbortSignal }) => {
+      if (userId === "USLOW") {
+        // Never answers on its own; settles only when the lookup timeout aborts it.
+        return new Promise<never>((_, reject) =>
+          options?.signal?.addEventListener("abort", () => reject(new Error("aborted"))),
+        );
+      }
+      const displayName = names[userId];
+      if (!displayName) throw new Error("user_not_found");
+      return { ok: true, user: { id: userId, profile: { display_name: displayName } } };
+    });
+    const service = new SlackSocketModeService({
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      accountId: "ravi-rbbt-slack",
+      routeAccountId: "ravi-rbbt-slack",
+      instanceId: "slack-instance-1",
+      getRouterConfig: () => config,
+      publishPrompt: async (sessionName, payload) => {
+        published.push({ sessionName, payload });
+      },
+      webClient: { usersInfo } as never,
+      userLookupTimeoutMs: 20,
+    });
+
+    await service.handleEnvelope({
+      envelope_id: "env-mentions",
+      payload: {
+        team_id: "T1",
+        event_id: "Ev-mentions",
+        event_time: 1_713_000_000,
+        event: {
+          type: "message",
+          channel: "C123",
+          channel_type: "channel",
+          user: "U123",
+          text: "<@UBOT> pede pra <@U456> revisar, <@U456> e <@UBROKEN> e <@USLOW> e <@UOLD|joao> <!here> <#C999|geral>",
+          ts: "1713000000.000300",
+        },
+      },
+    });
+
+    expect(published).toHaveLength(1);
+    expect(String(published[0]?.payload.prompt)).toEndWith(
+      "@Ravi (<@UBOT>) pede pra @Ana (<@U456>) revisar, @Ana (<@U456>) e <@UBROKEN> e <@USLOW> e @joao (<@UOLD>) <!here> <#C999|geral>",
+    );
+    expect(usersInfo.mock.calls.filter(([userId]) => userId === "U456")).toHaveLength(1);
+  });
+
   it("interprets leading >> and !! prefixes on Slack messages", async () => {
     const config: RouterConfig = {
       agents: {
@@ -2033,6 +2175,33 @@ describe("Slack Socket Mode routing", () => {
           eventTimeMs: 1_713_000_030_000,
         }),
       },
+      {
+        topic: "ravi.inbound.session.created",
+        payload: expect.objectContaining({
+          provider: "slack",
+          eventType: "session.created",
+          accountId: "ravi-rbbt-slack",
+          routeAccountId: "ravi-rbbt-slack",
+          instanceId: "slack-instance-1",
+          teamId: "T1",
+          channelId: "C123",
+          channelType: "channel",
+          peerKind: "group",
+          userId: "U123",
+          messageTs: "1713000030.000200",
+          sourceMessageTs: "1713000030.000200",
+          threadTs: "1713000000.000100",
+          canonicalChatId,
+          sessionKey: "ravi-hil:thread:1713000000.000100",
+          sessionName: "ravi-hil-t-1713000000000100",
+          agentId: "ravi-hil",
+          routePattern: "group:C123",
+          routeSession: "ravi-hil",
+          envelopeId: "env-thread-1",
+          eventId: "EvThread1",
+          eventTimeMs: 1_713_000_030_000,
+        }),
+      },
     ]);
 
     await service.handleEnvelope({
@@ -2055,7 +2224,92 @@ describe("Slack Socket Mode routing", () => {
 
     expect(published).toHaveLength(2);
     expect(published[1]?.sessionName).toBe("ravi-hil-t-1713000000000100");
+    expect(inboundEvents).toHaveLength(2);
+  });
+
+  it("emits ravi.inbound.session.created on a root channel session creation without a thread", async () => {
+    const config: RouterConfig = {
+      agents: {
+        "ravi-hil": {
+          id: "ravi-hil",
+          cwd: "/tmp/ravi-hil",
+          dmScope: "per-peer",
+        },
+      },
+      routes: [
+        {
+          pattern: "group:C123",
+          accountId: "ravi-rbbt-slack",
+          agent: "ravi-hil",
+          session: "ravi-hil",
+          priority: 100,
+          policy: "open",
+          channel: "slack",
+        },
+      ],
+      defaultAgent: "ravi-hil",
+      defaultDmScope: "per-peer",
+      accountAgents: { "ravi-rbbt-slack": "ravi-hil" },
+      instanceToAccount: {},
+      instances: {},
+    };
+    const inboundEvents: Array<{ topic: string; payload: Record<string, unknown> }> = [];
+    const service = new SlackSocketModeService({
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      accountId: "ravi-rbbt-slack",
+      routeAccountId: "ravi-rbbt-slack",
+      instanceId: "slack-instance-1",
+      getRouterConfig: () => config,
+      publishPrompt: async () => {},
+      publishInteraction: async (topic, payload) => {
+        inboundEvents.push({ topic, payload });
+      },
+      webClient: {} as never,
+    });
+
+    await service.handleEnvelope({
+      envelope_id: "env-root-1",
+      payload: {
+        team_id: "T1",
+        event_id: "EvRoot1",
+        event_time: 1_713_000_000,
+        event: {
+          type: "message",
+          channel: "C123",
+          channel_type: "channel",
+          user: "U123",
+          text: "ravi?",
+          ts: "1713000000.000100",
+        },
+      },
+    });
+
     expect(inboundEvents).toHaveLength(1);
+    expect(inboundEvents[0]).toEqual({
+      topic: "ravi.inbound.session.created",
+      payload: expect.objectContaining({
+        provider: "slack",
+        eventType: "session.created",
+        accountId: "ravi-rbbt-slack",
+        routeAccountId: "ravi-rbbt-slack",
+        instanceId: "slack-instance-1",
+        teamId: "T1",
+        channelId: "C123",
+        channelType: "channel",
+        peerKind: "group",
+        userId: "U123",
+        messageTs: "1713000000.000100",
+        sessionName: "ravi-hil",
+        agentId: "ravi-hil",
+        routePattern: "group:C123",
+        routeSession: "ravi-hil",
+        envelopeId: "env-root-1",
+        eventId: "EvRoot1",
+        eventTimeMs: 1_713_000_000_000,
+      }),
+    });
+    expect(inboundEvents[0]?.payload).not.toHaveProperty("threadTs");
   });
 
   it("leaves the created event to a pending programmatic thread bootstrap", async () => {
